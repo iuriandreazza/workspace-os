@@ -20,7 +20,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-qemu-system-aarch64 -machine virt -cpu cortex-a72 -display none \
+# -nodefaults: the default virtio network card needs an option ROM that
+# minimal QEMU installs (such as the CI runner) do not ship.
+qemu-system-aarch64 -machine virt -cpu cortex-a72 -nodefaults -display none \
     -serial "file:$serial_log" -kernel "$KERNEL_ELF" &
 qemu_pid=$!
 
@@ -29,6 +31,11 @@ for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
     if grep -qF "$EXPECTED_BANNER" "$serial_log"; then
         echo "PASS: boot banner found on serial console"
         exit 0
+    fi
+    if ! kill -0 "$qemu_pid" 2>/dev/null; then
+        echo "FAIL: QEMU exited before the boot banner appeared" >&2
+        cat "$serial_log" >&2
+        exit 1
     fi
     sleep 0.1
 done
