@@ -55,6 +55,22 @@ the capability broker (ADR 0002) narrows it further for each action. What the
 AI may do is the intersection of what the user may do and what the action's
 capability allows, never the union.
 
+## The AI and root authority
+
+The AI may act with root authority, with confirmation:
+
+- An action that needs root is marked as such in the plan, and the broker
+  holds it until a person who is allowed to act as root confirms it.
+- The confirmation shows the exact action that will run, not a summary
+  written by the model.
+- Confirmation is per action. There is no standing grant: the AI never keeps
+  root authority between actions.
+- Every root action taken through the AI is logged with who confirmed it.
+
+The risk this accepts is habit: a person who confirms often stops reading.
+Showing the exact action and never offering "always allow" are the
+mitigations.
+
 ## Alternatives considered
 
 | Option | For | Against |
@@ -76,5 +92,5 @@ capability allows, never the union.
 
 - How an ordinary user is granted root authority for one action: the
   mechanism and what the user has to confirm.
-- Whether the AI itself can ever act with root authority, or only a person
-  can.
+- Whether a confirmation given by voice is enough for a root action, given
+  that each user has their own spoken voice (ADR 0006).
