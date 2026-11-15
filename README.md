@@ -15,14 +15,22 @@ the serial console. Nothing else exists yet.
 - Rust (stable) via `rustup`; the target in `rust-toolchain.toml` is installed
   automatically
 - QEMU with `qemu-system-aarch64`
+- Node.js and pnpm, only for the git hooks
 
 ## Usage
 
 ```bash
+pnpm install                   # once per clone: installs the git hooks
 cargo build                    # build the kernel
 cargo run                      # boot it in QEMU (exit with Ctrl-A then X)
-./scripts/boot-smoke-test.sh   # boot and assert the serial banner
+./scripts/check.sh             # format, lint and boot smoke test
 ```
+
+## Checks
+
+`./scripts/check.sh` is the single gate for a change. The husky `pre-commit`
+hook runs it before every commit, and CI runs it on every pull request and on
+`main`.
 
 ## Layout
 
