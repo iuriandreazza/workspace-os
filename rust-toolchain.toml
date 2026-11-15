@@ -1,3 +1,6 @@
 [toolchain]
-channel = "stable"
+# Pinned so the hook and CI use the same compiler, formatter and lints.
+channel = "1.100.0"
 targets = ["aarch64-unknown-none-softfloat"]
+# llvm-tools: the boot smoke test needs llvm-nm and llvm-objcopy.
+components = ["rustfmt", "clippy", "llvm-tools"]

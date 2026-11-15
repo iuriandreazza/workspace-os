@@ -4,12 +4,15 @@
 mod arch;
 mod board;
 mod drivers;
+mod memory_image;
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main() -> ! {
+    memory_image::assert_initialised();
+
     let mut console = board::console();
     let _ = writeln!(console, "workspace-os kernel: booted on aarch64");
     arch::halt()

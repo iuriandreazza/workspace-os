@@ -2,9 +2,10 @@ ENTRY(_start)
 
 SECTIONS
 {
-    /* RAM on QEMU `virt` starts at 0x40000000; the first 512 KiB are left
-       free because QEMU places the device tree blob at the start of RAM. */
-    . = 0x40080000;
+    /* RAM on QEMU `virt` starts at 0x40000000. QEMU puts the device tree blob
+       (1 MiB) there, but only when the kernel image does not overlap it, so
+       the kernel is linked 2 MiB above the start of RAM. */
+    . = 0x40200000;
 
     .text : {
         KEEP(*(.text.boot))

@@ -16,6 +16,9 @@ the code. Drivers are planned to be converted from Linux (ADR 0003), and Linux
 is licensed GPL-2.0-only. A driver converted from Linux is a derivative of
 GPL-2.0-only code.
 
+AGPL-3.0-only was applied first, in a single commit that is part of the
+public history, and replaced by this decision on the same day.
+
 ## Decision
 
 License the OS under the GNU General Public License, version 2 only

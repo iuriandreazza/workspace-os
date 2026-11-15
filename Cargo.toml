@@ -2,6 +2,9 @@
 members = ["kernel"]
 resolver = "3"
 
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 # A bare-metal kernel has no unwinder to run.
 [profile.dev]
 panic = "abort"

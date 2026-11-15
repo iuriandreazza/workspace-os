@@ -27,16 +27,30 @@ they depend on Linux-internal kernel APIs that are not stable across versions.
 
 One package manager installs both drivers and programs.
 
-## Open questions
+## Who converts and publishes
 
-- **Who converts and publishes.** Accepting uploads from end-user machines lets
-  a compromised machine publish driver code for everyone. Proposed: the device
-  only requests a conversion; a registry-side build service converts, tests and
-  signs. Not decided yet.
-- **Devices with no generic class.** Most network cards have none, and without
-  network the registry is unreachable. Proposed: ship converted drivers for
-  common network cards in the install image and support USB tethering.
-- **Licence.** Linux drivers are GPL-2.0 and a translation is a derivative
+Hybrid, decided on 2026-11-15:
+
+- **Official path.** The device only requests a conversion, sending the
+  hardware identifier. A registry-side build service converts, tests, signs
+  and publishes. Only this path publishes to the registry, so a compromised
+  machine cannot publish driver code for everyone.
+- **Local path.** A device may also convert a driver locally. The result is
+  marked as unverified, stays on that device and is never published
+  automatically.
+
+## Devices with no generic class
+
+Most network cards have no generic class driver, and without network the
+registry is unreachable. Decided on 2026-11-15:
+
+- the install image ships converted drivers for the most common network
+  cards;
+- the system supports network over USB tethering, which uses a generic class.
+
+## Licence
+
+- Linux drivers are GPL-2.0 and a translation is a derivative
   work, so converted drivers are expected to be GPL-2.0 and their source must
   be published. ADR 0005 licenses the OS under GPL-2.0-only as well, so both
   can be combined.
