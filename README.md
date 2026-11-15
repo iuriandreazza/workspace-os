@@ -12,7 +12,7 @@ the serial console. Secondary cores are parked and any exception ends in a
 kernel panic. Nothing else exists yet.
 
 Next milestone: real exception handling and the MMU, the base for isolated
-processes.
+processes. The full plan is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Requirements
 
