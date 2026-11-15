@@ -36,7 +36,8 @@ How they are defined and kept:
    account: it is the same AI for every user of the machine.
 3. **A personality per user, built on the SOUL.** For each user the AI may
    have a personality: the way that one SOUL shows itself to that person. A
-   personality uses the SOUL and cannot contradict it.
+   personality uses the SOUL and cannot contradict it. The spoken voice is
+   part of the personality, so it can differ from one user to another.
 4. **The AI may propose changes to its own SOUL, and only a user with root
    authority can approve them.** A change is a proposal shown in full and
    accepted or rejected. Every applied change is kept in a history and can be
@@ -85,8 +86,10 @@ The SOUL and the voice govern presentation. They never govern authority.
 
 - Who shapes a personality: assumed here to be the user it belongs to,
   without root authority. Not confirmed.
-- What a personality may vary and what stays fixed by the SOUL, in particular
-  whether the spoken voice can differ per user.
+- What else a personality may vary beyond writing tone and spoken voice, and
+  what stays fixed by the SOUL.
+- How the system knows which user is speaking, so that it answers with that
+  user's personality and voice.
 - What "root authority" is in a capability system: assumed to be a capability
   held by the machine's administrators (ADR 0001, roadmap item K9).
 - Which local speech models to use, and their licences (ADR 0005).
