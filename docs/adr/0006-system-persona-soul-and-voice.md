@@ -32,11 +32,15 @@ How they are defined and kept:
    questions and builds the SOUL from the answers. Someone who does not want
    the interview picks a ready-made profile. The presets also cover the case
    where no model is loaded.
-2. **One per machine.** The SOUL belongs to the system, not to a user
-   account: every user of the machine meets the same AI.
-3. **The AI may propose changes to its own SOUL, and only the user's approval
-   applies them.** A change is a proposal the user sees in full and accepts
-   or rejects. Every applied change is kept in a history and can be undone.
+2. **One SOUL per machine.** The SOUL belongs to the system, not to a user
+   account: it is the same AI for every user of the machine.
+3. **A personality per user, built on the SOUL.** For each user the AI may
+   have a personality: the way that one SOUL shows itself to that person. A
+   personality uses the SOUL and cannot contradict it.
+4. **The AI may propose changes to its own SOUL, and only a user with root
+   authority can approve them.** A change is a proposal shown in full and
+   accepted or rejected. Every applied change is kept in a history and can be
+   undone. A user without root authority cannot change the SOUL.
 
 ## The limit that makes this safe
 
@@ -46,11 +50,14 @@ The SOUL and the voice govern presentation. They never govern authority.
   capability broker validates every action against the user's capabilities
   and does not read the SOUL.
 - A SOUL change is itself an action in the plan format, with its own
-  capability, so it goes through the broker like any other action.
+  capability, held only by users with root authority, so it goes through the
+  broker like any other action.
+- A personality is presentation too: it cannot grant a capability either, and
+  one user's personality never applies to another user.
 - The deterministic fallback shell has no persona. The system stays fully
   usable without the model, the SOUL or the voice (ADR 0002).
-- The same request must lead to the same validated actions under any SOUL.
-  This is tested, not assumed.
+- The same request must lead to the same validated actions under any SOUL
+  and any personality. This is tested, not assumed.
 
 ## Alternatives considered
 
@@ -58,8 +65,8 @@ The SOUL and the voice govern presentation. They never govern authority.
 |---|---|---|
 | What "voice" covers | Speech and writing tone | Writing tone only: simpler, but the system would have no spoken presence. Speech only: leaves the writing style undefined |
 | How the SOUL is defined | Interview plus presets | Presets only: predictable but impersonal. Free text: most freedom, and the easiest way to smuggle in instructions about what the AI may do |
-| Change after installation | The AI proposes, the user approves | Only the user edits: safer, but the AI cannot adapt. Fixed until reinstall: stable and inflexible |
-| Scope | One per machine | One per user: more personal, but the machine loses a single identity. Machine base plus per-user tweaks: more moving parts for little gain now |
+| Change after installation | The AI proposes, a user with root authority approves | Only the user edits: safer, but the AI cannot adapt. Fixed until reinstall: stable and inflexible. Any user approves: one account could reshape the AI everyone else uses |
+| Scope | One SOUL per machine, with a personality per user on top | One SOUL per user: more personal, but the machine loses a single identity. One SOUL and nothing per user: every user gets exactly the same manner |
 
 ## Consequences
 
@@ -76,6 +83,11 @@ The SOUL and the voice govern presentation. They never govern authority.
 
 ## Open questions
 
-- On a machine with several users, who may approve a SOUL change.
+- Who shapes a personality: assumed here to be the user it belongs to,
+  without root authority. Not confirmed.
+- What a personality may vary and what stays fixed by the SOUL, in particular
+  whether the spoken voice can differ per user.
+- What "root authority" is in a capability system: assumed to be a capability
+  held by the machine's administrators (ADR 0001, roadmap item K9).
 - Which local speech models to use, and their licences (ADR 0005).
 - What the presets are.
