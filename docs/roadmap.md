@@ -71,12 +71,17 @@ runtime before it has userspace, memory management and a filesystem.
 | Item | Session | Done when | Status |
 |---|---|---|---|
 | S1 | Run Bonsai 8B locally with `llama.cpp` (`llama-server`). Measure tokens per second, time to first token and memory at 8k and 32k context. Record one tool call end to end | Numbers and the tool-call transcript recorded in `docs/`, with the exact commands | next |
-| S2 | Action plan format. ADR first: the structured actions the model may emit, the capability each one needs, and how output is constrained to the format | ADR accepted; a schema file exists | blocked: S1 |
+| S2 | Action plan format. ADR first: the structured actions the model may emit (including proposing a SOUL change, ADR 0006), the capability each one needs, and how output is constrained to the format | ADR accepted; a schema file exists | blocked: S1 |
 | S3 | Shell prototype on the host: natural language to plan, deterministic capability broker that validates it, dry-run and confirmation, a log of every model decision (ADR 0002) | A session can turn "list the largest files here" into a validated plan and run it | blocked: S2 |
 | S4 | Evaluation set: intents with expected plans. Measure Bonsai 8B, and compare with at least one alternative that has native tool calling | Accuracy table in `docs/`; decision to keep or change the model | blocked: S3 |
 | S5 | Deterministic fallback shell: the same actions typed as commands, with no model loaded | Every action in the format is reachable without the model | blocked: S3 |
 | S6 | Bridge into the OS: the shell runs on the host and talks to the kernel over a virtual serial channel | A plan produced on the host is executed by a user program in the OS | blocked: S5, K10 |
 | S7 | Run inference inside the OS | To be designed | later |
+| S8 | SOUL format and presets (ADR 0006): what a SOUL file holds, the ready-made profiles, and the shell loading it. The broker never reads it | The same evaluation intents produce the same validated actions under every preset | blocked: S4 |
+| S9 | Guided interview that builds a SOUL from the user's answers; preset path with no model loaded | A SOUL produced by the interview loads in the shell; the preset path works with the model off | blocked: S8 |
+| S10 | SOUL evolution: the AI proposes a change as an action in the plan format; it applies only after the user approves the full diff; history and undo | A proposed change is refused without approval, applied with it, and undone from the history | blocked: S8 |
+| S11 | Speech on the host: local speech synthesis and recognition, with the voice chosen in the interview. Research the models and their licences first | A spoken request becomes a validated plan and the answer is spoken back, with no network | blocked: S3 |
+| S12 | First-boot flow inside the OS that runs the interview | To be designed; needs an installer, userspace, storage and audio drivers | later |
 
 Host-side code must not be built for the bare-metal target. Decide in S3
 where it lives: `.cargo/config.toml` currently sets the kernel target for the
