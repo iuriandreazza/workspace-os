@@ -106,7 +106,7 @@ whole workspace.
 | D1 | ADR: native driver API and driver server skeleton | blocked: K10 |
 | D2 | Hand-written reference drivers for the generic classes: virtio block and virtio network | blocked: D1 |
 | D3 | Conversion pipeline prototype, offline: one simple Linux driver through model translation, build and differential test in QEMU (ADR 0003) | blocked: D2 |
-| D3b | Evaluate a discriminative model (Jev) for the decisions around the translation, on the registry side only: matching a hardware identifier to its Linux driver, triaging whether a driver is convertible, scoring a converted driver before publication. It does not write the driver; the translation in D3 still needs a generative model | blocked: D3 |
+| D3b | Evaluate a discriminative model (Jev) for the decisions around the translation, on the registry side only: triaging which path a driver takes (translate, shim or virtual machine), and answering a checklist of typed questions about a converted driver before publication. It does not write the driver; the translation in D3 still needs a generative model. Matching hardware to its Linux driver needs no model: Linux drivers declare the identifiers they support | blocked: D3; only worth it once many drivers are converted |
 | D4 | Package format and registry: signature, provenance, trust level; local conversions marked unverified | blocked: D3 |
 | D5 | Registry-side conversion service | later |
 | D6 | Driver hot swap from generic to converted | blocked: D4 |
