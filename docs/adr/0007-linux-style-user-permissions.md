@@ -71,6 +71,31 @@ The risk this accepts is habit: a person who confirms often stops reading.
 Showing the exact action and never offering "always allow" are the
 mitigations.
 
+### Confirming a root action by voice
+
+A root action can be confirmed by voice, with three things together:
+
+1. **Voiceprint.** The speaker is checked against the voiceprint enrolled for
+   a user who may act as root.
+2. **Random challenge.** The person repeats a phrase that is different every
+   time, so an old recording does not pass.
+3. **Second factor.** A password, PIN or physical key is still required. The
+   voice is never the only barrier to root.
+
+Why all three: a voiceprint alone is weak. A recording replays it, a cloned
+voice imitates it, and this system has a loudspeaker and its own speech
+synthesis, so audio it plays could try to confirm an action. The challenge
+defeats recordings but not a voice cloned in real time; the second factor
+covers that.
+
+Rules that follow:
+
+- The system never accepts as confirmation audio that it is playing itself.
+- Voiceprints are biometric data: they are stored only on the machine,
+  encrypted, and are never sent anywhere.
+- Confirming by typing, with the second factor, always remains available, for
+  people who cannot or do not want to use their voice, and for noisy places.
+
 ## Alternatives considered
 
 | Option | For | Against |
@@ -92,5 +117,6 @@ mitigations.
 
 - How an ordinary user is granted root authority for one action: the
   mechanism and what the user has to confirm.
-- Whether a confirmation given by voice is enough for a root action, given
-  that each user has their own spoken voice (ADR 0006).
+- Which second factor comes first: password, PIN or physical key.
+- Which local speaker-verification model to use, its error rates, and its
+  licence (ADR 0005).

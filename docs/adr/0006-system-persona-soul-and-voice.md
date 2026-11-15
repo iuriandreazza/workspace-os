@@ -90,6 +90,8 @@ The SOUL and the voice govern presentation. They never govern authority.
 - What else a personality may vary beyond writing tone and spoken voice, and
   what stays fixed by the SOUL.
 - How the system knows which user is speaking, so that it answers with that
-  user's personality and voice.
+  user's personality and voice. The voiceprint enrolled for root confirmation
+  (ADR 0007) is the natural candidate; recognising a speaker to pick a
+  personality needs far less certainty than confirming a root action.
 - Which local speech models to use, and their licences (ADR 0005).
 - What the presets are.
