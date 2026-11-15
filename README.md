@@ -8,39 +8,47 @@ core.
 ## Status
 
 First milestone: the kernel boots on aarch64 under QEMU and prints a banner on
-the serial console. Nothing else exists yet.
+the serial console. Secondary cores are parked and any exception ends in a
+kernel panic. Nothing else exists yet.
+
+Next milestone: real exception handling and the MMU, the base for isolated
+processes.
 
 ## Requirements
 
-- Rust (stable) via `rustup`; the target in `rust-toolchain.toml` is installed
-  automatically
+- `rustup`. The Rust version, target and components are pinned in
+  `rust-toolchain.toml` and installed automatically.
 - QEMU with `qemu-system-aarch64`
-- Node.js and pnpm, only for the git hooks
 
 ## Usage
 
 ```bash
-pnpm install                   # once per clone and per git worktree: installs the git hooks
-cargo build                    # build the kernel
-cargo run                      # boot it in QEMU (exit with Ctrl-A then X)
-./scripts/check.sh             # format, lint and boot smoke test
+git config core.hooksPath .githooks   # once per clone: enables the git hooks
+cargo build                           # build the kernel
+cargo run                             # boot it in QEMU (exit with Ctrl-A then X)
+./scripts/check.sh                    # format, lint and boot smoke test
 ```
 
 ## Checks
 
-`./scripts/check.sh` is the single gate for a change. The husky `pre-commit`
-hook runs it before every commit, and CI runs it on every pull request and on
-`main`.
+`./scripts/check.sh` is the single gate for a change. The hooks in `.githooks/`
+run it before every commit and merge commit, and CI runs it on every pull
+request and on `main`.
 
-The hook only exists in a worktree where `pnpm install` has run; without it,
-commits go through unchecked and CI is the only gate.
+The hooks refuse to run while the working tree has unstaged changes or
+untracked files, because the checks read the working tree. Rebases and
+cherry-picks do not run the hooks; CI covers those.
+
+`main` is protected: changes land through a pull request with the CI check
+passing.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
 | `kernel/src/main.rs` | Kernel entry point and panic handler |
-| `kernel/src/arch/` | Architecture-specific code (boot assembly, linker script) |
+| `kernel/src/arch/` | Architecture-specific code (boot assembly, exception vectors, linker script) |
+| `kernel/src/memory_image.rs` | Boot-time self-test of `.bss` and `.data` |
 | `kernel/src/board.rs` | Board description (QEMU `virt`) |
 | `kernel/src/drivers/` | Device drivers that live in the kernel for now |
 | `docs/adr/` | Architecture decision records |

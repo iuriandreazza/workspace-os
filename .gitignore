@@ -1,5 +1,4 @@
 target/
-node_modules/
 .claude/worktrees/
 .claude/session-files.log
 .DS_Store

@@ -1,7 +1,8 @@
-//! Self-test of the memory image handed over by the boot code.
+//! Self-test of the memory image the kernel starts with.
 //!
-//! The probes also keep `.bss` and `.data` non-empty, so the boot code that
-//! prepares them runs on every boot.
+//! The `.bss` probe checks the boot code, which clears `.bss`, and keeps the
+//! section non-empty so there is always something to clear. The `.data` probe
+//! checks whoever loaded the image: nothing in the kernel prepares `.data`.
 
 use core::hint::black_box;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -17,5 +18,8 @@ pub fn assert_initialised() {
     let initialised = black_box(&INITIALISED_PROBE).load(Ordering::Relaxed);
 
     assert!(zeroed == 0, ".bss was not cleared by the boot code");
-    assert!(initialised == INITIALISED_PATTERN, ".data was not loaded");
+    assert!(
+        initialised == INITIALISED_PATTERN,
+        ".data was not loaded with the kernel image"
+    );
 }

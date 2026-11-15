@@ -6,9 +6,15 @@ _start:
     msr  daifset, #0xf
 
     // Only the boot core runs the kernel: there is a single boot stack.
+    // On QEMU `virt` the boot core is the one with affinity 0.
     mrs  x0, mpidr_el1
     and  x0, x0, #0xffffff
     cbnz x0, .Lpark
+
+    // From here on a fault ends in a kernel panic instead of a silent hang.
+    adrp x0, exception_vectors
+    add  x0, x0, :lo12:exception_vectors
+    msr  vbar_el1, x0
 
     adrp x0, __stack_top
     add  x0, x0, :lo12:__stack_top

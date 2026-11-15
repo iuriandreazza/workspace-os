@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+# Git clients often run hooks without the login shell's PATH, so also look for
+# the Rust toolchain in the usual rustup locations.
+for dir in "$HOME/.cargo/bin" /opt/homebrew/opt/rustup/bin /usr/local/opt/rustup/bin; do
+    if [ -d "$dir" ]; then
+        PATH="$dir:$PATH"
+    fi
+done
+export PATH
+
+# The checks read the working tree, so it has to hold exactly what is being
+# committed: no unstaged change and no untracked file.
+if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    echo "pre-commit: the working tree has unstaged changes or untracked files." >&2
+    echo "Stage them, or set them aside with 'git stash push --keep-index --include-untracked'." >&2
+    exit 1
+fi
+
+exec ./scripts/check.sh

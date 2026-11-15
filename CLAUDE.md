@@ -7,9 +7,9 @@ decision recorded in an ADR; propose a new ADR that supersedes it.
 ## Commands
 
 ```bash
-pnpm install          # once per clone AND per worktree: installs the git hooks (husky)
-./scripts/check.sh    # format, lint and boot smoke test: the full gate
-cargo run             # boot the kernel in QEMU (Ctrl-A then X to exit)
+git config core.hooksPath .githooks   # once per clone: enables the git hooks
+./scripts/check.sh                    # format, lint and boot smoke test: the full gate
+cargo run                             # boot the kernel in QEMU (Ctrl-A then X to exit)
 ```
 
 `cargo` and `qemu-system-aarch64` must be on `PATH`.
@@ -20,16 +20,20 @@ cargo run             # boot the kernel in QEMU (Ctrl-A then X to exit)
 runs in three places and must stay the only one:
 
 - locally, on demand;
-- in the husky `pre-commit` hook;
+- in the git hooks under `.githooks/` (`pre-commit` and `pre-merge-commit`);
 - in CI (`.github/workflows/ci.yml`) on every pull request and on `main`.
 
-Add a new check to `scripts/check.sh`, never to the hook or the workflow
-directly. Never bypass the hook with `--no-verify`.
+Add a new check to `scripts/check.sh`, never to a hook or the workflow
+directly. Never bypass the hooks with `--no-verify`.
 
-Husky generates the hook inside each worktree, so a new worktree has no hook
-until `pnpm install` runs there. Run it before the first commit in a worktree.
-The hook refuses to run while tracked files have unstaged changes, because the
-checks read the working tree.
+The hooks are tracked files, so they exist in every worktree once
+`core.hooksPath` is set for the clone. If it is not set, ask the user to set
+it; `git -c core.hooksPath=.githooks commit` applies it to a single command.
+The hooks refuse to run while the working tree has unstaged changes or
+untracked files, because the checks read the working tree.
+
+`main` is protected on GitHub: no direct push, and a pull request needs the CI
+check `Format, lint and boot` to pass.
 
 ## Review: always adversarial, always local
 
@@ -70,6 +74,9 @@ Pull requests that only touch documentation (`docs/`, `README.md`,
 - No Claude attribution anywhere: no `Co-Authored-By` trailer in commits and
   no "Generated with Claude Code" line in pull request descriptions.
 - One branch per piece of work; open a pull request against `main`.
+- The user merges. Do not merge a pull request, even with the review closed
+  and CI green; say that it is ready. Documentation-only pull requests are the
+  exception.
 
 ## Code rules specific to this project
 

@@ -25,10 +25,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends qemu-system-arm
 
-      # rustup reads rust-toolchain.toml and installs the pinned toolchain,
-      # target and components.
+      # Without arguments rustup installs what rust-toolchain.toml pins, and
+      # fails the step if it cannot.
       - name: Install Rust toolchain
-        run: rustup show
+        run: rustup toolchain install
 
       - name: Run checks
         run: ./scripts/check.sh
