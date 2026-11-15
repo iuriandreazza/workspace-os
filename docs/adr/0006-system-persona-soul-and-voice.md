@@ -41,7 +41,8 @@ How they are defined and kept:
 4. **The AI may propose changes to its own SOUL, and only a user with root
    authority can approve them.** A change is a proposal shown in full and
    accepted or rejected. Every applied change is kept in a history and can be
-   undone. A user without root authority cannot change the SOUL.
+   undone. A user without root authority cannot change the SOUL. Root
+   authority is defined in ADR 0007.
 
 ## The limit that makes this safe
 
@@ -90,7 +91,5 @@ The SOUL and the voice govern presentation. They never govern authority.
   what stays fixed by the SOUL.
 - How the system knows which user is speaking, so that it answers with that
   user's personality and voice.
-- What "root authority" is in a capability system: assumed to be a capability
-  held by the machine's administrators (ADR 0001, roadmap item K9).
 - Which local speech models to use, and their licences (ADR 0005).
 - What the presets are.

@@ -56,9 +56,11 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K6 | Interrupts: interrupt controller and generic timer | A boot that counts timer ticks | blocked: K5 |
 | K7 | Kernel threads, context switch, round-robin scheduler. Mechanism and policy kept apart (ADR 0002) | Two threads interleave output in a checked order | blocked: K6 |
 | K8 | Userspace: EL0, one address space per process, system call entry, first user program | A user program prints through a system call; an illegal access kills only that program | blocked: K7 |
-| K9 | IPC and capabilities. ADR first: message model, capability representation, what the kernel checks | Two user programs exchange a message; a call without the capability is refused | blocked: K8 |
+| K9 | IPC and capabilities. ADR first: message model, capability representation, what the kernel checks, and how a server ties a capability to the user it was issued for (ADR 0007) | Two user programs exchange a message; a call without the capability is refused | blocked: K8 |
 | K10 | Move the UART driver out of the kernel into a userspace server | The banner is printed by the server; killing the server does not stop the kernel | blocked: K9 |
 | K11 | Multi-core bring-up through PSCI | Four cores run threads | later |
+| K12 | Filesystem server with an in-memory filesystem | A user program creates, reads and deletes a file through the server | blocked: K10 |
+| K13 | Users and permissions in the Linux model (ADR 0007): users, groups, owner and permission bits enforced by the filesystem server, a root user, and a confirmed step to act as root | A user is refused a file they have no permission for; root is not; the kernel holds no notion of a user | blocked: K12 |
 
 K10 is the point where the system is a microkernel in practice (ADR 0001).
 
@@ -72,7 +74,7 @@ runtime before it has userspace, memory management and a filesystem.
 |---|---|---|---|
 | S1 | Run Bonsai 8B locally with `llama.cpp` (`llama-server`). Measure tokens per second, time to first token and memory at 8k and 32k context. Record one tool call end to end | Numbers and the tool-call transcript recorded in `docs/`, with the exact commands | next |
 | S2 | Action plan format. ADR first: the structured actions the model may emit (including proposing a SOUL change, ADR 0006), the capability each one needs, and how output is constrained to the format | ADR accepted; a schema file exists | blocked: S1 |
-| S3 | Shell prototype on the host: natural language to plan, deterministic capability broker that validates it, dry-run and confirmation, a log of every model decision (ADR 0002) | A session can turn "list the largest files here" into a validated plan and run it | blocked: S2 |
+| S3 | Shell prototype on the host: natural language to plan, deterministic capability broker that validates it against the user's permissions and the action's capability, never more than both allow (ADR 0007), dry-run and confirmation, a log of every model decision (ADR 0002) | A session can turn "list the largest files here" into a validated plan and run it | blocked: S2 |
 | S4 | Evaluation set: intents with expected plans. Measure Bonsai 8B, and compare with at least one alternative that has native tool calling | Accuracy table in `docs/`; decision to keep or change the model | blocked: S3 |
 | S5 | Deterministic fallback shell: the same actions typed as commands, with no model loaded | Every action in the format is reachable without the model | blocked: S3 |
 | S6 | Bridge into the OS: the shell runs on the host and talks to the kernel over a virtual serial channel | A plan produced on the host is executed by a user program in the OS | blocked: S5, K10 |
@@ -121,7 +123,7 @@ whole workspace.
 | Item | Session | Status |
 |---|---|---|
 | C1 | Linux personality: load a static aarch64 Linux "hello world" and serve the system calls it makes | blocked: K8 |
-| C2 | Wider system call coverage, driven by a static BusyBox | blocked: C1, a filesystem server |
+| C2 | Wider system call coverage, driven by a static BusyBox | blocked: C1, K13 |
 | C3 | Lightweight virtual machine as fallback | later |
 | C4 | x86_64 port, then binary translation | later |
 

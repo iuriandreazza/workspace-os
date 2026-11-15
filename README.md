@@ -61,6 +61,7 @@ passing.
 - [ADR 0004: aarch64 as the first target architecture](docs/adr/0004-aarch64-first.md)
 - [ADR 0005: GPL-2.0 licence](docs/adr/0005-gpl2-licence.md)
 - [ADR 0006: System persona, the SOUL and the voice, defined at installation](docs/adr/0006-system-persona-soul-and-voice.md)
+- [ADR 0007: Linux-style user permissions over kernel capabilities](docs/adr/0007-linux-style-user-permissions.md)
 
 ## Licence
 
