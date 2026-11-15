@@ -40,8 +40,8 @@ cargo run                      # boot it in QEMU (exit with Ctrl-A then X)
 - [ADR 0002: Models as control plane over a deterministic core](docs/adr/0002-models-as-control-plane.md)
 - [ADR 0003: Model-assisted driver conversion and package registry](docs/adr/0003-driver-conversion-and-package-registry.md)
 - [ADR 0004: aarch64 as the first target architecture](docs/adr/0004-aarch64-first.md)
-- [ADR 0005: AGPL-3.0 licence](docs/adr/0005-agpl-licence.md)
+- [ADR 0005: GPL-2.0 licence](docs/adr/0005-gpl2-licence.md)
 
 ## Licence
 
-[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`).
+[GNU General Public License v2.0 only](LICENSE) (`GPL-2.0-only`).

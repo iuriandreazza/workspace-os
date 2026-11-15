@@ -38,8 +38,8 @@ One package manager installs both drivers and programs.
   common network cards in the install image and support USB tethering.
 - **Licence.** Linux drivers are GPL-2.0 and a translation is a derivative
   work, so converted drivers are expected to be GPL-2.0 and their source must
-  be published. ADR 0005 covers how this fits with the AGPL-3.0 licence of
-  the OS.
+  be published. ADR 0005 licenses the OS under GPL-2.0-only as well, so both
+  can be combined.
 
 ## Consequences
 
