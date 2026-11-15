@@ -1,0 +1,10 @@
+[workspace]
+members = ["kernel"]
+resolver = "3"
+
+# A bare-metal kernel has no unwinder to run.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

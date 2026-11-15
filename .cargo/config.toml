@@ -1,0 +1,6 @@
+[build]
+# Soft-float: the kernel must not touch FP/SIMD registers, which trap at EL1 until enabled.
+target = "aarch64-unknown-none-softfloat"
+
+[target.aarch64-unknown-none-softfloat]
+runner = "qemu-system-aarch64 -machine virt -cpu cortex-a72 -nographic -kernel"
