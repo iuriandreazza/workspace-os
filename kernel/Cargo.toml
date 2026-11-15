@@ -1,0 +1,12 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+# The std test harness cannot link into a bare-metal binary.
+test = false
+bench = false
