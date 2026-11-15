@@ -62,7 +62,8 @@ Pull requests that only touch documentation (`docs/`, `README.md`,
 
 - Semantic commit messages and branch names in English (`feat`, `fix`, `docs`,
   `refactor`, `chore`).
-- Do not add a `Co-Authored-By` trailer for Claude.
+- No Claude attribution anywhere: no `Co-Authored-By` trailer in commits and
+  no "Generated with Claude Code" line in pull request descriptions.
 - One branch per piece of work; open a pull request against `main`.
 
 ## Code rules specific to this project
