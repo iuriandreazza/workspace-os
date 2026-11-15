@@ -3,4 +3,5 @@
 target = "aarch64-unknown-none-softfloat"
 
 [target.aarch64-unknown-none-softfloat]
-runner = "qemu-system-aarch64 -machine virt -cpu cortex-a72 -nographic -kernel"
+# Machine flags must match scripts/boot-smoke-test.sh.
+runner = "qemu-system-aarch64 -machine virt -cpu cortex-a72 -nodefaults -display none -serial mon:stdio -kernel"

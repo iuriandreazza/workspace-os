@@ -1,7 +1,15 @@
-// Entry point. QEMU `virt` jumps here at EL1 with the MMU off.
+// Entry point. QEMU `virt` jumps here with the MMU off, at EL1 by default.
 .section .text.boot
 .global _start
 _start:
+    // Interrupts stay masked until the kernel installs an exception table.
+    msr  daifset, #0xf
+
+    // Only the boot core runs the kernel: there is a single boot stack.
+    mrs  x0, mpidr_el1
+    and  x0, x0, #0xffffff
+    cbnz x0, .Lpark
+
     adrp x0, __stack_top
     add  x0, x0, :lo12:__stack_top
     mov  sp, x0
@@ -18,6 +26,6 @@ _start:
     b    1b
 2:
     bl   kernel_main
-3:
+.Lpark:
     wfe
-    b    3b
+    b    .Lpark

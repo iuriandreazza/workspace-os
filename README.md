@@ -20,7 +20,7 @@ the serial console. Nothing else exists yet.
 ## Usage
 
 ```bash
-pnpm install                   # once per clone: installs the git hooks
+pnpm install                   # once per clone and per git worktree: installs the git hooks
 cargo build                    # build the kernel
 cargo run                      # boot it in QEMU (exit with Ctrl-A then X)
 ./scripts/check.sh             # format, lint and boot smoke test
@@ -31,6 +31,9 @@ cargo run                      # boot it in QEMU (exit with Ctrl-A then X)
 `./scripts/check.sh` is the single gate for a change. The husky `pre-commit`
 hook runs it before every commit, and CI runs it on every pull request and on
 `main`.
+
+The hook only exists in a worktree where `pnpm install` has run; without it,
+commits go through unchecked and CI is the only gate.
 
 ## Layout
 

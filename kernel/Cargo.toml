@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-only"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "kernel"
 path = "src/main.rs"

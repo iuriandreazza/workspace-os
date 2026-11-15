@@ -1,4 +1,5 @@
 [toolchain]
-channel = "stable"
+# Pinned so the hook and CI use the same compiler, formatter and lints.
+channel = "1.100.0"
 targets = ["aarch64-unknown-none-softfloat"]
 components = ["rustfmt", "clippy"]

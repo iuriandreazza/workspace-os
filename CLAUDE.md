@@ -7,7 +7,7 @@ decision recorded in an ADR; propose a new ADR that supersedes it.
 ## Commands
 
 ```bash
-pnpm install          # once per clone: installs the git hooks (husky)
+pnpm install          # once per clone AND per worktree: installs the git hooks (husky)
 ./scripts/check.sh    # format, lint and boot smoke test: the full gate
 cargo run             # boot the kernel in QEMU (Ctrl-A then X to exit)
 ```
@@ -25,6 +25,11 @@ runs in three places and must stay the only one:
 
 Add a new check to `scripts/check.sh`, never to the hook or the workflow
 directly. Never bypass the hook with `--no-verify`.
+
+Husky generates the hook inside each worktree, so a new worktree has no hook
+until `pnpm install` runs there. Run it before the first commit in a worktree.
+The hook refuses to run while tracked files have unstaged changes, because the
+checks read the working tree.
 
 ## Review: always adversarial, always local
 
