@@ -106,6 +106,7 @@ whole workspace.
 | D1 | ADR: native driver API and driver server skeleton | blocked: K10 |
 | D2 | Hand-written reference drivers for the generic classes: virtio block and virtio network | blocked: D1 |
 | D3 | Conversion pipeline prototype, offline: one simple Linux driver through model translation, build and differential test in QEMU (ADR 0003) | blocked: D2 |
+| D3b | Evaluate a discriminative model (Jev) for the decisions around the translation, on the registry side only: matching a hardware identifier to its Linux driver, triaging whether a driver is convertible, scoring a converted driver before publication. It does not write the driver; the translation in D3 still needs a generative model | blocked: D3 |
 | D4 | Package format and registry: signature, provenance, trust level; local conversions marked unverified | blocked: D3 |
 | D5 | Registry-side conversion service | later |
 | D6 | Driver hot swap from generic to converted | blocked: D4 |
@@ -141,6 +142,30 @@ Sources: [PrismML announcement](https://prismml.com/news/bonsai-8b),
 [model card](https://huggingface.co/prism-ml/Bonsai-8B-gguf),
 [PrismML docs](https://docs.prismml.com/models/bonsai-8b.md),
 [run guide](https://github.com/PrismML-Eng/Bonsai-demo/blob/main/Bonsai1_README.md).
+
+## Model notes: Jev
+
+From the Wikipedia article read on 2026-11-15; performance figures are the
+vendor's own and nothing here was tested.
+
+- Discriminative model from TypeSafe AI, in limited early access since
+  September 2026. It answers typed questions (classification, regression)
+  with a probability estimate and does not generate text or code.
+- Proprietary, not open weights. The article does not say whether it can run
+  locally; it describes an API with a limit of 64k tokens per input.
+- Questions in one request are answered independently; a question that
+  depends on another answer needs a second request.
+
+What follows for this project:
+
+- It fits the rule "the model proposes, deterministic code decides"
+  (ADR 0002): a typed answer with a probability can be gated by a threshold.
+- It cannot convert a driver, because conversion is code generation.
+- Being proprietary and remote, it can sit in the registry-side conversion
+  service (ADR 0003) but not in the OS image, which must work offline and
+  without any model.
+
+Source: [Jev (AI model)](https://en.wikipedia.org/wiki/Jev_(AI_model)).
 
 ## Open items outside the sessions
 
