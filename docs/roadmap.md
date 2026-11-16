@@ -101,9 +101,10 @@ runtime before it has userspace, memory management and a filesystem.
 |---|---|---|---|
 | S1 | Run Bonsai 8B locally with `llama.cpp` (`llama-server`). Measure tokens per second, time to first token and memory at 8k and 32k context. Record one tool call end to end | Numbers and the tool-call transcript recorded in `docs/s1-bonsai-8b-local-run.md`, with the exact commands | done |
 | S2 | Action plan format. ADR first: the structured actions the model may emit (including proposing a SOUL change, ADR 0006), the capability each one needs, which ones need root and so a per-action confirmation (ADR 0007), and how output is constrained to the format | ADR accepted; a schema file exists | done |
-| S3 | Shell prototype on the host: natural language to plan, deterministic capability broker that validates it against the user's permissions and the action's capability, never more than both allow (ADR 0007), dry-run and confirmation, a log of every model decision (ADR 0002) | A session can turn "list the largest files here" into a validated plan and run it | next |
-| S4 | Evaluation set: intents with expected plans. Measure Bonsai 8B, and compare with at least one alternative that has native tool calling | Accuracy table in `docs/`; decision to keep or change the model | blocked: S3 |
-| S5 | Deterministic fallback shell: the same actions typed as commands, with no model loaded | Every action in the format is reachable without the model | blocked: S3 |
+| S3 | Shell prototype on the host: natural language to plan, deterministic capability broker that validates it against the user's permissions and the action's capability, never more than both allow (ADR 0007), dry-run and confirmation, a log of every model decision (ADR 0002) | A session can turn "list the largest files here" into a validated plan and run it. Report: `docs/s3-intent-shell-prototype.md` | done |
+| S3b | Terminal screen and path-free resources. ADR first, superseding the path-based parts of ADR 0011: the person never navigates the filesystem and does not see userspace or system space. The model names things by description or query, a deterministic resolver turns them into concrete resources before the broker, and the broker still checks real resources. The default view shows names; the real paths sit behind a details view that stays mandatory before any root confirmation (ADR 0007). Then the screen: header with user, model and log, a per-step table with the verdict and capability of each action, notes on incomplete results, a summary line, a separate panel for each root action | The same intents as S4 give the same validated actions with no path in the default view; a root confirmation still shows the exact action; the ADR is accepted | next |
+| S4 | Evaluation set: intents with expected plans. Measure Bonsai 8B, and compare with at least one alternative that has native tool calling | Accuracy table in `docs/`; decision to keep or change the model | next |
+| S5 | Deterministic fallback shell: the same actions typed as commands, with no model loaded | Every action in the format is reachable without the model | next |
 | S6 | Bridge into the OS: the shell runs on the host and talks to the kernel over a virtual serial channel | A plan produced on the host is executed by a user program in the OS | blocked: S5, K10 |
 | S7 | Run inference inside the OS | To be designed | later |
 | S8 | SOUL format, presets and per-user personality (ADR 0006): what the single SOUL file holds, the four ready-made profiles, how a user's personality (tone, voice, language, level of detail, name) layers on the SOUL without contradicting it, and the shell loading both. The broker reads neither | The same evaluation intents produce the same validated actions under every preset and personality; a personality that contradicts the SOUL is rejected | blocked: S4 |
@@ -113,9 +114,10 @@ runtime before it has userspace, memory management and a filesystem.
 | S11b | Voice confirmation of root actions (ADR 0007): voiceprint enrolment, a random challenge phrase, and the person's password as second factor; typed confirmation always available. Research the speaker-verification models, their error rates and licences first | A root action is refused for the wrong speaker, for a replayed recording, for audio the system itself is playing, and without the second factor; it passes with all three | blocked: S11, S10 |
 | S12 | First-boot flow inside the OS that runs the interview | To be designed; needs an installer, userspace, storage and audio drivers | later |
 
-Host-side code must not be built for the bare-metal target. Decide in S3
-where it lives: `.cargo/config.toml` currently sets the kernel target for the
-whole workspace.
+Host-side code must not be built for the bare-metal target. It lives in the
+`intent-shell` crate, built with `--target "$host_target"` like `devicetree`
+and left out of the workspace's `default-members` (S3,
+`docs/s3-intent-shell-prototype.md`).
 
 ## Track R: research and articles
 

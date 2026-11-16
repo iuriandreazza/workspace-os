@@ -26,9 +26,13 @@ cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftes
 # built for the bare-metal target.
 host_target="$(rustc -vV | sed -n 's/^host: //p')"
 cargo clippy --all-targets -p devicetree -p physmem --target "$host_target" -- -D warnings
+# The intent shell is host code (std, sockets, the real filesystem), so like the
+# device tree reader it is built for the host. Its tests never need the model.
+cargo clippy --all-targets -p intent-shell --target "$host_target" -- -D warnings
 
 echo "==> unit tests"
 cargo test --quiet -p devicetree -p physmem --target "$host_target"
+cargo test --quiet -p intent-shell --target "$host_target"
 
 echo "==> boot smoke test"
 ./scripts/boot-smoke-test.sh

@@ -31,7 +31,8 @@ Next milestone: the MMU, the base for isolated processes. The full plan is in [d
 git config core.hooksPath .githooks   # once per clone: enables the git hooks
 cargo build                           # build the kernel
 cargo run                             # boot it in QEMU (exit with Ctrl-A then X)
-./scripts/check.sh                    # format, lint and boot smoke test
+./scripts/check.sh                    # format, lint, unit tests and boot smoke test
+./scripts/intent-shell.sh             # the intent shell prototype, on the host (needs llama-server)
 ```
 
 ## Checks
