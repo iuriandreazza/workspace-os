@@ -3,7 +3,7 @@ title: "Roadmap"
 type: roadmap
 status: active
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-16
 tags: [roadmap, planning, kernel, slm, drivers]
 ---
 
@@ -42,6 +42,7 @@ listed), `later` (not designed yet).
 | P | Policy plane (purpose-trained models) | after K7 |
 | D | Drivers and packages | after K10 |
 | C | Compatibility with other systems | after K8 |
+| T | Tooling and the gate | now, one item at a time |
 
 K is sequential: each item builds on the previous one. S and R do not touch
 kernel files, so they can run in separate sessions at the same time as K.
@@ -160,6 +161,12 @@ and left out of the workspace's `default-members` (S3,
 | C2 | Wider system call coverage, driven by a static BusyBox | blocked: C1, K13 |
 | C3 | Lightweight virtual machine as fallback | later |
 | C4 | Binary translation, to run programs built for the other architecture | blocked: K14 |
+
+## Track T: tooling and the gate
+
+| Item | Session | Gate addition | Status |
+|---|---|---|---|
+| T1 | Automatic licence check of the third-party crates (ADR 0005, ADR 0017) | `scripts/check-licences.py` with unit tests: a crate with a refused licence, no licence, or an MPL-2.0 crate or version not in the ADR 0017 table fails the gate | done |
 
 ## Model notes: Bonsai 8B
 

@@ -14,9 +14,15 @@ require_tool() {
 
 require_tool cargo "Install Rust with rustup and add its bin directory to PATH."
 require_tool qemu-system-aarch64 "Install QEMU."
+require_tool python3 "Install Python 3 (standard library only; the licence check uses it)."
 
 echo "==> format"
 cargo fmt --all --check
+
+echo "==> licences"
+# Third-party licences against ADR 0005 and ADR 0017; its decision logic has unit tests.
+python3 -I scripts/test_check_licences.py
+python3 -I scripts/check-licences.py
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings
