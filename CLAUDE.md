@@ -38,6 +38,18 @@ untracked files, because the checks read the working tree.
 `main` is protected on GitHub: no direct push, and a pull request needs the CI
 check `Format, lint and boot` to pass.
 
+## Showing that it runs
+
+Every pull request that changes the kernel or the bootloader includes, in its
+description, the serial output of a real boot of its final commit
+(`cargo run`), copied as printed and not summarised. When the change adds
+behaviour that only another boot shows (a different memory size, another
+exception level, a boot that must end in a panic), include that boot too,
+with the exact command.
+
+Passing checks say the gate is green; the output shows the user what the
+system actually does.
+
 ## Review: always adversarial, always local
 
 Every pull request that changes code or tooling is reviewed locally and

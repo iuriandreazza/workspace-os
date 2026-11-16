@@ -23,7 +23,9 @@ are in `CLAUDE.md`.
 4. Implement it together with the gate addition the item names. A session is
    not done until `./scripts/check.sh` fails when the new behaviour is broken.
 5. Run the local adversarial review until a round has no confirmed finding.
-6. Open the pull request and record the review outcome in it. The user merges.
+6. Open the pull request and record the review outcome in it. For a change
+   to the kernel or the bootloader, also paste the serial output of a real
+   boot (`CLAUDE.md`, "Showing that it runs"). The user merges.
 7. Mark the item done here and update the notes that describe the files touched.
 
 Status values: `done`, `next` (ready to start), `blocked` (waiting on the items
