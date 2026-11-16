@@ -40,8 +40,10 @@ pub fn discover(boot_address: usize) -> Result<Board, Error> {
 
 fn read_device_tree(address: usize) -> Result<Board, Error> {
     // SAFETY: the address is either the loader's device tree pointer or the
-    // start of RAM on QEMU `virt`, where the blob lives. Both are RAM that
-    // nothing writes to during boot; the contents are validated by the reader.
+    // start of RAM on QEMU `virt`, where the blob lives. Nothing writes there
+    // during boot. The contents are validated by the reader; that the claimed
+    // size stays inside RAM is trusted from the loader, as the boot protocol
+    // requires.
     let fdt = unsafe { Fdt::from_address(address) }?;
     Ok(Board {
         memory: fdt.memory()?,
