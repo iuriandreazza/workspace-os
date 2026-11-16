@@ -6,6 +6,8 @@
 //! made by the boot model (ADR 0009) or by the loaders of other kernels takes
 //! the same place without changing this module.
 
+use core::num::NonZeroU32;
+
 use crate::{MODE_NORMAL, MODE_RECOVERY};
 
 /// One line of the menu.
@@ -34,6 +36,12 @@ pub const DEFAULT_ENTRY: usize = 0;
 
 /// How long the menu waits for a key before it starts the default entry.
 pub const AUTOBOOT_SECONDS: u32 = 3;
+// Zero would read as "no countdown" and leave an unattended machine on the menu.
+const _: () = assert!(AUTOBOOT_SECONDS > 0);
+
+/// The UEFI scan codes (UEFI specification, `EFI_INPUT_KEY`) the menu uses.
+const SCAN_CODE_UP: u16 = 0x01;
+const SCAN_CODE_DOWN: u16 = 0x02;
 
 /// What the person pressed, already reduced to what the menu understands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +53,27 @@ pub enum Key {
     Char(char),
     /// Any other key. It still stops the countdown.
     Other,
+}
+
+impl Key {
+    /// A key with no character: arrows move, anything else only stops the
+    /// countdown. Kept here, away from the firmware, so the host can test
+    /// that Up and Down are not swapped.
+    pub fn from_scan_code(code: u16) -> Self {
+        match code {
+            SCAN_CODE_UP => Self::Up,
+            SCAN_CODE_DOWN => Self::Down,
+            _ => Self::Other,
+        }
+    }
+
+    /// A key with a character; the Enter key arrives as a carriage return.
+    pub fn from_char(character: char) -> Self {
+        match character {
+            '\r' | '\n' => Self::Enter,
+            other => Self::Char(other),
+        }
+    }
 }
 
 /// What the caller does after a key or a tick.
@@ -67,17 +96,18 @@ pub struct Menu<'a> {
 
 impl<'a> Menu<'a> {
     /// A menu over `entries` that starts `default` after `autoboot_seconds`
-    /// without a key; `None` waits forever. `None` is returned for an empty
-    /// list or a default outside it, which a menu cannot answer.
+    /// without a key; `None` waits forever, which is a choice and not what a
+    /// zero means. `None` is returned for an empty list or a default outside
+    /// it, which a menu cannot answer.
     pub fn new(
         entries: &'a [Entry<'a>],
         default: usize,
-        autoboot_seconds: Option<u32>,
+        autoboot_seconds: Option<NonZeroU32>,
     ) -> Option<Self> {
         (default < entries.len()).then_some(Self {
             entries,
             selected: default,
-            seconds_left: autoboot_seconds.filter(|&seconds| seconds > 0),
+            seconds_left: autoboot_seconds.map(NonZeroU32::get),
         })
     }
 
@@ -152,7 +182,7 @@ mod tests {
     use crate::boot_mode_name;
 
     fn built_in() -> Menu<'static> {
-        Menu::new(&BUILT_IN, DEFAULT_ENTRY, Some(AUTOBOOT_SECONDS)).unwrap()
+        Menu::new(&BUILT_IN, DEFAULT_ENTRY, NonZeroU32::new(AUTOBOOT_SECONDS)).unwrap()
     }
 
     #[test]
@@ -229,11 +259,36 @@ mod tests {
 
     #[test]
     fn without_a_timeout_the_menu_waits_for_a_person() {
-        for seconds in [None, Some(0)] {
-            let mut menu = Menu::new(&BUILT_IN, DEFAULT_ENTRY, seconds).unwrap();
-            assert_eq!(menu.seconds_left(), None);
-            assert_eq!(menu.tick(), Step::Wait);
-        }
+        let mut menu = Menu::new(&BUILT_IN, DEFAULT_ENTRY, None).unwrap();
+        assert_eq!(menu.seconds_left(), None);
+        assert_eq!(menu.tick(), Step::Wait);
+    }
+
+    #[test]
+    fn up_and_down_are_not_swapped() {
+        // The values are the UEFI specification's, not the menu's own.
+        assert_eq!(Key::from_scan_code(0x01), Key::Up);
+        assert_eq!(Key::from_scan_code(0x02), Key::Down);
+        assert_eq!(Key::from_scan_code(0x03), Key::Other);
+        assert_eq!(Key::from_scan_code(0x17), Key::Other);
+        // With three entries the direction shows.
+        let entries = [Entry {
+            label: "a",
+            boot_mode: 0,
+        }; 3];
+        let mut menu = Menu::new(&entries, 1, None).unwrap();
+        menu.press(Key::from_scan_code(0x02));
+        assert_eq!(menu.selected(), 2);
+        menu.press(Key::from_scan_code(0x01));
+        menu.press(Key::from_scan_code(0x01));
+        assert_eq!(menu.selected(), 0);
+    }
+
+    #[test]
+    fn enter_arrives_as_a_carriage_return_or_a_line_feed() {
+        assert_eq!(Key::from_char('\r'), Key::Enter);
+        assert_eq!(Key::from_char('\n'), Key::Enter);
+        assert_eq!(Key::from_char('2'), Key::Char('2'));
     }
 
     #[test]
@@ -258,7 +313,7 @@ mod tests {
                 boot_mode: 1,
             },
         ];
-        let mut menu = Menu::new(&entries, 2, Some(1)).unwrap();
+        let mut menu = Menu::new(&entries, 2, NonZeroU32::new(1)).unwrap();
         assert_eq!(menu.tick(), Step::Boot(2));
         let mut menu = Menu::new(&entries, 0, None).unwrap();
         menu.press(Key::Up);

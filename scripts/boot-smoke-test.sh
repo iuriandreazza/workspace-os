@@ -388,7 +388,7 @@ drive_menu() {
             hold)
                 sleep $((AUTOBOOT_SECONDS + 2))
                 # The plain log: a colour code sits between the tag and the text.
-                if grep -qF "booted on aarch64" "$serial_log" || plain_log | grep -qF "(boot mode "; then
+                if grep -qF "booted on aarch64" "$serial_log" || log_has "(boot mode "; then
                     fail "the boot continued by itself while the menu waited for a key"
                 fi
                 ;;
@@ -398,11 +398,24 @@ drive_menu() {
     done
 }
 
+# log_has TEXT: the plain log holds TEXT. The log is captured first: with
+# `pipefail`, `grep -q` ending a pipeline early could make it fail.
+log_has() {
+    local log
+    log="$(plain_log)"
+    grep -qF -- "$1" <<< "$log"
+}
+
+# now_ms: milliseconds on a monotonic clock, for the countdown's length.
+now_ms() {
+    python3 -I -c 'import time; print(time.monotonic_ns() // 1000000)'
+}
+
 # expect_menu_entries: the menu on the console lists every entry, numbered.
 expect_menu_entries() {
     local entry
     for entry in "1  Normal" "2  Recovery"; do
-        if ! plain_log | grep -qF -- "$entry"; then
+        if ! log_has "$entry"; then
             fail "the boot menu does not list '$entry'"
         fi
     done
@@ -425,13 +438,25 @@ check_uefi_boot() {
     reason="chosen on the keyboard"
     [[ -n "$keys" ]] || reason="chosen by the timeout"
     BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
-    local console=()
-    [[ -z "$keys" ]] || console=(--keys)
-    start_qemu "$1" "${console[@]}" -machine virt,acpi=off -m "${mib}M" -bios "$uefi_firmware" \
+    local console=""
+    [[ -z "$keys" ]] || console="--keys"
+    # Unquoted on purpose: an empty array breaks `set -u` on bash before 4.4.
+    # shellcheck disable=SC2086
+    start_qemu "$1" $console -machine virt,acpi=off -m "${mib}M" -bios "$uefi_firmware" \
         -drive "file=$disk_image,format=raw,if=virtio" "${@:6}"
 
     if [[ -n "$keys" ]]; then
         drive_menu "$1" "$keys"
+    else
+        # Nobody answers: the default entry starts, and only after the whole
+        # countdown (less a second for the polling here), not at once.
+        local menu_drawn menu_done
+        wait_for_line "$MENU_READY"
+        menu_drawn="$(now_ms)"
+        wait_for_line "starting Normal (boot mode"
+        menu_done="$(now_ms)"
+        [[ $((menu_done - menu_drawn)) -ge $(((AUTOBOOT_SECONDS - 1) * 1000)) ]] \
+            || fail "the default entry started $((menu_done - menu_drawn)) ms after the menu, before the ${AUTOBOOT_SECONDS} s countdown ended"
     fi
     wait_for_banner
     wait_for_line "$RESUME_MARKER"

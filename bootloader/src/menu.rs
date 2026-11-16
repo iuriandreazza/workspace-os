@@ -9,12 +9,14 @@ use core::time::Duration;
 
 use bootinfo::menu::{Entry, Key, Menu, Step};
 use uefi::boot;
-use uefi::proto::console::text::{Key as UefiKey, ScanCode};
+use uefi::proto::console::text::Key as UefiKey;
 
 use crate::ui;
 
-const POLL: Duration = Duration::from_millis(100);
-const POLLS_PER_SECOND: u32 = 10;
+const POLL_MILLIS: u64 = 100;
+const POLL: Duration = Duration::from_millis(POLL_MILLIS);
+/// The countdown counts polls, so a slow console makes it longer, never shorter.
+const POLLS_PER_SECOND: u32 = (1000 / POLL_MILLIS) as u32;
 /// Keys the firmware may have buffered before the menu was drawn (a key
 /// pressed to enter the firmware's own setup, for one) are dropped, so they
 /// do not choose an entry nobody saw. A bound keeps a console that never runs
@@ -103,12 +105,7 @@ fn next_key() -> Option<Key> {
 
 fn translate(key: UefiKey) -> Key {
     match key {
-        UefiKey::Special(ScanCode::UP) => Key::Up,
-        UefiKey::Special(ScanCode::DOWN) => Key::Down,
-        UefiKey::Special(_) => Key::Other,
-        UefiKey::Printable(character) => match char::from(character) {
-            '\r' | '\n' => Key::Enter,
-            other => Key::Char(other),
-        },
+        UefiKey::Special(code) => Key::from_scan_code(code.0),
+        UefiKey::Printable(character) => Key::from_char(char::from(character)),
     }
 }

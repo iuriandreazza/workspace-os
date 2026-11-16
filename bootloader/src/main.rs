@@ -233,7 +233,7 @@ fn run() -> Outcome<core::convert::Infallible> {
     let menu = bootinfo::menu::Menu::new(
         &bootinfo::menu::BUILT_IN,
         bootinfo::menu::DEFAULT_ENTRY,
-        Some(bootinfo::menu::AUTOBOOT_SECONDS),
+        core::num::NonZeroU32::new(bootinfo::menu::AUTOBOOT_SECONDS),
     )
     .ok_or(Failure::Message("the boot menu has no entry to start"))?;
     let (entry, reason) = menu::choose(menu);

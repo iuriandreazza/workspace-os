@@ -177,3 +177,9 @@ Things that matter, each found by running it:
 - `-accel hvf` and `-accel kvm` boots.
 - A real Arm machine.
 - UEFI firmware other than QEMU's EDK2 and VirtualBox's.
+- The boot menu on VirtualBox. The VirtualBox section above was run before the
+  menu existed; its serial port is output only there, so the menu would count
+  down and start Normal.
+- A key typed on a screen console (a graphical window or a real keyboard). The
+  gate types on the serial line only; the same firmware input protocol serves
+  both, but only the serial path was run.
