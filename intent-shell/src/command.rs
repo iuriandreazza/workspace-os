@@ -495,8 +495,13 @@ fn parse_step(number: usize, words: &[Word]) -> Result<(&'static Command, Value)
         .iter()
         .find(|c| c.group == group.text && c.verb == verb.text)
         .ok_or_else(|| {
+            let hint = if group.text.contains('.') {
+                "; write `fs list`, not `fs.list`"
+            } else {
+                ""
+            };
             CommandError::new(format!(
-                "unknown command {} {}; try help",
+                "unknown command {} {}{hint}; try help",
                 group.text, verb.text
             ))
         })?;
@@ -585,7 +590,9 @@ fn build_arg(
         Arg::Text(key) => (*key, Value::String(required(flags, key)?)),
         Arg::Number(key) => {
             let text = required(flags, key)?;
-            let number: u32 = text.parse().map_err(|_| {
+            // Digits only: no sign, no space, nothing a number would not have.
+            let digits = text.chars().all(|c| c.is_ascii_digit());
+            let number: u32 = text.parse().ok().filter(|_| digits).ok_or_else(|| {
                 CommandError::new(format!(
                     "{name}: --{} must be a whole number from 0 to 4294967295",
                     flag_name(key)

@@ -52,7 +52,7 @@ fn a_typed_command_runs_through_the_broker_with_no_model() {
     let (out, log) = run("fs find_largest --in downloads --count 1\n", &[]);
     assert!(out.contains("model  \"none (commands only)\""), "{out}");
     assert!(out.contains("command> "), "{out}");
-    assert!(out.contains("You typed:"), "{out}");
+    assert!(out.contains("Typed commands:"), "{out}");
     assert!(out.contains("\"big.iso\" (Downloads)  3000 bytes"), "{out}");
     assert!(!out.contains("model could not be reached"), "{out}");
     assert!(log.contains("\"event\":\"command\""), "{log}");

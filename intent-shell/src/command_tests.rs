@@ -451,7 +451,7 @@ fn seen(trace: &Trace, host: &FakeHost) -> Value {
             .lines()
             .map(|line| {
                 // The one place the screen says who wrote the plan.
-                let cut = ["  You typed:", "  The model says:"]
+                let cut = ["  Typed commands:", "  The model says:"]
                     .iter()
                     .filter_map(|who| line.find(who))
                     .min();
@@ -812,7 +812,7 @@ fn the_screen_says_who_typed_the_plan() {
     assert_eq!(review.origin, Origin::Typed);
     let screen = plan_screen(review, View::Friendly);
     assert!(
-        screen.contains("You typed: \"fs.find_largest\""),
+        screen.contains("Typed commands: \"fs.find_largest\""),
         "{screen}"
     );
     assert!(!screen.contains("The model says"));
@@ -1201,4 +1201,14 @@ fn help_and_errors_advertise_only_flags_that_are_accepted() {
 fn an_empty_argument_is_an_argument() {
     let plan = plan_of("process run --program echo -- \"\" x");
     assert!(format!("{:?}", plan.steps[0].spec).contains("argv: [\"\", \"x\"]"));
+}
+
+#[test]
+fn a_number_is_digits_and_a_dotted_name_gets_a_hint() {
+    for count in ["+3", "007x", "-1", "3.0"] {
+        let why = refused(&format!("fs find_largest --in home --count {count}"));
+        assert!(why.contains("whole number"), "{count}: {why}");
+    }
+    plan_of("fs find_largest --in home --count 007");
+    assert!(refused("fs.list --in downloads").contains("write `fs list`"));
 }

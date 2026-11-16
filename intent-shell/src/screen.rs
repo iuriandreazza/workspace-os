@@ -200,7 +200,7 @@ fn summary_line(review: &Review) -> String {
     };
     let who = match review.origin {
         Origin::Model => "The model says",
-        Origin::Typed => "You typed",
+        Origin::Typed => "Typed commands",
     };
     format!(
         "{} steps, {} actions: {ok} ok, {held} held for root, {refused} refused{choose}.  {who}: {}",

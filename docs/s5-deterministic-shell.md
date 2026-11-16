@@ -62,7 +62,7 @@ model text ───────────────────────
 - `Shell::handle_command` is a second entry to the function the model entry
   also ends in (`carry_out`). It never calls the planner, and a test uses a
   planner that panics if asked.
-- A typed plan carries `Origin::Typed`; the plan screen then says `You typed:`
+- A typed plan carries `Origin::Typed`; the plan screen then says `Typed commands:`
   where a model plan says `The model says:`. Nothing else on the screen changes.
 - The log records one `command` event (the line, the document it became, whether
   it was accepted and the error) where a model plan records `request` and
@@ -100,6 +100,9 @@ interface). `command_tests.rs`, none needing a model:
   a bad line is refused, a delete asks, root needs an administrator and gets its
   own panel, `--model` with `--no-model` is refused, and the log holds `command`
   and no model event;
+- `tests/model_session.rs` runs the real binary with a model (a fake
+  `llama-server` on a local port): a request reaches the model and is not read as a
+  command, so the `Option` around the planner cannot break the model path unseen;
 - a log that cannot be written stops a command before it runs anything, including
   a refused one.
 
@@ -117,6 +120,7 @@ Mutation check, by hand (each change applied, the suite run, the source restored
 | the shell checks a typed plan with `parse` instead of `parse_checked` | the semantic-rules test |
 | a session with no model still reads requests | the interface and binary tests |
 | the interface waits for a model under no model | the state test |
+| a session with a model reads commands, or uses the no-model planner, or loses its planner in `main` | `tests/model_session.rs` |
 
 ## Limits and follow-ups
 

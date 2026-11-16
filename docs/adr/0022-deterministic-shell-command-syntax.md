@@ -145,7 +145,7 @@ it cannot exceed its bound.
 
 ### 4. What the person sees and the log
 
-The plan screen says `You typed:` followed by that list where a model plan says
+The plan screen says `Typed commands:` followed by that list where a model plan says
 `The model says:`, so the screen never attributes a typed command to a model.
 Everything else on the screen is the same function. The log records
 `command` (the typed line, the generated document, and whether it was accepted
