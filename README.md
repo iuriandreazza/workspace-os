@@ -79,6 +79,7 @@ passing.
 - [ADR 0009: A small model in the bootloader detects and decides how to load kernels](docs/adr/0009-boot-model-detects-kernels.md)
 - [ADR 0010: Own minimal device tree reader, with no allocation](docs/adr/0010-own-device-tree-reader.md)
 - [ADR 0013: Boot handoff structure between the bootloader and the kernel](docs/adr/0013-boot-handoff-structure.md)
+- [ADR 0017: MPL-2.0 dependencies in a GPL-2.0-only system](docs/adr/0017-mpl2-dependencies.md)
 
 ## Licence
 
