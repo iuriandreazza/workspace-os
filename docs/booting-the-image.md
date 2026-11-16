@@ -132,8 +132,21 @@ Things that matter, each found by running it:
   image. It waits for the x86_64 port (roadmap item K14).
 - VirtualBox on Linux x86_64 is therefore not covered; use QEMU there.
 
+## When the bootloader stops
+
+The bootloader says why on the serial console and returns to the firmware
+after five seconds. The messages the gate provokes:
+
+| Message | Cause |
+|---|---|
+| `\KERNEL.ELF is not on the EFI system partition` | The image has no kernel at that path. |
+| `the kernel needs 0xA..0xB and the firmware refused it` | The firmware holds the kernel's load address (VirtualBox with 1024 MiB). The firmware's memory map is printed just before. |
+| `the firmware offers ACPI only (rsdp 0x...)` | ACPI is on and no device tree is published: turn ACPI off. |
+
 ## What was not verified
 
-- `-accel hvf` and `-accel kvm` boots.
+- `-accel kvm` boots. `-accel hvf -cpu host` was run by hand on Apple silicon
+  (K2b-3) with the default EL1 start; it cannot start the bootloader at EL2
+  there. These runs are not in the gate.
 - A real Arm machine.
 - UEFI firmware other than QEMU's EDK2 and VirtualBox's.

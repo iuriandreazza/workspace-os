@@ -46,6 +46,12 @@ const EXTRA_TABLES: usize = 64;
 enum Failure {
     Firmware(uefi::Error),
     Message(&'static str),
+    /// The firmware publishes ACPI (at this root pointer) and no device tree.
+    AcpiOnly(u64),
+    /// There is no kernel file on the partition.
+    KernelMissing,
+    /// A step on the kernel file failed: what was being done, and why.
+    KernelFile(&'static str, Status),
     Elf(elf::ElfError),
     Map(bootinfo::BuildError),
     Table(PageError),
@@ -62,6 +68,16 @@ impl core::fmt::Display for Failure {
         match self {
             Self::Firmware(error) => write!(f, "firmware: {error}"),
             Self::Message(text) => f.write_str(text),
+            Self::AcpiOnly(rsdp) => write!(
+                f,
+                "the firmware offers ACPI only (rsdp {rsdp:#x}): the kernel has no ACPI reader yet (on QEMU, use -machine virt,acpi=off)"
+            ),
+            Self::KernelMissing => {
+                write!(f, "{KERNEL_PATH} is not on the EFI system partition")
+            }
+            Self::KernelFile(action, status) => {
+                write!(f, "cannot {action} {KERNEL_PATH}: {status:?}")
+            }
             Self::Elf(error) => write!(f, "kernel image: {error}"),
             Self::Map(error) => write!(f, "{error}"),
             Self::Table(error) => write!(f, "{error}"),
@@ -93,7 +109,12 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
     ))?;
     let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(device)?;
     let mut root = fs.open_volume()?;
-    let handle = root.open(KERNEL_PATH, FileMode::Read, FileAttribute::empty())?;
+    let handle = root
+        .open(KERNEL_PATH, FileMode::Read, FileAttribute::empty())
+        .map_err(|e| match e.status() {
+            Status::NOT_FOUND => Failure::KernelMissing,
+            status => Failure::KernelFile("open", status),
+        })?;
     let mut file: RegularFile = handle
         .into_regular_file()
         .ok_or(Failure::Message("kernel path is a directory"))?;
@@ -104,10 +125,12 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
     let mut info_buffer = InfoBuffer([0u8; 256]);
     let size = file
         .get_info::<FileInfo>(&mut info_buffer.0)
-        .map_err(|e| Failure::Firmware(uefi::Error::new(e.status(), ())))?
+        .map_err(|e| Failure::KernelFile("read the size of", e.status()))?
         .file_size() as usize;
     let buffer = allocate(pages_for(size.max(1)))?;
-    let read = file.read(&mut buffer[..size])?;
+    let read = file
+        .read(&mut buffer[..size])
+        .map_err(|e| Failure::KernelFile("read", e.status()))?;
     if read != size {
         return Err(Failure::Message("short read of the kernel file"));
     }
@@ -184,9 +207,10 @@ fn find_tables() -> Tables {
             let fdt = unsafe { devicetree::Fdt::from_address(address) }.ok()?;
             Some((address, fdt.size()))
         });
-        let rsdp = find(ConfigTableEntry::ACPI2_GUID)
-            .or_else(|| find(ConfigTableEntry::ACPI_GUID))
-            .unwrap_or(0) as u64;
+        let rsdp = bootinfo::select_rsdp(
+            find(ConfigTableEntry::ACPI2_GUID).map(|a| a as u64),
+            find(ConfigTableEntry::ACPI_GUID).map(|a| a as u64),
+        );
         Tables { device_tree, rsdp }
     })
 }
@@ -237,11 +261,11 @@ fn run() -> Outcome<core::convert::Infallible> {
 
     let tables = find_tables();
     let Some((device_tree, device_tree_size)) = tables.device_tree else {
-        return Err(Failure::Message(if tables.rsdp != 0 {
-            "the firmware offers ACPI only: the kernel has no ACPI reader yet (on QEMU, use -machine virt,acpi=off)"
+        return Err(if tables.rsdp != 0 {
+            Failure::AcpiOnly(tables.rsdp)
         } else {
-            "the firmware publishes neither a device tree nor ACPI"
-        }));
+            Failure::Message("the firmware publishes neither a device tree nor ACPI")
+        });
     };
     // SAFETY: the blob was checked in `find_tables`.
     let fdt = unsafe { devicetree::Fdt::from_address(device_tree) }
@@ -311,6 +335,11 @@ fn run() -> Outcome<core::convert::Infallible> {
     info.kernel_size = plan.memory_size();
     info.efi_system_table =
         uefi::table::system_table_raw().map_or(0, |table| table.as_ptr() as u64);
+    // Only a kernel that must refuse the structure is booted with this.
+    #[cfg(feature = "selftest-unknown-boot-info-version")]
+    {
+        info.version_major = bootinfo::VERSION_MAJOR + 1;
+    }
     let info_address = info_page.as_ptr() as u64;
 
     let usable_bytes: u64 = entries[..count]
@@ -405,6 +434,8 @@ fn main() -> Status {
             boot::stall(Duration::from_secs(5));
             match failure {
                 Failure::Firmware(error) => error.status(),
+                Failure::KernelFile(_, status) => status,
+                Failure::KernelMissing => Status::NOT_FOUND,
                 _ => Status::LOAD_ERROR,
             }
         }

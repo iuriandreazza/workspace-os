@@ -13,6 +13,11 @@ bootinfo = { path = "../bootinfo" }
 devicetree = { path = "../devicetree" }
 uefi = { version = "0.41", default-features = false, features = ["panic_handler"] }
 
+[features]
+# Hands the kernel a boot info of a major version it does not know, so the
+# boot smoke test can see the kernel refuse it on the console the header names.
+selftest-unknown-boot-info-version = []
+
 [[bin]]
 name = "bootloader"
 path = "src/main.rs"

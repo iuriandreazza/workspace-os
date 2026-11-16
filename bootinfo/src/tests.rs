@@ -761,3 +761,306 @@ fn entries_of_one_kind_with_a_gap_do_not_merge() {
         Err(BuildError::Overlap)
     );
 }
+
+const KERNEL_BASE: u64 = 0x4020_0000;
+const KERNEL_SIZE: u64 = 0x30_0000;
+
+fn handoff_info() -> BootInfo {
+    let mut info = sample();
+    info.boot_mode = MODE_NORMAL;
+    info.kernel_base = KERNEL_BASE;
+    info.kernel_size = KERNEL_SIZE;
+    info
+}
+
+fn handoff_entries() -> Vec<MemoryEntry> {
+    vec![
+        entry(0x3000_0000, 0x10, MemoryKind::Reserved),
+        entry(0x4000_0000, 0x200, MemoryKind::BootloaderReclaimable),
+        entry(KERNEL_BASE, 0x300, MemoryKind::Kernel),
+        entry(0x4050_0000, 0x1000, MemoryKind::Usable),
+        entry(0x4200_0000, 8, MemoryKind::AcpiReclaimable),
+        entry(0x4300_0000, 8, MemoryKind::AcpiNvs),
+        entry(0x4400_0000, 8, MemoryKind::BadMemory),
+        entry(0x5000_0000, 0x10, MemoryKind::ReservedMapped),
+    ]
+}
+
+/// Runs the kernel's checks on `info` with `entries` as the map it points at.
+fn run_check(
+    info: BootInfo,
+    entries: &[MemoryEntry],
+) -> (Result<(HandoffSummary, BootInfo), Rejected>, bool) {
+    let bytes = map_of(entries, ENTRY_SIZE);
+    let mut map_read = false;
+    let result = check(Ok(info), |_| {
+        map_read = true;
+        MemoryMap::from_bytes(&bytes, ENTRY_SIZE).map_err(Error::BadMemoryMap)
+    })
+    .map(|handoff| {
+        (
+            HandoffSummary {
+                console: handoff.console,
+                ram_lowest: handoff.ram_lowest,
+                ram_total: handoff.ram_total,
+                entries: handoff.map.len(),
+            },
+            handoff.info,
+        )
+    });
+    (result, map_read)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct HandoffSummary {
+    console: usize,
+    ram_lowest: u64,
+    ram_total: u64,
+    entries: usize,
+}
+
+#[test]
+fn a_good_handoff_is_accepted_and_reports_what_the_kernel_needs() {
+    let info = handoff_info();
+    let (result, _) = run_check(info, &handoff_entries());
+    let (summary, accepted) = result.expect("accepted");
+    assert_eq!(accepted, info);
+    assert_eq!(
+        summary,
+        HandoffSummary {
+            console: 0x0900_0000,
+            // RAM is the usable, reclaimable and kernel entries, not the
+            // reserved ones, whatever their address.
+            ram_lowest: 0x4000_0000,
+            ram_total: (0x200 + 0x300 + 0x1000 + 8) * PAGE_SIZE,
+            entries: 8,
+        }
+    );
+}
+
+#[test]
+fn a_header_that_is_not_a_boot_info_is_refused_without_a_console() {
+    let mut bytes = handoff_info().to_bytes();
+    bytes[0] ^= 1;
+    let refused = check(BootInfo::parse(&bytes), |_| unreachable!("no map is read"));
+    assert_eq!(
+        refused.err(),
+        Some(Rejected {
+            error: HandoffError::Info(Error::BadMagic),
+            console: None
+        })
+    );
+    for (error, bytes) in [
+        (Error::TooSmall, &bytes[..8]),
+        (
+            Error::BadSize,
+            &{
+                let mut short = handoff_info().to_bytes();
+                short[12..16].copy_from_slice(&8u32.to_le_bytes());
+                short
+            }[..],
+        ),
+    ] {
+        let refused = check(BootInfo::parse(bytes), |_| unreachable!());
+        assert_eq!(
+            refused.err().map(|r| (r.error, r.console)),
+            Some((HandoffError::Info(error), None))
+        );
+    }
+    // SAFETY: a null address is refused before anything is read.
+    let parsed = unsafe { BootInfo::from_address(0) };
+    let refused = check(parsed, |_| unreachable!());
+    assert_eq!(
+        refused.err().map(|r| r.error),
+        Some(HandoffError::Info(Error::NullPointer))
+    );
+}
+
+#[test]
+fn an_unknown_version_is_refused_on_the_console_its_header_names() {
+    let mut bytes = handoff_info().to_bytes();
+    bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+    let refused = check(BootInfo::parse(&bytes), |_| unreachable!());
+    let refused = refused.err().expect("refused");
+    assert_eq!(
+        refused.error,
+        HandoffError::Info(Error::UnsupportedVersion {
+            major: 2,
+            minor: 0,
+            console_kind: CONSOLE_PL011,
+            console_base: 0x0900_0000,
+        })
+    );
+    assert_eq!(refused.console, Some(0x0900_0000));
+
+    // A console the kernel cannot drive cannot report the refusal either.
+    let mut bytes = handoff_info().to_bytes();
+    bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+    bytes[16..20].copy_from_slice(&CONSOLE_NONE.to_le_bytes());
+    let refused = check(BootInfo::parse(&bytes), |_| unreachable!());
+    assert_eq!(refused.err().map(|r| r.console), Some(None));
+}
+
+#[test]
+fn a_console_the_kernel_cannot_drive_is_refused() {
+    for (kind, base) in [
+        (CONSOLE_NONE, 0x0900_0000),
+        (CONSOLE_NS16550_MMIO, 0x0900_0000),
+        (CONSOLE_NS16550_PORT, 0x3f8),
+        (99, 0x0900_0000),
+        (CONSOLE_PL011, 0),
+    ] {
+        let mut info = handoff_info();
+        info.console_kind = kind;
+        info.console_base = base;
+        let (result, map_read) = run_check(info, &handoff_entries());
+        assert_eq!(
+            result.err(),
+            Some(Rejected {
+                error: HandoffError::UnsupportedConsole(kind),
+                console: None
+            }),
+            "console {kind} at {base:#x}"
+        );
+        assert!(!map_read, "the map is not read after a refused console");
+    }
+}
+
+#[test]
+fn another_architecture_is_refused_on_the_console() {
+    for arch in [ARCH_X86_64, 0, 7] {
+        let mut info = handoff_info();
+        info.arch = arch;
+        let (result, map_read) = run_check(info, &handoff_entries());
+        assert_eq!(
+            result.err(),
+            Some(Rejected {
+                error: HandoffError::UnsupportedArch(arch),
+                console: Some(0x0900_0000)
+            })
+        );
+        assert!(!map_read);
+    }
+}
+
+#[test]
+fn a_bad_memory_map_is_refused_on_the_console() {
+    let refuses = |info: BootInfo, entries: &[MemoryEntry], error: Error| {
+        let (result, map_read) = run_check(info, entries);
+        assert!(map_read);
+        assert_eq!(
+            result.err(),
+            Some(Rejected {
+                error: HandoffError::Info(error),
+                console: Some(0x0900_0000)
+            })
+        );
+    };
+    let bad = |reason| Error::BadMemoryMap(reason);
+    refuses(handoff_info(), &[], bad(MapError::Empty));
+
+    let mut unsorted = handoff_entries();
+    unsorted.swap(0, 3);
+    refuses(handoff_info(), &unsorted, bad(MapError::Unsorted));
+
+    let mut overlap = handoff_entries();
+    overlap[3].base = 0x4040_0000;
+    refuses(handoff_info(), &overlap, bad(MapError::Overlap));
+
+    let mut unaligned = handoff_entries();
+    unaligned[1].base += 0x10;
+    refuses(handoff_info(), &unaligned, bad(MapError::Misaligned));
+
+    // No RAM at all: a map of firmware regions only has no kernel entry.
+    refuses(
+        handoff_info(),
+        &[entry(0x3000_0000, 0x10, MemoryKind::Reserved)],
+        bad(MapError::KernelEntry),
+    );
+
+    // The kernel the structure describes is not the kernel entry of the map.
+    let mut info = handoff_info();
+    info.kernel_base += PAGE_SIZE;
+    refuses(info, &handoff_entries(), bad(MapError::KernelEntry));
+    let mut info = handoff_info();
+    info.kernel_size = 0;
+    refuses(info, &handoff_entries(), bad(MapError::KernelEntry));
+}
+
+#[test]
+fn a_map_that_cannot_be_read_is_refused_on_the_console() {
+    for error in [
+        Error::BadMemoryMap(MapError::EntrySize),
+        Error::BadMemoryMap(MapError::BadAddress),
+        Error::BadMemoryMap(MapError::TooLarge),
+    ] {
+        let refused = check(Ok(handoff_info()), |_| Err(error));
+        assert_eq!(
+            refused.err(),
+            Some(Rejected {
+                error: HandoffError::Info(error),
+                console: Some(0x0900_0000)
+            })
+        );
+    }
+}
+
+#[test]
+fn the_memory_map_view_of_a_structure_is_bounded_before_it_is_read() {
+    // The reads `BootInfo::memory_map` refuses before it touches memory.
+    let mut info = handoff_info();
+    // SAFETY: every structure below is refused before the map is read.
+    let refused = |info: &BootInfo| unsafe { info.memory_map() }.err();
+    info.memory_map_count = u64::MAX;
+    assert_eq!(
+        refused(&info),
+        Some(Error::BadMemoryMap(MapError::TooLarge))
+    );
+    info.memory_map_count = 1 << 40;
+    assert_eq!(
+        refused(&info),
+        Some(Error::BadMemoryMap(MapError::TooLarge))
+    );
+    info = handoff_info();
+    info.memory_map_entry_size = 16;
+    assert_eq!(
+        refused(&info),
+        Some(Error::BadMemoryMap(MapError::EntrySize))
+    );
+    info = handoff_info();
+    info.memory_map = 0;
+    assert_eq!(
+        refused(&info),
+        Some(Error::BadMemoryMap(MapError::BadAddress))
+    );
+    info.memory_map = 0x1001;
+    assert_eq!(
+        refused(&info),
+        Some(Error::BadMemoryMap(MapError::BadAddress))
+    );
+    info.memory_map = u64::MAX - 8;
+    assert_eq!(
+        refused(&info),
+        Some(Error::BadMemoryMap(MapError::BadAddress))
+    );
+}
+
+#[test]
+fn the_acpi_root_pointer_is_handed_over_as_the_firmware_has_it() {
+    // ACPI 2.0 wins when the firmware publishes both tables, zero is "none".
+    assert_eq!(select_rsdp(Some(0x2000), Some(0x1000)), 0x2000);
+    assert_eq!(select_rsdp(None, Some(0x1000)), 0x1000);
+    assert_eq!(select_rsdp(Some(0x2000), None), 0x2000);
+    assert_eq!(select_rsdp(None, None), 0);
+
+    // From the bootloader's structure, through the bytes, to what the kernel
+    // reports: QEMU's firmware never offers a device tree and ACPI together,
+    // so this is the only test of a non-zero value.
+    let mut info = handoff_info();
+    info.rsdp = 0x4fff_0000;
+    let (result, _) = run_check(
+        BootInfo::parse(&info.to_bytes()).unwrap(),
+        &handoff_entries(),
+    );
+    assert_eq!(result.expect("accepted").1.rsdp, 0x4fff_0000);
+}
