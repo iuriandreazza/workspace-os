@@ -632,11 +632,15 @@ fn a_single_match_from_a_search_that_did_not_finish_is_confirmed_by_the_person()
 }
 
 #[test]
-fn a_multibyte_name_over_the_byte_limit_is_refused_at_parse() {
+fn a_multibyte_name_over_the_byte_limit_passes_the_structure_and_fails_the_rules() {
     let name = "ã".repeat(200);
     let args = format!(r#"{{"target":{{"name":"{name}","in":"home","kind":"file"}}}}"#);
     let text = plan(&[step("s1", "fs.read", &args, "false")]);
-    assert!(crate::plan::parse(&text).is_err());
+    assert!(
+        crate::plan::parse(&text).is_ok(),
+        "the schema counts characters"
+    );
+    assert!(crate::plan::parse_checked(&text).is_err());
 }
 
 #[test]
@@ -772,4 +776,221 @@ fn a_place_under_another_spelling_is_still_a_place() {
         matches!(verdict, Verdict::Refused(Refusal::PlaceRoot(_))),
         "{verdict:?}"
     );
+}
+
+#[test]
+fn the_largest_files_of_a_place_in_two_folders_are_not_ranked_per_folder() {
+    let mut host = FakeHost::with_files(&[("/v/a", 5), ("/m/b", 9)]);
+    host.places.insert(
+        Place::Videos,
+        vec![PathBuf::from("/v"), PathBuf::from("/m")],
+    );
+    let args = r#"{"target":{"place":"videos"},"count":1}"#;
+    let result = run(
+        &[&plan(&[step("s1", "fs.find_largest", args, "false")])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[0].blocked,
+        Some(Refusal::CannotExpand(_))
+    ));
+    assert!(host.executed.borrow().is_empty());
+}
+
+#[test]
+fn two_steps_cannot_take_the_same_location() {
+    let host = files();
+    let to_z = |from: &str| {
+        format!(
+            r#"{{"from":{{"name":"{from}","in":"downloads","kind":"file"}},"to":{{"new_name":"z","in":"downloads"}}}}"#
+        )
+    };
+    let result = run(
+        &[&plan(&[
+            step("s1", "fs.move", &to_z("a"), "false"),
+            step("s2", "fs.move", &to_z("b"), "false"),
+        ])],
+        &host,
+        false,
+    );
+    let review = reviewed(&result.outcome);
+    assert_eq!(review.steps[0].items[0].verdict, Verdict::Allowed);
+    assert!(matches!(
+        review.steps[1].items[0].verdict,
+        Verdict::Refused(Refusal::ConflictsWithStep(..))
+    ));
+}
+
+#[test]
+fn a_step_cannot_act_on_what_an_earlier_step_removes() {
+    let host = files();
+    let result = run(
+        &[&plan(&[
+            step("s1", "fs.delete", &named("a"), "false"),
+            step("s2", "fs.delete", &named("a"), "false"),
+        ])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[1].items[0].verdict,
+        Verdict::Refused(Refusal::ConflictsWithStep(..))
+    ));
+}
+
+#[test]
+fn a_move_into_a_folder_that_holds_the_same_name_is_refused() {
+    let host = FakeHost::with_files(&[("/work/a.txt", 1), ("/docs/a.txt", 5)]);
+    let args =
+        r#"{"from":{"name":"a.txt","in":"downloads","kind":"file"},"to":{"place":"documents"}}"#;
+    let result = run(
+        &[&plan(&[step("s1", "fs.move", args, "false")])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[0].items[0].verdict,
+        Verdict::Refused(Refusal::DestinationTaken(_))
+    ));
+}
+
+#[test]
+fn two_steps_naming_one_file_in_different_case_conflict() {
+    let host = FakeHost::default();
+    let make = |name: &str| {
+        format!(
+            r#"{{"target":{{"new_name":"{name}","in":"downloads"}},"content":"x","mode":"create"}}"#
+        )
+    };
+    let result = run(
+        &[&plan(&[
+            step("s1", "fs.write", &make("Notes.txt"), "false"),
+            step("s2", "fs.write", &make("notes.txt"), "false"),
+        ])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[1].items[0].verdict,
+        Verdict::Refused(Refusal::ConflictsWithStep(..))
+    ));
+}
+
+#[test]
+fn creating_a_file_over_an_existing_one_is_refused_but_overwriting_is_not() {
+    let host = FakeHost::with_files(&[("/work/a.txt", 1)]);
+    let write = |mode: &str| {
+        format!(
+            r#"{{"target":{{"name":"a.txt","in":"downloads","kind":"file"}},"content":"x","mode":"{mode}"}}"#
+        )
+    };
+    let created = run(
+        &[&plan(&[step("s1", "fs.write", &write("create"), "false")])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&created.outcome).steps[0].items[0].verdict,
+        Verdict::Refused(Refusal::DestinationTaken(_))
+    ));
+    let replaced = run(
+        &[&plan(&[step(
+            "s1",
+            "fs.write",
+            &write("overwrite"),
+            "false",
+        )])],
+        &host,
+        false,
+    );
+    assert_eq!(
+        reviewed(&replaced.outcome).steps[0].items[0].verdict,
+        Verdict::Allowed
+    );
+}
+
+#[test]
+fn a_step_cannot_act_on_what_an_earlier_step_moved_away() {
+    let host = files();
+    let args = r#"{"from":{"name":"a","in":"downloads","kind":"file"},"to":{"new_name":"z","in":"downloads"}}"#;
+    let result = run(
+        &[&plan(&[
+            step("s1", "fs.move", args, "false"),
+            step("s2", "fs.delete", &named("a"), "false"),
+        ])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[1].items[0].verdict,
+        Verdict::Refused(Refusal::ConflictsWithStep(..))
+    ));
+}
+
+#[test]
+fn a_log_that_fails_at_any_event_stops_the_request() {
+    let host = reports();
+    let text = plan(&[step("s1", "fs.delete", &named("report"), "true")]);
+    let authority = Authority::full(user(true));
+    let events_when_it_works = {
+        let (result, _) = run_with(
+            &[&text],
+            &host,
+            &authority,
+            Answers::yes().picking(&[Some(0)]),
+            MemoryLog::default(),
+        );
+        assert!(matches!(result.outcome, Outcome::Executed { .. }));
+        result.log.events.len()
+    };
+    for accepted in 0..events_when_it_works {
+        let host = reports();
+        let (result, _) = run_with(
+            &[&text],
+            &host,
+            &authority,
+            Answers::yes().picking(&[Some(0)]),
+            MemoryLog::failing_after(accepted),
+        );
+        assert!(
+            !matches!(result.outcome, Outcome::Executed { .. }),
+            "the log failed after {accepted} events and the request still finished"
+        );
+    }
+}
+
+#[test]
+fn a_refusal_is_logged_too_and_a_log_that_fails_there_is_reported() {
+    let text = plan(&[step("s1", "fs.delete", &named("report"), "true")]);
+    let authority = Authority::full(user(true));
+    for (plan_yes, root_yes) in [(false, true), (true, false)] {
+        let answers = || {
+            let mut a = Answers::yes().picking(&[Some(0)]);
+            a.plan = plan_yes;
+            a.root = root_yes;
+            a
+        };
+        let (baseline, _) = run_with(
+            &[&text],
+            &reports(),
+            &authority,
+            answers(),
+            MemoryLog::default(),
+        );
+        for accepted in 0..baseline.log.events.len() {
+            let (result, _) = run_with(
+                &[&text],
+                &reports(),
+                &authority,
+                answers(),
+                MemoryLog::failing_after(accepted),
+            );
+            assert!(
+                matches!(result.outcome, Outcome::LogFailed { .. }),
+                "plan {plan_yes}, root {root_yes}, log failed after {accepted}: {:?}",
+                result.outcome
+            );
+        }
+    }
 }

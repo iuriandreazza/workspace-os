@@ -71,7 +71,7 @@ request ─► model (output constrained by the schema, version 2)
 
 ## Tests and the gate
 
-`./scripts/check.sh` runs 170 tests for `intent-shell`, none needing the model,
+`./scripts/check.sh` runs 179 tests for `intent-shell`, none needing the model,
 including ambiguity (the person picks, cancels, a pick outside the candidates),
 a name that matches nothing, more than 20 matches, a visible file the user
 may not read or delete, a reference that tries to reach what a direct path
@@ -151,9 +151,18 @@ Every output was valid and none held a path.
 - A name stored in a different Unicode normalisation than the model wrote it
   (NFD against NFC, common for downloaded files on macOS) is not found: telling
   them apart needs a normalisation table, which is a dependency this item did not add.
-- A move into a folder that already holds an item of that name is not checked.
+- The decision log is not protected from a delete that names it or a folder above
+  it; this matters once deletes run. The screen does not say whether a deleted
+  item is a folder.
+- A symlink to a folder is found as a file, not as a folder. `exists` and `same`
+  look at metadata during resolution and are not logged; only searches and reads are.
+- `allows` ignores the sticky bit on the folder that holds an item, and the
+  schema lets `fs.write` name a folder. Both only matter once writes run.
+- Two steps of one plan are compared by location only: deleting a folder and
+  acting on something inside it in the same plan is not flagged.
 - The schema is compared with the examples by `validate.py` by hand, not in the
-  gate (ADR 0011); the Rust parser is stricter than the schema for `2.0`.
+  gate (ADR 0011); the Rust parser is stricter than the schema for `2.0`. A name is bounded in
+  characters by the schema and in bytes by a rule (`NAME_MAX`).
 - A search runs again after each choice the person makes, so a plan with
   several ambiguities searches several times.
 - S4 reuses the eight intents above as its first cases. S5 types the

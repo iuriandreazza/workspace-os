@@ -13,7 +13,9 @@ use crate::reference::Place;
 
 /// A place and the folder it lives in, from the host.
 struct Root {
-    place: Place,
+    /// What the person sees: the place, or for a place that lives in several
+    /// folders the name of the folder, so the two are never mistaken.
+    title: String,
     path: PathBuf,
 }
 
@@ -77,9 +79,15 @@ fn roots(host: &dyn Host) -> Vec<Root> {
         .into_iter()
         .filter(|place| *place != Place::Everywhere)
         .flat_map(|place| {
-            host.place_roots(place)
-                .into_iter()
-                .map(move |path| Root { place, path })
+            let folders = host.place_roots(place);
+            let several = folders.len() > 1;
+            folders.into_iter().map(move |path| Root {
+                title: match path.file_name() {
+                    Some(name) if several => name.to_string_lossy().into_owned(),
+                    _ => place.title().to_owned(),
+                },
+                path,
+            })
         })
         .collect()
 }
@@ -121,12 +129,12 @@ fn first_depth(roots: &[Root], path: &Path) -> usize {
 
 fn render(roots: &[Root], path: &Path, depth: usize) -> String {
     if let Some(root) = roots.iter().find(|r| r.path == path) {
-        return root.place.title().to_owned();
+        return root.title.clone();
     }
     let all = folders(roots, path);
     let shown = &all[all.len() - depth.min(all.len())..];
     let home = home_of(roots, path);
-    let place = home.map_or("elsewhere", |r| r.place.title());
+    let place = home.map_or("elsewhere", |r| r.title.as_str());
     let mut container = vec![place.to_owned()];
     // Elsewhere hides every folder until two labels need telling apart.
     if shown.len() < all.len() && (home.is_some() || !shown.is_empty()) {
@@ -165,6 +173,23 @@ mod tests {
             [r#""a.pdf" (Documents › "taxes")"#]
         );
         assert_eq!(label(&["/etc/hosts"]), [r#""hosts" (elsewhere)"#]);
+    }
+
+    #[test]
+    fn a_place_in_two_folders_does_not_mix_them_up() {
+        let mut host = FakeHost::default();
+        host.places.insert(
+            Place::Videos,
+            vec![PathBuf::from("/h/Videos"), PathBuf::from("/h/Movies")],
+        );
+        let labels = Labels::build(
+            &host,
+            [Path::new("/h/Videos/a/log"), Path::new("/h/Movies/a/log")],
+        );
+        assert_ne!(
+            labels.of(Path::new("/h/Videos/a/log")),
+            labels.of(Path::new("/h/Movies/a/log"))
+        );
     }
 
     #[test]

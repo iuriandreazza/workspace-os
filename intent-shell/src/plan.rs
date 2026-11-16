@@ -361,18 +361,11 @@ impl RawTarget {
     }
 }
 
-/// The structural half of "a name is one entry": the schema bounds the length.
-/// What it may contain is a rule (`check_rules`), because the grammar the model
+/// The structural half of "a name is one entry": the schema bounds the length
+/// in characters. What it may contain, and that it fits in NAME_MAX bytes, is a rule (`check_rules`), because the grammar the model
 /// is constrained by cannot be given a pattern for it (ADR 0014).
 fn single_name(field: &str, name: &str) -> Result<(), PlanError> {
-    // NAME_MAX counts bytes; the schema can only count characters.
-    if name.is_empty() || name.len() > 255 {
-        return Err(PlanError::new(format!(
-            "{field} must have 1 to 255 bytes, has {}",
-            name.len()
-        )));
-    }
-    Ok(())
+    bounded(field, name, 1, 255)
 }
 
 /// A key that is there must hold a boolean: `null` is not the same as absent.

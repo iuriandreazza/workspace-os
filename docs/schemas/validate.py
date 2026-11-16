@@ -42,7 +42,7 @@ def semantic_errors(doc):
                     errors.append(f"{source} does not produce paths")
             if isinstance(value, dict):
                 name = value.get("name", value.get("new_name"))
-                if name is not None and (name in (".", "..") or "/" in name or "\0" in name):
+                if name is not None and (name in (".", "..") or "/" in name or "\0" in name or len(name.encode()) > 255):
                     errors.append(f"{s['id']}: {name!r} is not a single file name")
         if s["action"] == "user.manage":
             has_group = s["args"]["group"] is not None

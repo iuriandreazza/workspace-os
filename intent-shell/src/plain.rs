@@ -5,6 +5,7 @@
 
 use std::io::{self, IsTerminal, Write};
 
+use crate::action::printable;
 use crate::broker::Authority;
 use crate::host::UnixHost;
 use crate::log::JsonlLog;
@@ -42,13 +43,17 @@ fn read_line() -> Option<String> {
     match io::stdin().read_line(&mut line) {
         Ok(0) | Err(_) => None,
         Ok(_) => {
-            // A terminal shows what is typed; a script's answers would not
-            // appear anywhere, and a transcript has to show them.
-            if !io::stdin().is_terminal() {
-                print!("{line}");
-            }
+            echo_if_scripted(&line);
             Some(line)
         }
+    }
+}
+
+/// A terminal shows what is typed; a script's input would not appear anywhere,
+/// and a transcript has to show it.
+fn echo_if_scripted(line: &str) {
+    if !io::stdin().is_terminal() {
+        println!("{}", printable(line.trim_end(), false));
     }
 }
 
@@ -115,12 +120,15 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
         print!("intent> ");
         let _ = io::stdout().flush();
         let mut request = String::new();
-        if io::stdin()
-            .read_line(&mut request)
-            .map_err(|e| e.to_string())?
-            == 0
-        {
-            return Ok(());
+        match io::stdin().read_line(&mut request) {
+            Ok(0) => return Ok(()),
+            Ok(_) => echo_if_scripted(&request),
+            // One bad paste must not end the session.
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                println!("  that line is not valid text; try again");
+                continue;
+            }
+            Err(e) => return Err(e.to_string()),
         }
         let request = request.trim();
         if request.is_empty() {

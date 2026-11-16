@@ -119,6 +119,7 @@ impl Host for FakeHost {
 
     fn same(&self, a: &Path, b: &Path) -> bool {
         a == b
+            || a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
             || self
                 .aliases
                 .iter()
