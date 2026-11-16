@@ -66,8 +66,14 @@ def tools_prompt(prompt, derive_depends=False):
     start = next((i for i, line in enumerate(lines) if line.startswith("Things are never named")), None)
     if start is None:
         raise ValueError("cannot find the reference rules in the shell prompt")
-    preamble = DERIVED_PREAMBLE if derive_depends else TOOLS_PREAMBLE
-    return preamble + "\n" + "\n".join(lines[start:])
+    rules = "\n".join(lines[start:])
+    if derive_depends:
+        # The model has no depends_on to fill in, so the lines that talk about it go.
+        rules = rules.replace(" (put s1 in depends_on)", "")
+        rules = rules.replace("Rules: ids are s1, s2, ...; depends_on lists the step ids a step needs; ", "Rules: ")
+        if "depends_on" in rules:
+            raise ValueError("the shell prompt now says more about depends_on than the derived variant removes")
+    return (DERIVED_PREAMBLE if derive_depends else TOOLS_PREAMBLE) + "\n" + rules
 
 
 def inline(node, defs):

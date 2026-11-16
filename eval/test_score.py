@@ -349,6 +349,21 @@ class Failures(unittest.TestCase):
         }
         self.assertEqual(score.summarize(rows, intents)["total"]["failed"], 1)
 
+    def test_a_failed_retry_is_a_request_failure_too(self):
+        intents = [{"id": "a", "category": "x", "accept": []}]
+        rows = {"a": {"valid": False, "level": 0, "overreach": [], "errors": ["not JSON"],
+                      "retry": {"valid": False, "level": 0, "overreach": [], "errors": ["request failed: HTTP 500"]}}}
+        self.assertEqual(score.summarize(rows, intents)["total"]["failed"], 1)
+
+    def test_overreach_is_read_from_the_answer_the_shell_acts_on(self):
+        intents = [{"id": "a", "category": "x", "accept": []}]
+        harmful = {"valid": True, "level": 1, "overreach": ["fs.delete"], "off_target": ["fs.delete"], "errors": []}
+        rows = {"a": {"valid": False, "level": 0, "overreach": [], "off_target": [], "errors": ["x"], "retry": harmful}}
+        total = score.summarize(rows, intents)["total"]
+        self.assertEqual((total["overreach"], total["off_target"]), (1, 1))
+        first_valid = {**rows["a"], "valid": True, "retry": {**harmful, "overreach": []}}
+        self.assertEqual(score.summarize({"a": first_valid}, intents)["total"]["overreach"], 0)
+
     def test_the_baselines_need_no_model(self):
         text = score.baselines(Path(__file__).with_name("intents.json"))
         self.assertIn("| always ask |", text)

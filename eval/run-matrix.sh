@@ -19,6 +19,7 @@ cd "$(dirname "$0")/.."
 port=8199
 server_pid=""
 server_log="$(mktemp)"
+failed=0
 
 stop_server() {
     if [ -n "$server_pid" ]; then
@@ -52,14 +53,23 @@ serve() {
         waited=$((waited + 2))
     done
     model_file="$1"
+    # The server that answers must be the one just started, not another on the same port.
+    if ! curl -sf "http://127.0.0.1:$port/props" | grep -q "$(basename "$1")"; then
+        echo "run-matrix: the server on port $port is not serving $(basename "$1")" >&2
+        exit 1
+    fi
 }
 
 # measure LABEL MODE [run_eval.py options...]
 measure() {
     local label="$1" mode="$2"
     shift 2
+    if [ -f "eval/results/$label/results.jsonl" ]; then
+        echo "skipping $label: eval/results/$label already holds a run"
+        return 0
+    fi
     uv run --quiet --with jsonschema python eval/run_eval.py --url "http://127.0.0.1:$port" \
-        --mode "$mode" --label "$label" --model-file "$model_file" --server-binary "$LLAMA_SERVER" --server-flags "$server_flags" "$@" | tail -1
+        --mode "$mode" --label "$label" --model-file "$model_file" --server-binary "$LLAMA_SERVER" --server-flags "$server_flags" "$@" | tail -1 || failed=1
 }
 
 # Both modes of a model, thinking off, one retry in the constrained mode; and the
@@ -128,3 +138,5 @@ if selected thinking && [ -n "${BONSAI_2_9B:-}" ]; then
     vendor='{"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.0,"repeat_penalty":1.0,"repeat_last_n":64}'
     measure bonsai2-9b-tools-thinking tools --temperature 1.0 --sampling "$vendor" --max-tokens 6000
 fi
+
+[ "$failed" -eq 0 ] || { echo "run-matrix: a run failed (see above); its directory was kept" >&2; exit 1; }

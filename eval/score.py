@@ -244,9 +244,12 @@ def summarize(rows, intents):
         bucket["valid"] += bool(row["valid"])
         for depth, name in enumerate(LEVELS, 1):
             bucket[name] += row["level"] >= depth
-        bucket["overreach"] += bool(row["overreach"])
-        bucket["off_target"] += bool(row.get("off_target"))
-        bucket["failed"] += any(e.startswith("request failed") for e in row.get("errors", []))
+        answer = effective(row)
+        bucket["overreach"] += bool(answer["overreach"])
+        bucket["off_target"] += bool(answer.get("off_target"))
+        bucket["failed"] += any(
+            e.startswith("request failed") for r in (row, row.get("retry", {})) for e in r.get("errors", [])
+        )
     total = {"n": 0, "valid": 0, **{k: 0 for k in LEVELS}, "overreach": 0, "off_target": 0, "failed": 0}
     for bucket in categories.values():
         for key in total:
@@ -324,6 +327,15 @@ def timing(rows):
         "prompt_tokens": median(prompts),
         "tokens_per_second": median(speeds),
     }
+
+
+def effective(row):
+    """The answer the shell would act on: the retry when the first answer was
+    invalid and the retry is valid, else the first."""
+    retry = row.get("retry")
+    if not row["valid"] and retry is not None and retry["valid"]:
+        return retry
+    return row
 
 
 def with_retry(row):

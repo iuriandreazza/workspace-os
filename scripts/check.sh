@@ -31,6 +31,8 @@ echo "==> evaluation set"
 python3 -I eval/test_score.py
 python3 -I eval/test_modes.py
 bash -n eval/run-matrix.sh
+# The runner needs the jsonschema package, so the gate only checks that it parses.
+python3 -I -c "import ast; ast.parse(open('eval/run_eval.py').read())"
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings

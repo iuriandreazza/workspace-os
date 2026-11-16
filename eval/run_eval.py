@@ -31,6 +31,7 @@ import urllib.request
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import best_match
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -65,9 +66,9 @@ def file_sha256(path):
 def check_document(document, validator):
     """Schema errors, else the semantic rules, else what only the shell's parser
     refuses (see `score.strict_errors`)."""
-    problems = [error.message[:300] for error in validator.iter_errors(document)][:3]
-    if problems:
-        return problems
+    refusal = best_match(validator.iter_errors(document))
+    if refusal is not None:
+        return [refusal.message[:300]]
     try:
         return rules.semantic_errors(document) or score.strict_errors(document)
     except UnicodeError as error:  # a lone surrogate in a name, which the shell's parser refuses too
@@ -121,7 +122,7 @@ class Runner:
     def attempt(self, intent, retry=None):
         try:
             reply, wall = post(self.args.url, self.body(intent["text"], retry), self.args.timeout)
-        except (urllib.error.URLError, OSError, http.client.HTTPException, json.JSONDecodeError) as error:
+        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, RecursionError) as error:
             return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: {error}"], "output": None}
         message = reply["choices"][0]["message"]
         timings = reply.get("timings", {})
@@ -152,7 +153,7 @@ class Runner:
         text = message.get("content") or ""
         try:
             document = json.loads(text)
-        except json.JSONDecodeError as error:
+        except (ValueError, RecursionError) as error:  # JSONDecodeError is a ValueError
             return None, f"not JSON: {error}"
         if not isinstance(document, dict) or "kind" not in document:
             return None, "not a plan or a question"
@@ -183,7 +184,7 @@ def main():
     parser.add_argument("--sampling", default="{}", help="more sampler fields as a JSON object (top_p, top_k, presence_penalty, ...)")
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--timeout", type=int, default=600)
-    parser.add_argument("--only", nargs="*", help="run only these intent ids")
+    parser.add_argument("--only", nargs="+", help="run only these intent ids")
     args = parser.parse_args()
 
     schema_text = SCHEMA_PATH.read_text(encoding="utf-8")
@@ -218,6 +219,8 @@ def main():
             ["git", "-C", str(ROOT), "status", "--porcelain", "--", "eval", ":!eval/results", "docs/schemas", "intent-shell/src/model.rs"],
             capture_output=True, text=True).stdout.strip()),
         "server_build": props.get("build_info"),
+        "server_context": (props.get("default_generation_settings") or {}).get("n_ctx"),
+        "python_version": sys.version.split()[0],
         "server_binary_sha256": file_sha256(args.server_binary) if args.server_binary else None,
         "chat_template_sha256": sha256(props["chat_template"].encode()) if props.get("chat_template") else None,
         "jsonschema_version": importlib.metadata.version("jsonschema"),
@@ -246,7 +249,7 @@ def main():
             mark = ("-", "k", "a", "E")[record["level"]] if record["valid"] else "x"
             print(f"{number:3}/{len(intents)} {mark} {record['id']} ({record['wall_s'] if 'wall_s' in record else '?'} s)", flush=True)
     print(score.table([out], HERE / "intents.json"))
-    failed = sum(1 for r in score.read_run(out, intents)[1].values() if any(e.startswith("request failed") for e in r["errors"]))
+    failed = score.summarize(score.read_run(out, intents)[1], intents)["total"]["failed"]
     if failed:
         sys.exit(f"run_eval: {failed} requests failed; the figures of this run measure the server, not the model")
 

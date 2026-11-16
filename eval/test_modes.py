@@ -135,7 +135,8 @@ class Derived(unittest.TestCase):
 
     def test_the_tools_have_no_depends_on_and_the_prompt_does_not_ask_for_one(self):
         self.assertNotIn("depends_on", json.dumps(self.TOOLS_DERIVED))
-        self.assertNotIn("depends_on", modes.tools_prompt(modes.shell_prompt(), derive_depends=True).split("\n", 1)[0])
+        self.assertNotIn("depends_on", modes.tools_prompt(modes.shell_prompt(), derive_depends=True))
+        self.assertIn("elevate is true only when the user asks for administrator rights", modes.tools_prompt(modes.shell_prompt(), derive_depends=True))
 
     def test_dependencies_come_from_the_references(self):
         document, error = modes.document_from_calls(calls(
