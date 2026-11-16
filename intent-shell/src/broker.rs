@@ -454,15 +454,30 @@ fn require_existing(
     if !matches!(direct, Direct::Path(_)) || !spec.needs_existing(slot) {
         return Ok(());
     }
-    match paths
+    if paths
         .iter()
-        .find(|p| !host.exists(p) && host.allows(Access::Stat, p))
+        .any(|p| names_nothing_the_user_can_reach_up_to(p, host))
     {
-        Some(_) => Err(Refusal::Unresolved(ResolveError::NotFound(
+        Err(Refusal::Unresolved(ResolveError::NotFound(
             direct.describe(),
-        ))),
-        None => Ok(()),
+        )))
+    } else {
+        Ok(())
     }
+}
+
+/// A path that does not exist, below a folder the user may look into: the
+/// first folder on the way that exists lets the user reach what is next.
+fn names_nothing_the_user_can_reach_up_to(path: &Path, host: &dyn Host) -> bool {
+    if host.exists(path) {
+        return false;
+    }
+    let Some(existing) = path.ancestors().skip(1).find(|a| host.exists(a)) else {
+        return false;
+    };
+    path.ancestors()
+        .find(|a| a.parent() == Some(existing))
+        .is_some_and(|next| host.allows(Access::Stat, next))
 }
 
 /// What an earlier step found, as the locations a later step acts on.

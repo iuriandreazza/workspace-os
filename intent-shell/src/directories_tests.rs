@@ -309,6 +309,7 @@ fn naming_a_link_to_remove_it_names_the_link_and_not_what_it_leads_to() {
 #[test]
 fn what_the_user_cannot_reach_is_refused_by_permission_and_not_reported_as_missing() {
     let host = home()
+        .dir("/root")
         .forbid(Access::Stat, "/root/secret")
         .forbid(Access::Read, "/root/secret");
     let run = ask(
@@ -417,13 +418,14 @@ fn a_cd_is_logged_with_where_it_came_from_and_where_it_went() {
 fn a_cd_does_not_leak_into_another_session() {
     let host = home();
     let mut first = session_in("/home/ana");
-    let mut second = SessionState::start(&host);
     ask(
         &host,
         &mut first,
         &one_step("session.cd", &path_args("~/Downloads")),
     );
     assert_eq!(first.cwd, PathBuf::from("/home/ana/Downloads"));
+    // A session that starts after the cd still starts at the home.
+    let mut second = SessionState::start(&host);
     assert_eq!(second.cwd, PathBuf::from("/home/ana"));
     let run = ask(
         &host,
@@ -1275,4 +1277,31 @@ fn folder_candidates_are_drawn_as_folders_and_every_candidate_carries_its_locati
             .filter(|l| l.option.is_none())
             .all(|l| l.label.is_empty())
     );
+}
+
+#[test]
+fn a_path_below_a_missing_folder_is_not_found_and_not_a_missing_permission() {
+    let host = home()
+        .dir("/root")
+        .forbid(Access::Stat, "/root/x")
+        .forbid(Access::Read, "/root/x/y");
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.list", &path_args("~/missing/deeper/still")),
+    );
+    assert!(matches!(
+        reviewed(&run.outcome).steps[0].blocked,
+        Some(Refusal::Unresolved(ResolveError::NotFound(_)))
+    ));
+    // Where the user may not even reach the first missing step, it is permission.
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.list", &path_args("/root/x/y")),
+    );
+    assert!(matches!(
+        reviewed(&run.outcome).steps[0].items[0].verdict,
+        Verdict::Refused(Refusal::PermissionDenied { .. })
+    ));
 }
