@@ -11,7 +11,8 @@ The kernel boots on aarch64 under QEMU, enters EL1 whether it is started at
 EL1, EL2 or EL3, and prints a banner on the serial console. Secondary cores are
 parked. A synchronous exception taken in the kernel saves the processor
 context, is decoded from `ESR_EL1` and, for a breakpoint, returns to the
-interrupted code. Any other exception ends in a kernel panic that describes it.
+interrupted code. Any other exception ends in a kernel panic that describes it, as long as
+the kernel stack is valid (guard pages come with the MMU).
 
 Next milestone: device tree, memory allocation and the MMU, the base for
 isolated processes. The full plan is in [docs/roadmap.md](docs/roadmap.md).

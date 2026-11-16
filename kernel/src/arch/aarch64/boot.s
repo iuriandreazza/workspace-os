@@ -28,7 +28,7 @@ _start:
     // in the non-secure world.
     mov  x0, #((1 << 10) | (1 << 8) | (3 << 4) | (1 << 0))
     msr  scr_el3, x0
-    msr  cptr_el3, xzr              // no trap of FP, SIMD or SVE to EL3
+    msr  cptr_el3, xzr              // FP and SIMD do not trap to EL3
     // HCR_EL2.RW resets to an unknown value, so when EL2 exists the kernel goes
     // through it: EL1 could otherwise come up as AArch32.
     mrs  x0, id_aa64pfr0_el1
@@ -52,7 +52,8 @@ _start:
     msr  sctlr_el2, x0
     mov  x0, #(1 << 31)             // HCR_EL2: RW only, EL1 is AArch64
     msr  hcr_el2, x0
-    // Reset values are unknown: clear every trap to EL2, where no handler exists.
+    // Reset values are unknown: FP, SIMD, debug and trace accesses must not trap
+    // to EL2, where no handler exists.
     mov  x0, #0x33ff                // CPTR_EL2: RES1 bits only
     msr  cptr_el2, x0
     msr  mdcr_el2, xzr
