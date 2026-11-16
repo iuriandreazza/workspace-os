@@ -35,7 +35,7 @@ fs find_largest --in downloads --count 3
 fs delete --name big.iso --in downloads --kind file
 fs delete --name big.iso --in downloads --kind file --elevate
 fs write --new-name notes.txt --in documents --content 'two words' [--mode create|overwrite|append]
-fs move --name a.txt --in documents --to-name archive --to-in documents
+fs move --name a.txt --in documents --kind file --to-name archive --to-in documents
 fs find_largest --in downloads --count 2; fs delete --from-step s1       # steps with ';'
 process run --program tar -- -czf backup.tgz docs
 user manage --operation add_to_group --user bia --group staff
@@ -45,7 +45,7 @@ The flags are the arguments of the schema with `_` written as `-`. References
 are `--in P` (a place), `--name N --in P [--kind ...]`, `--new-name N --in P`
 and `--from-step sN`. `--after sN` orders steps. Nothing is expanded (no `~`,
 globs or `$`), and a path cannot be written (ADR 0014). The two defaults are
-`--kind any` (the widest kind: a name that matches a file and a folder is the person's choice) and `--mode create`. The full grammar is in ADR 0022.
+`--kind any` where an action only reads (`fs delete` and the source of `fs move` require `--kind`) and `--mode create`. The full grammar is in ADR 0022.
 
 ## What shares code with the model path
 
@@ -120,6 +120,17 @@ Mutation check, by hand (each change applied, the suite run, the source restored
 | the interface waits for a model under no model | the state test |
 
 ## Limits and follow-ups
+
+- The interface drops characters it would escape (`printable`), so a name with a
+  no-break space, a tab or a variation selector cannot be typed or pasted there,
+  and a paste is edited without a warning. That is the S3c rule for every line,
+  here as for a request to a model, and not new; the line adapter takes them. A
+  `\u{..}` escape in the grammar, or a paste that refuses what it would alter, is a
+  follow-up.
+- A value that ends the line with an escaped space loses it, because the line is
+  trimmed before it is parsed; quote the value.
+- The plan screen does not say whether a resolved name is a file or a folder; a
+  follow-up for `screen.rs`.
 
 - The host adapter executes reads only (ADR 0016, "Consequences"), so a delete,
   write, move, run, account or SOUL command reaches the confirmation and then

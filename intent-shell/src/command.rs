@@ -80,6 +80,10 @@ impl Command {
 enum Form {
     Place,
     Named,
+    /// A name whose `--kind` must be written, for what removes or moves an
+    /// item: nothing here is left to a default, and the screen does not say
+    /// whether a match is a file or a folder.
+    NamedKind,
     New,
     Step,
 }
@@ -89,6 +93,9 @@ impl Form {
         match self {
             Self::Place => format!("--{prefix}in PLACE"),
             Self::Named => format!("--{prefix}name NAME --{prefix}in PLACE"),
+            Self::NamedKind => {
+                format!("--{prefix}name NAME --{prefix}in PLACE --{prefix}kind file|folder|any")
+            }
             Self::New => format!("--{prefix}new-name NAME --{prefix}in PLACE"),
             Self::Step => format!("--{prefix}from-step sN"),
         }
@@ -96,6 +103,7 @@ impl Form {
 }
 
 const READABLE: &[Form] = &[Form::Named, Form::Step];
+const REMOVABLE: &[Form] = &[Form::NamedKind, Form::Step];
 const TARGET: Arg = Arg::Reference("target", READABLE);
 
 static COMMANDS: &[Command] = &[
@@ -144,7 +152,7 @@ static COMMANDS: &[Command] = &[
         verb: "move",
         elevate: true,
         args: &[
-            Arg::Reference("from", READABLE),
+            Arg::Reference("from", REMOVABLE),
             Arg::Destination("to", &[Form::Place, Form::Named, Form::New]),
         ],
     },
@@ -152,7 +160,7 @@ static COMMANDS: &[Command] = &[
         group: "fs",
         verb: "delete",
         elevate: true,
-        args: &[TARGET],
+        args: &[Arg::Reference("target", REMOVABLE)],
     },
     Command {
         group: "process",
@@ -202,7 +210,7 @@ pub(crate) fn reference_forms(action: &str) -> Vec<(&'static str, Vec<&'static s
             .iter()
             .map(|form| match form {
                 Form::Place => "place",
-                Form::Named => "named",
+                Form::Named | Form::NamedKind => "named",
                 Form::New => "new",
                 Form::Step => "step",
             })
@@ -237,6 +245,29 @@ pub(crate) fn choice_words(action: &str) -> Vec<(&'static str, Vec<&'static str>
                 .filter_map(|arg| match arg {
                     Arg::Choice(key, _, words) => Some((*key, words.split('|').collect())),
                     _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The argument keys each command writes, for the test that compares them with the schema.
+#[cfg(test)]
+pub(crate) fn arg_keys(action: &str) -> Vec<&'static str> {
+    COMMANDS
+        .iter()
+        .find(|c| c.action() == action)
+        .map(|c| {
+            c.args
+                .iter()
+                .map(|arg| match arg {
+                    Arg::Reference(key, _)
+                    | Arg::Destination(key, _)
+                    | Arg::Number(key)
+                    | Arg::Text(key)
+                    | Arg::Choice(key, ..)
+                    | Arg::OptionalText(key)
+                    | Arg::Argv(key) => *key,
                 })
                 .collect()
         })
@@ -591,7 +622,8 @@ fn reference(
     forms: &[Form],
     depends_on: &mut Vec<String>,
 ) -> Result<Value, CommandError> {
-    let value = reference_value(name, flags, prefix, forms, depends_on)?;
+    let kind_required = forms.contains(&Form::NamedKind);
+    let value = reference_value(name, flags, prefix, forms, kind_required, depends_on)?;
     let form = match (
         value.get("place"),
         value.get("from_step"),
@@ -602,7 +634,7 @@ fn reference(
         (.., Some(_)) => Form::New,
         _ => Form::Named,
     };
-    if forms.contains(&form) {
+    if forms.contains(&form) || (form == Form::Named && forms.contains(&Form::NamedKind)) {
         return Ok(value);
     }
     let takes: Vec<String> = forms.iter().map(|f| f.flags(prefix)).collect();
@@ -617,6 +649,7 @@ fn reference_value(
     flags: &mut Flags,
     prefix: &str,
     forms: &[Form],
+    kind_required: bool,
     depends_on: &mut Vec<String>,
 ) -> Result<Value, CommandError> {
     let destination = !prefix.is_empty();
@@ -663,10 +696,17 @@ fn reference_value(
         (None, None, Some(item), place, kind) => {
             let place = place.ok_or_else(|| needs_place(&flag("name")))?;
             // A destination can only be a folder, so there is nothing to choose.
-            let kind = if destination {
-                "folder".to_owned()
-            } else {
-                kind.unwrap_or_else(|| "any".to_owned())
+            let kind = match (destination, kind) {
+                (true, _) => "folder".to_owned(),
+                (false, Some(kind)) => kind,
+                (false, None) if kind_required => {
+                    return Err(CommandError::new(format!(
+                        "{name}: {} needs {}, because it removes or moves what it names",
+                        flag("name"),
+                        flag("kind")
+                    )));
+                }
+                (false, None) => "any".to_owned(),
             };
             Ok(json!({"name": item, "in": place, "kind": kind}))
         }

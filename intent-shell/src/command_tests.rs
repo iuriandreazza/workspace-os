@@ -242,7 +242,10 @@ fn what_cannot_be_read_as_a_command_is_refused_with_the_reason_and_runs_nothing(
         ("fs find_largest --in home --count ten", "whole number"),
         ("fs find_largest --in home --count -1", "whole number"),
         ("fs write --new-name a --in home", "needs --content"),
-        ("fs move --name a --in home", "needs a reference"),
+        (
+            "fs move --name a --in home --kind file",
+            "needs a reference",
+        ),
         (
             "fs move --name a --in home --to-kind folder --to-in home",
             "unknown flag",
@@ -862,18 +865,18 @@ fn an_escaped_character_is_a_value_never_a_flag() {
             .to_owned()
     };
     assert_eq!(content("\\--x"), "--x");
-    assert!(refused("fs delete --name a --in home \\--elevate").contains("unexpected"));
+    assert!(refused("fs delete --name a --in home --kind file \\--elevate").contains("unexpected"));
 }
 
 #[test]
 fn the_only_defaults_are_the_weakest_choices() {
-    let plan = plan_of("fs delete --name a --in home; fs write --new-name n --in home --content c");
+    let plan = plan_of("fs stat --name a --in home; fs write --new-name n --in home --content c");
     let json = |step: usize| format!("{:?}", plan.steps[step].spec);
     assert!(json(0).contains("kind: Any"), "{}", json(0));
     assert!(json(1).contains("mode: Create"), "{}", json(1));
     // Nothing else is assumed: root is never requested unless the flag is there.
     assert!(plan.steps.iter().all(|s| !s.elevate));
-    assert!(plan_of("fs delete --name a --in home --elevate").steps[0].elevate);
+    assert!(plan_of("fs delete --name a --in home --kind file --elevate").steps[0].elevate);
 }
 
 #[test]
@@ -882,7 +885,10 @@ fn a_mistyped_word_names_its_flag() {
         ("fs list --in HOME", "--in"),
         ("fs list --in dwnloads", "--in"),
         ("fs list --in home\u{a0}--elevate", "--in"),
-        ("fs move --name a --in home --to-in nowhere", "--to-in"),
+        (
+            "fs move --name a --in home --kind file --to-in nowhere",
+            "--to-in",
+        ),
         ("fs read --name a --in home --kind dir", "--kind"),
     ] {
         let why = refused(line);
@@ -1066,7 +1072,7 @@ fn the_words_of_each_enum_flag_are_the_schemas_and_each_one_can_be_typed() {
 fn errors_name_what_to_type_and_what_is_wrong() {
     let why = refused("fs delete");
     assert!(
-        why.contains("--name NAME --in PLACE or --from-step sN") && !why.contains("--new-name"),
+        why.contains("--kind file|folder|any or --from-step sN") && !why.contains("--new-name"),
         "{why}"
     );
     let why = refused("fs find_largest --count 3");
@@ -1075,7 +1081,7 @@ fn errors_name_what_to_type_and_what_is_wrong() {
         "{why}"
     );
     assert!(refused("fs write --content x").contains("--new-name NAME --in PLACE"));
-    assert!(refused("fs move --name a --in home").contains("--to-in PLACE"));
+    assert!(refused("fs move --name a --in home --kind file").contains("--to-in PLACE"));
     let why = refused("fs find_largest --in home --count 5000000000");
     assert!(why.contains("--count") && why.contains("32 bits"), "{why}");
     for line in [
@@ -1093,4 +1099,76 @@ fn help_states_the_bound_the_code_enforces() {
         panic!("help")
     };
     assert!(text.contains(&format!("up to {} steps", crate::plan::MAX_STEPS)));
+}
+
+#[test]
+fn what_removes_or_moves_an_item_never_gets_a_default_kind() {
+    for line in [
+        "fs delete --name a --in home",
+        "fs move --name a --in home --to-in documents",
+    ] {
+        let why = refused(line);
+        assert!(
+            why.contains("--kind") && why.contains("removes or moves"),
+            "{line}: {why}"
+        );
+    }
+    for kind in ["file", "folder", "any"] {
+        plan_of(&format!("fs delete --name a --in home --kind {kind}"));
+    }
+    // A name that only reads still has a default, and says so.
+    plan_of("fs read --name a --in home");
+    let Ok(Parsed::Help(text)) = command::parse("help") else {
+        panic!("help")
+    };
+    let line = text.lines().find(|l| l.contains("fs delete")).unwrap();
+    assert!(line.contains("--kind file|folder|any"), "{line}");
+}
+
+#[test]
+fn the_arguments_of_each_command_are_the_schemas() {
+    let schema: Value = serde_json::from_str(&docs("action-plan.schema.json")).unwrap();
+    let defs = &schema["$defs"];
+    for reference in defs["step"]["oneOf"].as_array().unwrap() {
+        let def = &defs[reference["$ref"]
+            .as_str()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap()];
+        let action = def["properties"]["action"]["const"].as_str().unwrap();
+        let mut in_schema: Vec<&str> = def["properties"]["args"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut ours = command::arg_keys(action);
+        in_schema.sort();
+        ours.sort();
+        assert_eq!(in_schema, ours, "{action}");
+    }
+}
+
+#[test]
+fn the_lists_and_bounds_the_command_layer_builds_are_not_cut_short() {
+    let argv = |n: usize| format!("process run --program ls -- {}", vec!["a"; n].join(" "));
+    plan_of(&argv(32));
+    assert!(refused(&argv(33)).contains("more than 32"));
+    let long = "x".repeat(1025);
+    assert!(refused(&format!("process run --program ls -- {long}")).contains("1024"));
+    // The count of argument items is the format's, so nothing is dropped on the way.
+    let plan = plan_of(&argv(32));
+    assert!(format!("{:?}", plan.steps[0].spec).matches("\"a\"").count() == 32);
+}
+
+#[test]
+fn separators_flags_and_dependencies_are_read_exactly() {
+    assert!(refused("fs list ---in home").contains("unknown flag"));
+    assert!(refused("fs list -in home").contains("unexpected"));
+    // A carriage return separates like a space or a newline.
+    plan_of("fs\rlist\r--in\rhome");
+    // Naming a dependency twice, or once and again by a reference, is one dependency.
+    let plan = plan_of("fs list --in home; fs stat --from-step s1 --after s1 --after s1");
+    assert_eq!(plan.steps[1].depends_on.len(), 1);
 }

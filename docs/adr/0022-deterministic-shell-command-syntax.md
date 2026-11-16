@@ -122,7 +122,7 @@ propose_change` do not take it, as in the schema.
 | Flags | Reference |
 |---|---|
 | `--in downloads` | `{"place":"downloads"}` |
-| `--name big.iso --in downloads [--kind file\|folder\|any]` | `{"name":…,"in":…,"kind":…}`; `--kind` defaults to `any` |
+| `--name big.iso --in downloads [--kind file\|folder\|any]` | `{"name":…,"in":…,"kind":…}`; `--kind` defaults to `any`, except for `fs delete` and the source of `fs move`, where it is required |
 | `--new-name notes.txt --in documents` | `{"new_name":…,"in":…}` |
 | `--from-step s1` | `{"from_step":"s1"}` |
 
@@ -176,7 +176,7 @@ the same documents, so the mechanical table stays the only definition.
 | Several steps | `;` inside one line | A script of one step per line: needs a line adapter with state ("more to come") and cannot work in the single-line input of the interface. Many independent requests are already many lines |
 | References between steps | `--from-step s1` | `$s1`: ADR 0011 hints at it, but `$` invites the expansion this shell must not have |
 | Elevation | Explicit `--elevate`, decided by the broker | Prompting for root on refusal: it would promote a refused step, which ADR 0011 forbids |
-| Defaults | `--kind any`, `--mode create` only | None: safer to read but unusable. `create` is the weakest mode (it refuses to overwrite). `any` is the widest kind, not the narrowest, so `fs delete --name backup --in home` may match a file and a folder: the match is shown by name, an ambiguity is the person's choice, and the plan is confirmed before a delete runs. ADR 0014's example writes `--kind file` explicitly when that is meant. Known limit: the friendly plan screen does not say whether a resolved name is a file or a folder, so type `--kind file` or `--kind folder` when it matters; showing the kind belongs to the screen (a follow-up) |
+| Defaults | `--mode create`, and `--kind any` only where an action reads | None: safer to read but unusable. `create` is the weakest mode (it refuses to overwrite). `any` is the widest kind, and the plan screen does not say whether a resolved name is a file or a folder, so a default there could make a folder delete look like a file delete. `fs delete` and the source of `fs move` therefore require `--kind` (ADR 0014's example writes it too); a name that only reads defaults to `any`, and an ambiguity is the person's choice |
 
 ## Consequences
 
@@ -188,8 +188,7 @@ the same documents, so the mechanical table stays the only definition.
   both.
 - A typed `fs.write` carries its content on the line, so a long content is
   impractical; the format's bound is 64 KiB and the line is the limit.
-- The model's refusal text "Use the deterministic shell instead" names this
-  mode (`--no-model`).
+- The model's refusal text now says to restart with `--no-model` to type commands.
 
 ## Open questions
 
