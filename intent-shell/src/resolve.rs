@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::plan::StepId;
 use crate::ports::{Entry, Host};
-use crate::reference::{Destination, Direct, Kind, Slot, Target, is_single_name};
+use crate::reference::{Destination, Direct, Kind, Place, Slot, Target, is_single_name};
 
 /// More matches than this are not offered: the person must say more.
 pub const MAX_CANDIDATES: usize = 20;
@@ -112,7 +112,24 @@ pub fn locate(
             let search = host
                 .search(&roots, name)
                 .map_err(ResolveError::SearchFailed)?;
-            let matches = best_matches(search.entries, name, *kind);
+            // A place is a container the plan may read, never a thing it may
+            // remove or overwrite, so naming it does not find it.
+            let places: Vec<PathBuf> = Place::ALL
+                .into_iter()
+                .flat_map(|place| host.place_roots(place))
+                .collect();
+            let entries = search
+                .entries
+                .into_iter()
+                .filter(|e| !places.contains(&e.path))
+                .collect();
+            let matches = best_matches(entries, name, *kind);
+            // A search that did not finish must not look like one that did.
+            let what = if search.notes.is_empty() {
+                what
+            } else {
+                format!("{what} (search incomplete: {})", search.notes.join("; "))
+            };
             let path = match matches.as_slice() {
                 [] => return Err(ResolveError::NotFound(what)),
                 [only] => only.clone(),

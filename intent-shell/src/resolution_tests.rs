@@ -494,3 +494,75 @@ fn an_ambiguity_blocks_its_dependents_until_chosen_and_then_the_chain_expands() 
         Some(Refusal::DependencyRefused(_))
     ));
 }
+
+#[test]
+fn a_place_cannot_be_deleted_moved_or_overwritten_by_naming_it() {
+    let host = FakeHost::with_files(&[("/work/a", 1)]).place(Place::Home, "/");
+    for (action, args) in [
+        (
+            "fs.delete",
+            r#"{"target":{"name":"work","in":"home","kind":"folder"}}"#,
+        ),
+        (
+            "fs.stat",
+            r#"{"target":{"name":"work","in":"home","kind":"any"}}"#,
+        ),
+    ] {
+        let result = run(&[&plan(&[step("s1", action, args, "false")])], &host, true);
+        let review = reviewed(&result.outcome);
+        assert!(
+            matches!(
+                review.steps[0].blocked,
+                Some(Refusal::Unresolved(ResolveError::NotFound(_)))
+            ),
+            "{action}: {:?}",
+            review.steps[0]
+        );
+    }
+    assert!(host.executed.borrow().is_empty());
+}
+
+#[test]
+fn an_incomplete_search_is_reported_even_when_nothing_is_found() {
+    let host = FakeHost::with_files(&[("/work/a", 1)]).with_note("1 folders could not be searched");
+    let result = run(
+        &[&plan(&[step("s1", "fs.read", &named("missing"), "false")])],
+        &host,
+        false,
+    );
+    let review = reviewed(&result.outcome);
+    let why = review.steps[0].blocked.as_ref().unwrap().to_string();
+    assert!(why.contains("search incomplete"), "{why}");
+}
+
+#[test]
+fn the_report_after_running_shows_no_real_location_for_a_refusal() {
+    let host =
+        FakeHost::with_files(&[("/work/a", 5), ("/work/b", 9)]).forbid(Access::Delete, "/work/a");
+    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+      {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#;
+    let result = run(&[text], &host, false);
+    let report = result.outcome.render();
+    assert!(
+        report.contains("your permissions do not allow delete"),
+        "{report}"
+    );
+    assert!(!report.contains("/work"), "{report}");
+}
+
+#[test]
+fn a_folder_cannot_be_moved_into_itself() {
+    let host = FakeHost::with_files(&[("/work/sub/f", 1)]).dir("/work/sub");
+    let args = r#"{"from":{"name":"sub","in":"downloads","kind":"folder"},"to":{"name":"sub","in":"downloads","kind":"folder"}}"#;
+    let result = run(
+        &[&plan(&[step("s1", "fs.move", args, "false")])],
+        &host,
+        true,
+    );
+    let review = reviewed(&result.outcome);
+    assert!(matches!(
+        review.steps[0].items[0].verdict,
+        Verdict::Refused(Refusal::MoveIntoItself(_))
+    ));
+}

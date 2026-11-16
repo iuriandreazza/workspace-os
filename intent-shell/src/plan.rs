@@ -2,8 +2,9 @@
 //!
 //! `parse` is the structural half, equivalent to `docs/schemas/action-plan.schema.json`;
 //! `check_rules` is the semantic half, equivalent to `docs/schemas/validate.py`.
-//! The tests run both over every example next to the schema, so the Rust
-//! reading of the format cannot drift from the schema file unnoticed.
+//! The tests run the Rust half over every example next to the schema, and
+//! `validate.py` runs the schema over the same examples (by hand: the gate does
+//! not run it, ADR 0011), so the two readings are compared one example at a time.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -211,8 +212,18 @@ fn structs_are_objects(plan: &Value) -> Result<(), PlanError> {
                 "steps, args and references must be JSON objects",
             ));
         }
-        if enum_is_not_string {
-            return Err(PlanError::new("mode and operation must be strings"));
+        // Place, kind and `in` are unit enums inside a reference.
+        let reference_enum_is_not_string = ["target", "from", "to"].iter().any(|key| {
+            ["place", "in", "kind"].iter().any(|field| {
+                args.and_then(|a| a.get(key))
+                    .and_then(|r| r.get(field))
+                    .is_some_and(|v| !v.is_string())
+            })
+        });
+        if enum_is_not_string || reference_enum_is_not_string {
+            return Err(PlanError::new(
+                "mode, operation, place, in and kind must be strings",
+            ));
         }
     }
     Ok(())
@@ -785,6 +796,20 @@ mod tests {
         let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
             {"id":"s1","action":"fs.write","args":{"target":{"new_name":"a","in":"home"},"content":"c","mode":{"create":null}},"depends_on":[],"elevate":false}]}"#;
         assert!(parse(text).is_err());
+    }
+
+    #[test]
+    fn a_reference_enum_given_as_an_object_is_refused_like_the_schema_does() {
+        for target in [
+            r#"{"place":{"downloads":null}}"#,
+            r#"{"name":"a","in":{"home":null},"kind":"file"}"#,
+            r#"{"name":"a","in":"home","kind":{"file":null}}"#,
+        ] {
+            let text = format!(
+                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"s1","action":"fs.list","args":{{"target":{target}}},"depends_on":[],"elevate":false}}]}}"#
+            );
+            assert!(parse(&text).is_err(), "{target}");
+        }
     }
 
     #[test]

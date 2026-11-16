@@ -64,8 +64,8 @@ pub enum Kind {
 
 /// A name is one directory entry: it cannot say where to look.
 pub fn is_single_name(name: &str) -> bool {
-    let length = name.chars().count();
-    (1..=255).contains(&length) && !name.contains(['/', '\0']) && name != "." && name != ".."
+    // NAME_MAX counts bytes, not characters.
+    (1..=255).contains(&name.len()) && !name.contains(['/', '\0']) && name != "." && name != ".."
 }
 
 /// A resource the resolver can find or build on its own.

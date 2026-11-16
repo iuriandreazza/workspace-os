@@ -53,6 +53,7 @@ pub enum Refusal {
     ProgramNotRegistered(String),
     ConfigKeyNotAllowed(String),
     ProtectedPath(PathBuf),
+    MoveIntoItself(PathBuf),
     DependencyRefused(StepId),
     CannotExpand(String),
     PreRunFailed(String),
@@ -80,6 +81,9 @@ impl fmt::Display for Refusal {
                 "{} cannot be written or removed, not even as root",
                 quoted_path(path)
             ),
+            Self::MoveIntoItself(path) => {
+                write!(f, "{} cannot be moved into itself", quoted_path(path))
+            }
             Self::ConfigKeyNotAllowed(k) => write!(f, "configuration key {k:?} is not accepted"),
             Self::DependencyRefused(id) => {
                 write!(f, "step {id} did not pass, and this step depends on it")
@@ -105,6 +109,9 @@ impl Refusal {
                 "{} cannot be written or removed, not even as root",
                 labels.of(path)
             ),
+            Self::MoveIntoItself(path) => {
+                format!("{} cannot be moved into itself", labels.of(path))
+            }
             other => other.to_string(),
         }
     }
@@ -383,6 +390,11 @@ fn judge(action: &Action, elevate: bool, authority: &Authority, host: &dyn Host)
         matches!(access, Access::Write | Access::Delete) && path.parent().is_none()
     }) {
         return Verdict::Refused(Refusal::ProtectedPath(path.to_path_buf()));
+    }
+    if let Action::Move { from, to } = action
+        && to.starts_with(from)
+    {
+        return Verdict::Refused(Refusal::MoveIntoItself(from.clone()));
     }
     if action.root_rule() == RootRule::Always || elevate {
         return if authority.user.administrator {

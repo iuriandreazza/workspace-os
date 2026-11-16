@@ -271,7 +271,7 @@ impl Shell<'_> {
             &step.blocked,
             step.depends_on.iter().find(|d| !succeeded.contains(d)),
         ) {
-            (Some(why), _) => Some(why.to_string()),
+            (Some(why), _) => Some(why.friendly(labels)),
             (None, Some(dependency)) => Some(format!("step {dependency} did not complete")),
             (None, None) => None,
         };
@@ -299,7 +299,7 @@ impl Shell<'_> {
     ) -> Result<bool, String> {
         let rendering = item.action.describe();
         let result = match &item.verdict {
-            Verdict::Refused(why) => ItemResult::NotRun(why.to_string()),
+            Verdict::Refused(why) => ItemResult::NotRun(why.friendly(labels)),
             Verdict::NeedsRoot if !self.confirm_root(step, &item.action, labels)? => {
                 ItemResult::NotRun("root confirmation was not given".to_owned())
             }
