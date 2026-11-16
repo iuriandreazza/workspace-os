@@ -704,6 +704,28 @@ mod tests {
     }
 
     #[test]
+    fn step_ids_and_argv_items_follow_their_patterns_and_bounds() {
+        let with_id = |id: &str| {
+            format!(
+                r#"{{"kind":"plan","version":1,"summary":"x","steps":[{{"id":"{id}","action":"fs.stat","args":{{"path":"."}},"depends_on":[],"elevate":false}}]}}"#
+            )
+        };
+        for good in ["s1", "s12"] {
+            assert!(parse(&with_id(good)).is_ok(), "{good}");
+        }
+        for bad in ["s", "s123", "x1", "S1", "1", "s1a", ""] {
+            assert!(parse(&with_id(bad)).is_err(), "{bad}");
+        }
+        let run = |arg: &str| {
+            format!(
+                r#"{{"kind":"plan","version":1,"summary":"x","steps":[{{"id":"s1","action":"process.run","args":{{"program":"ls","argv":["{arg}"]}},"depends_on":[],"elevate":false}}]}}"#
+            )
+        };
+        assert!(parse(&run(&"a".repeat(1024))).is_ok());
+        assert!(parse(&run(&"a".repeat(1025))).is_err());
+    }
+
+    #[test]
     fn elevate_is_required_where_it_is_allowed() {
         let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
             {"id":"s1","action":"fs.stat","args":{"path":"."},"depends_on":[]}]}"#;

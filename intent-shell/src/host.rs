@@ -44,6 +44,26 @@ fn permitted(path: &Path, mode: libc::c_int) -> bool {
     unsafe { libc::access(c_path.as_ptr(), mode) == 0 }
 }
 
+/// Resolve `.` and `..` by name, so the path that is checked and shown is the
+/// one that is used, and `..` cannot hide that a path is a directory's parent.
+fn lexically_normal(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Above the root is the root.
+                if !out.pop() && !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn parent_of(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -56,7 +76,7 @@ impl Host for UnixHost {
             (Ok(rest), Some(home)) => home.join(rest),
             _ => path.to_path_buf(),
         };
-        self.cwd.join(expanded)
+        lexically_normal(&self.cwd.join(expanded))
     }
 
     fn allows(&self, access: Access, path: &Path) -> bool {
@@ -64,6 +84,8 @@ impl Host for UnixHost {
             Access::Read if path.is_dir() => permitted(path, libc::R_OK | libc::X_OK),
             Access::Read => permitted(path, libc::R_OK),
             Access::Write if path.exists() => permitted(path, libc::W_OK),
+            // The root has no directory above it to remove it from.
+            Access::Write | Access::Delete if path.parent().is_none() => false,
             Access::Write | Access::Delete => permitted(parent_of(path), libc::W_OK | libc::X_OK),
         }
     }
@@ -344,6 +366,38 @@ mod tests {
         );
         assert_eq!(host.resolve(Path::new("src")), PathBuf::from("/work/src"));
         assert_eq!(host.resolve(Path::new("/etc")), PathBuf::from("/etc"));
+    }
+
+    #[test]
+    fn dot_dot_is_resolved_and_the_root_can_never_be_removed() {
+        let host = host(Path::new("/work/sub"));
+        assert_eq!(host.resolve(Path::new("..")), PathBuf::from("/work"));
+        assert_eq!(host.resolve(Path::new("../../..")), PathBuf::from("/"));
+        assert_eq!(
+            host.resolve(Path::new("a/./b/../c")),
+            PathBuf::from("/work/sub/a/c")
+        );
+        assert!(!host.allows(Access::Delete, Path::new("/")));
+        assert!(!host.allows(Access::Write, Path::new("/")));
+    }
+
+    #[test]
+    fn permissions_of_an_existing_file_and_of_a_directory_follow_its_own_mode() {
+        let dir = temp_dir("modes");
+        let file = dir.join("f");
+        fs::write(&file, "x").unwrap();
+        fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
+        let sub = dir.join("d");
+        fs::create_dir(&sub).unwrap();
+        fs::set_permissions(&sub, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(!host(&dir).allows(Access::Write, &file));
+            assert!(host(&dir).allows(Access::Read, &file));
+            assert!(!host(&dir).allows(Access::Read, &sub));
+        }
+        fs::set_permissions(&sub, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -900,3 +900,24 @@ fn an_action_is_not_run_when_its_own_record_cannot_be_written() {
     assert!(matches!(result.outcome, Outcome::LogFailed { .. }));
     assert!(host.executed.borrow().is_empty());
 }
+
+#[test]
+fn paths_are_resolved_before_the_user_permissions_are_checked() {
+    use crate::host::UnixHost;
+    use std::path::PathBuf;
+    // `/work/sub/..` is `/work`; the fake host above resolves nothing, so use the real adapter's rule.
+    let host = UnixHost::new(None, PathBuf::from("/work/sub"));
+    let text = plan(&[step("s1", "fs.delete", r#"{"path":"/"}"#, "false")]);
+    let planner = ScriptedPlanner::new(&[&text]);
+    let mut answers = Answers::yes();
+    let mut log = MemoryLog::default();
+    let outcome = Shell {
+        authority: &Authority::full(user(false)),
+        host: &host,
+        planner: &planner,
+        confirm: &mut answers,
+        log: &mut log,
+    }
+    .handle("x");
+    assert!(matches!(outcome, Outcome::AllRefused(_)), "{outcome:?}");
+}
