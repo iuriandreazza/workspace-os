@@ -1305,3 +1305,18 @@ fn a_path_below_a_missing_folder_is_not_found_and_not_a_missing_permission() {
         Verdict::Refused(Refusal::PermissionDenied { .. })
     ));
 }
+
+#[test]
+fn a_path_through_a_file_is_not_found() {
+    // On a real host the check on the file's own mode (X_OK on a file) fails.
+    let host = home().forbid(Access::Stat, "/home/ana/Downloads/notes.txt/foo");
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.read", &path_args("Downloads/notes.txt/foo")),
+    );
+    assert!(matches!(
+        reviewed(&run.outcome).steps[0].blocked,
+        Some(Refusal::Unresolved(ResolveError::NotFound(_)))
+    ));
+}

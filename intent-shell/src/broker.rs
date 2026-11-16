@@ -475,6 +475,10 @@ fn names_nothing_the_user_can_reach_up_to(path: &Path, host: &dyn Host) -> bool 
     let Some(existing) = path.ancestors().skip(1).find(|a| host.exists(a)) else {
         return false;
     };
+    // Below a file there is nothing to reach, whatever the file's mode says.
+    if !host.is_dir(existing) {
+        return true;
+    }
     path.ancestors()
         .find(|a| a.parent() == Some(existing))
         .is_some_and(|next| host.allows(Access::Stat, next))
