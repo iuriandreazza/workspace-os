@@ -83,7 +83,11 @@ struct ProgressPlanner<'a> {
 impl Planner for ProgressPlanner<'_> {
     fn plan(&self, request: &str, retry: Option<&Retry>) -> Result<String, String> {
         let _ = self.events.send(Event::Busy("asking the model"));
-        self.inner.plan(request, retry)
+        let answer = self.inner.plan(request, retry);
+        // From here the shell reviews and may search: it is no longer only a
+        // wait for the model, so leaving waits for it (see `run`).
+        let _ = self.events.send(Event::Busy("working"));
+        answer
     }
 }
 
@@ -288,7 +292,7 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
         }
     );
     drop((request_tx, reply_tx));
-    if !waiting_for_model {
+    if !waiting_for_model && !state.forced_quit {
         let _ = worker.join();
     }
     let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);

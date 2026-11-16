@@ -21,7 +21,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
         let mut used = 0;
         for c in source.replace('\t', "    ").chars() {
             let cells = cell_width(c);
-            if used + cells > width && !line.is_empty() {
+            while used + cells > width && !line.is_empty() {
                 // Break after the last space when there is one, so words stay
                 // whole; the space stays on the line, so no character is lost.
                 let cut = line.rfind(' ').map(|i| i + 1).filter(|&i| i < line.len());
@@ -56,7 +56,7 @@ pub fn tail(text: &str, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{tail, wrap};
+    use super::{tail, text_width, wrap};
 
     #[test]
     fn long_lines_are_split_and_short_ones_kept() {
@@ -71,6 +71,13 @@ mod tests {
         let text = "a  path with  two spaces/and-a-very-long-name.iso";
         for width in 1..30 {
             assert_eq!(wrap(text, width).concat(), text, "width {width}");
+        }
+        let mixed = " abcdefghi漢 字 x漢漢 yz";
+        for width in 2..30 {
+            for line in wrap(mixed, width) {
+                assert!(text_width(&line) <= width, "{line:?} at {width}");
+            }
+            assert_eq!(wrap(mixed, width).concat(), mixed);
         }
     }
 

@@ -102,6 +102,9 @@ pub struct State {
     pub width: u16,
     pub height: u16,
     pub clock_ms: u64,
+    /// Set by the first Ctrl-C while a step runs: the next one leaves without
+    /// waiting for the step.
+    pub forced_quit: bool,
     /// When the current question was put to the person.
     pub asked_ms: u64,
 }
@@ -135,6 +138,7 @@ impl State {
             height: 24,
             clock_ms: 0,
             asked_ms: 0,
+            forced_quit: false,
         }
     }
 
@@ -215,16 +219,20 @@ impl State {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('c') if control => {
-                if matches!(
+                let running = matches!(
                     self.mode,
                     Mode::Busy {
                         label: "working",
                         ..
                     }
-                ) {
-                    // Quitting now would stop a step half way and lose its result.
+                );
+                if running && !self.forced_quit {
+                    // Quitting now would stop a step half way and lose its
+                    // result; a second Ctrl-C is for a step that never ends.
+                    self.forced_quit = true;
                     self.blocks.push(Block::Note(
-                        "A step is running; quit when it has finished.".to_owned(),
+                        "A step is running. Ctrl-C again to leave without waiting for it."
+                            .to_owned(),
                     ));
                     return Effect::Nothing;
                 }
@@ -622,12 +630,14 @@ mod tests {
     }
 
     #[test]
-    fn quitting_while_a_step_runs_is_refused_with_a_note() {
+    fn quitting_while_a_step_runs_needs_a_second_ctrl_c() {
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         let mut state = asking_plan();
         state.on_key(press(KeyCode::Char('y')));
         assert_eq!(state.on_key(ctrl_c), Effect::Nothing);
         assert!(matches!(state.blocks.last(), Some(Block::Note(n)) if n.contains("running")));
+        assert_eq!(state.on_key(ctrl_c), Effect::Quit);
+        assert!(state.forced_quit);
         let mut waiting = State::new(String::new());
         type_text(&mut waiting, "x");
         waiting.on_key(press(KeyCode::Enter));
