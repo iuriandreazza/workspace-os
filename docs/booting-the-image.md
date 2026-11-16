@@ -54,8 +54,8 @@ as well as the screen:
   key, Normal starts after three seconds, so an unattended machine boots.
 - A key pressed before the menu is drawn is dropped, so it cannot choose an
   entry nobody saw: press it once the menu is on the console.
-- A byte on the console that nobody means (line noise, a terminal server
-  announcing itself) also stops the countdown, and then the machine waits for
+- A byte on the console that nobody means (a terminal server announcing
+  itself, say) also stops the countdown when it is a valid character, and then the machine waits for
   a person. An unattended machine on a noisy serial line therefore needs the
   firmware's boot order, not this menu. The firmware's watchdog is off while
   the menu waits and is armed again once an entry is chosen.
@@ -88,9 +88,10 @@ qemu-system-aarch64 -machine virt,acpi=off -cpu cortex-a72 -m 512M \
 
 The firmware prints its own lines first. The bootloader draws a banner, the
 boot menu and then logs lines that start with `boot` and a tag (`ok`, `info`,
-`>>`, `fail`), then a summary box; the kernel draws its own box and logs lines that start with
-`kernel` and the same kind of tag. The kernel's `entry: bootloader, boot info
-1.0, mode 0 (normal)` line shows how it was entered and which entry was chosen, and `booted on aarch64 in EL1` is the
+`>>`, `fail`), then a summary box; the kernel draws its own box and logs lines
+that start with `kernel` and the same kind of tag. The kernel's `entry:
+bootloader, boot info 1.0, mode 0 (normal)` line shows how it was entered and
+which entry was chosen, and `booted on aarch64 in EL1` is the
 banner. Leave QEMU with Ctrl-A then X.
 
 Add `-accel hvf -cpu host` to run with the hypervisor instead of emulation.

@@ -62,7 +62,8 @@
 #   uefi-recovery-arrows  the Down arrow selects Recovery and stops the
 #                         countdown: the kernel must not start by itself while
 #                         the menu waits, then Enter starts it (boot mode 1)
-#   uefi-768, uefi-el2, uefi-el2-high  Enter and `1` start Normal (boot mode 0)
+#   uefi-768, uefi-el2-high  Enter starts Normal (boot mode 0)
+#   uefi-el2              the key `1` starts Normal (boot mode 0)
 #
 # Three more boots use kernels built to raise an exception nothing resumes
 # from, and must end in a kernel panic that names it:
@@ -91,7 +92,6 @@ readonly MAX_RESERVED_FRAMES=1024
 BOOT_TIMEOUT_SECONDS=10
 readonly UEFI_BOOT_TIMEOUT_SECONDS=90
 readonly SETTLE_SECONDS=1
-
 # Fixed target directory: with CARGO_TARGET_DIR set, cargo would build
 # elsewhere and the test would boot a stale binary from here.
 readonly TARGET_DIR="target"
