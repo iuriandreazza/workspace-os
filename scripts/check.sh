@@ -34,10 +34,13 @@ cargo clippy --all-targets -p bootloader --target aarch64-unknown-uefi -- -D war
 # The intent shell is host code (std, sockets, the real filesystem), so like the
 # device tree reader it is built for the host. Its tests never need the model.
 cargo clippy --all-targets -p intent-shell --target "$host_target" -- -D warnings
+# The deterministic shell and the recovery mode build without the interface (ADR 0015).
+cargo clippy --all-targets -p intent-shell --target "$host_target" --no-default-features -- -D warnings
 
 echo "==> unit tests"
 cargo test --quiet -p devicetree -p physmem -p bootinfo --target "$host_target"
 cargo test --quiet -p intent-shell --target "$host_target"
+cargo test --quiet -p intent-shell --target "$host_target" --no-default-features
 
 echo "==> boot smoke test"
 ./scripts/boot-smoke-test.sh

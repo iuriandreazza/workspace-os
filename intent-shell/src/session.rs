@@ -53,12 +53,18 @@ pub enum Outcome {
     Declined(Review),
     Executed {
         review: Review,
+        /// Whether the person confirmed the plan. When not (ADR 0016) the
+        /// result carries the plan, which no question showed.
+        asked: bool,
         steps: Vec<ExecutedStep>,
         labels: Labels,
     },
     /// The log could not be written, so the shell stopped before the next action.
     LogFailed {
         reason: String,
+        /// The plan screen, when the plan ran without a question and so was
+        /// never shown (ADR 0016).
+        plan: Option<String>,
         steps: Vec<ExecutedStep>,
         labels: Labels,
     },
@@ -77,6 +83,7 @@ impl Shell<'_> {
         self.run(request)
             .unwrap_or_else(|reason| Outcome::LogFailed {
                 reason,
+                plan: None,
                 steps: Vec::new(),
                 labels: Labels::default(),
             })
@@ -119,24 +126,33 @@ impl Shell<'_> {
         if !anything_runs {
             return Ok(Outcome::AllRefused(reviewed));
         }
-        let confirmed = self.confirm.plan(
-            &screen::plan_screen(&reviewed, View::Friendly),
-            &screen::plan_screen(&reviewed, View::Details),
-        );
-        self.record(json!({"event": "plan_confirmation", "confirmed": confirmed}))?;
-        if !confirmed {
-            return Ok(Outcome::Declined(reviewed));
+        // ADR 0016: a plan that only reads or adds runs without the question.
+        // The decision is on record before anything runs, like a confirmation.
+        let asked = needs_confirmation(&reviewed);
+        if asked {
+            let confirmed = self.confirm.plan(
+                &screen::plan_screen(&reviewed, View::Friendly),
+                &screen::plan_screen(&reviewed, View::Details),
+            );
+            self.record(json!({"event": "plan_confirmation", "confirmed": confirmed}))?;
+            if !confirmed {
+                return Ok(Outcome::Declined(reviewed));
+            }
+        } else {
+            self.record(json!({"event": "plan_auto_approved"}))?;
         }
         let (steps, logged) = self.execute(&reviewed);
         let labels = self.labels_for(&reviewed, &steps);
         Ok(match logged {
             Ok(()) => Outcome::Executed {
                 review: reviewed,
+                asked,
                 steps,
                 labels,
             },
             Err(reason) => Outcome::LogFailed {
                 reason,
+                plan: (!asked).then(|| screen::plan_screen(&reviewed, View::Friendly)),
                 steps,
                 labels,
             },
@@ -419,6 +435,21 @@ fn review_json(reviewed: &Review) -> Value {
     json!({"summary": reviewed.summary, "steps": steps})
 }
 
+/// Whether the person must confirm this plan: any action that could run and
+/// changes or removes something, or is held for root (ADR 0016, ADR 0007).
+fn needs_confirmation(review: &Review) -> bool {
+    review
+        .steps
+        .iter()
+        .filter(|step| step.blocked.is_none())
+        .flat_map(|step| &step.items)
+        .any(|item| match &item.verdict {
+            Verdict::Refused(_) => false,
+            Verdict::NeedsRoot => true,
+            Verdict::Allowed => item.action.needs_confirmation(),
+        })
+}
+
 impl Outcome {
     /// What to tell the person after the request ended.
     pub fn render(&self) -> String {
@@ -441,14 +472,28 @@ impl Outcome {
                 screen::plan_screen(review, View::Friendly)
             ),
             Self::Declined(_) => "Not confirmed. Nothing ran.".to_owned(),
+            Self::Executed {
+                review,
+                asked: false,
+                steps,
+                labels,
+            } => format!(
+                "{}\n  Ran without asking: it only read or added.\n{}",
+                screen::plan_screen(review, View::Friendly),
+                render_steps(steps, labels)
+            ),
             Self::Executed { steps, labels, .. } => render_steps(steps, labels),
             Self::LogFailed {
                 reason,
+                plan,
                 steps,
                 labels,
             } => {
                 format!(
-                    "{}The decision log cannot be written ({reason}); stopped before the next action.",
+                    "{}{}The decision log cannot be written ({reason}); stopped before the next action.",
+                    plan.as_deref()
+                        .map(|p| format!("{p}\n"))
+                        .unwrap_or_default(),
                     render_steps(steps, labels)
                 )
             }

@@ -11,7 +11,7 @@ use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::action::{Access, Action, quoted_path};
+use crate::action::{Access, Action, is_hidden, quoted_path};
 use crate::ports::{Entry, Found, Host, Output, Search};
 use crate::reference::Place;
 
@@ -173,6 +173,17 @@ fn stat(path: &Path) -> Result<Output, String> {
 
 fn read(path: &Path, limit: u64) -> Result<Output, String> {
     use std::os::unix::fs::OpenOptionsExt;
+    // A plain name can be a link to a hidden file (`notes.txt` to `.ssh/id_rsa`),
+    // and a read of a plain name is not asked about (ADR 0016).
+    if !is_hidden(path)
+        && let Ok(real) = fs::canonicalize(path)
+        && is_hidden(&real)
+    {
+        return Err(format!(
+            "{} leads to a hidden location; ask for it by its own name",
+            quoted_name(path)
+        ));
+    }
     // Opening a named pipe or a device can block forever, so the open does not
     // wait, and what was opened (not what the name was a moment ago) must be a
     // regular file.
@@ -410,6 +421,26 @@ mod tests {
         assert!(output.found.is_empty());
         fs::remove_dir_all(&dir).unwrap();
         fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn a_plain_name_that_links_to_a_hidden_file_is_not_read() {
+        let dir = temp_dir("hidden-link");
+        fs::create_dir(dir.join(".ssh")).unwrap();
+        fs::write(dir.join(".ssh/id_rsa"), "secret").unwrap();
+        std::os::unix::fs::symlink(dir.join(".ssh/id_rsa"), dir.join("notes.txt")).unwrap();
+        std::os::unix::fs::symlink(dir.join(".ssh"), dir.join("docs")).unwrap();
+        for path in [dir.join("notes.txt"), dir.join("docs/id_rsa")] {
+            let error = host().execute(&Action::Read { path }).unwrap_err();
+            assert!(error.contains("hidden location"), "{error}");
+        }
+        let direct = host()
+            .execute(&Action::Read {
+                path: dir.join(".ssh/id_rsa"),
+            })
+            .unwrap();
+        assert_eq!(direct.text, "secret");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

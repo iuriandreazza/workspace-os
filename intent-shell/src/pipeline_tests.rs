@@ -150,10 +150,15 @@ fn every_decision_is_logged_in_order() {
             "model_output",
             "plan_accepted",
             "review",
-            "plan_confirmation",
+            "plan_auto_approved",
             "execute",
             "result"
         ]
+    );
+    let asked = run(&[DELETE_LARGEST], &files(), false);
+    assert!(
+        events(&asked, "plan_confirmation").len() == 1
+            && events(&asked, "plan_auto_approved").is_empty()
     );
     assert_eq!(events(&result, "model_output")[0]["raw"], LARGEST);
     assert_eq!(
@@ -420,14 +425,20 @@ fn declining_the_plan_runs_nothing() {
         ..Answers::yes()
     };
     let (result, _) = run_with(
-        &[LARGEST],
+        &[DELETE_LARGEST],
         &host,
         &Authority::full(user(false)),
         answers,
         MemoryLog::default(),
     );
     assert!(matches!(result.outcome, Outcome::Declined(_)));
-    assert!(host.executed.borrow().is_empty());
+    // The reference is expanded by a read before the question; nothing is deleted.
+    assert!(
+        host.executed
+            .borrow()
+            .iter()
+            .all(|action| !action.starts_with("fs.delete"))
+    );
     assert_eq!(events(&result, "plan_confirmation")[0]["confirmed"], false);
 }
 
@@ -1133,4 +1144,185 @@ fn stat_is_judged_by_its_own_access_not_by_read() {
     let host = files().forbid(Access::Stat, "/work/a");
     let result = run(&[&text], &host, false);
     assert!(matches!(result.outcome, Outcome::AllRefused(_)));
+}
+
+// ADR 0016: what runs without a question, and what still asks.
+
+fn plan_of(action: &str, args: &str, elevate: &str) -> String {
+    plan(&[step("s1", action, args, elevate)])
+}
+
+fn auto_plans() -> Vec<(&'static str, String)> {
+    vec![
+        ("list", plan_of("fs.list", PLACE, "false")),
+        ("stat", plan_of("fs.stat", &named("a"), "false")),
+        ("read", plan_of("fs.read", &named("a"), "false")),
+        (
+            "find_largest",
+            plan_of(
+                "fs.find_largest",
+                r#"{"target":{"place":"downloads"},"count":1}"#,
+                "false",
+            ),
+        ),
+        (
+            "create",
+            plan_of(
+                "fs.write",
+                r#"{"target":{"new_name":"new","in":"downloads"},"content":"x","mode":"create"}"#,
+                "false",
+            ),
+        ),
+        (
+            "append",
+            plan_of(
+                "fs.write",
+                r#"{"target":{"name":"a","in":"downloads","kind":"file"},"content":"x","mode":"append"}"#,
+                "false",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_plan_that_only_reads_or_adds_runs_without_asking() {
+    for (name, text) in auto_plans() {
+        let host = files();
+        let result = run(&[&text], &host, false);
+        assert!(
+            matches!(result.outcome, Outcome::Executed { asked: false, .. }),
+            "{name}: {:?}",
+            result.outcome
+        );
+        assert!(result.answers.screens.is_empty(), "{name} asked");
+        assert_eq!(events(&result, "plan_auto_approved").len(), 1, "{name}");
+        assert!(events(&result, "plan_confirmation").is_empty(), "{name}");
+        assert!(!host.executed.borrow().is_empty(), "{name} did not run");
+    }
+}
+
+#[test]
+fn the_result_of_an_unasked_plan_shows_the_plan() {
+    let result = run(&[LARGEST], &files(), false);
+    let shown = result.outcome.render();
+    assert!(shown.contains("Verdict"), "{shown}");
+    assert!(shown.contains("Ran without asking"), "{shown}");
+}
+
+#[test]
+fn anything_that_changes_removes_or_needs_root_still_asks() {
+    let overwrite = plan_of(
+        "fs.write",
+        r#"{"target":{"name":"a","in":"downloads","kind":"file"},"content":"x","mode":"overwrite"}"#,
+        "false",
+    );
+    let cases = [
+        ("delete", plan_of("fs.delete", &named("a"), "false"), false),
+        ("overwrite", overwrite, false),
+        ("move", move_plan(), false),
+        (
+            "root delete",
+            plan_of("fs.delete", &named("a"), "true"),
+            true,
+        ),
+    ];
+    for (name, text, administrator) in cases {
+        let result = run(&[&text], &files(), administrator);
+        assert_eq!(result.answers.screens.len(), 1, "{name} must ask");
+        assert_eq!(events(&result, "plan_confirmation").len(), 1, "{name}");
+        assert!(events(&result, "plan_auto_approved").is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn one_destructive_step_makes_the_whole_plan_ask() {
+    let result = run(&[DELETE_LARGEST], &files(), false);
+    assert_eq!(result.answers.screens.len(), 1);
+}
+
+#[test]
+fn an_unasked_plan_is_on_record_before_it_runs() {
+    let result = run(&[LARGEST], &files(), false);
+    let names: Vec<_> = result
+        .log
+        .events
+        .iter()
+        .map(|e| e["event"].as_str().unwrap().to_owned())
+        .collect();
+    let approved = names
+        .iter()
+        .position(|n| n == "plan_auto_approved")
+        .unwrap();
+    let executed = names.iter().position(|n| n == "execute").unwrap();
+    assert!(approved < executed);
+}
+
+#[test]
+fn a_hidden_file_is_asked_about_to_read_to_add_to_or_to_create() {
+    let host = FakeHost::with_files(&[("/work/.zshrc", 10), ("/work/a", 10)]);
+    let hidden = |action: &str, args: &str| plan_of(action, args, "false");
+    let cases = [
+        hidden(
+            "fs.read",
+            r#"{"target":{"name":".zshrc","in":"downloads","kind":"file"}}"#,
+        ),
+        hidden(
+            "fs.write",
+            r#"{"target":{"name":".zshrc","in":"downloads","kind":"file"},"content":"x","mode":"append"}"#,
+        ),
+        hidden(
+            "fs.write",
+            r#"{"target":{"new_name":".zshenv","in":"downloads"},"content":"x","mode":"create"}"#,
+        ),
+    ];
+    for text in cases {
+        let result = run(&[&text], &host, false);
+        assert_eq!(result.answers.screens.len(), 1, "{text}");
+    }
+}
+
+#[test]
+fn a_read_next_to_a_refused_destructive_step_still_runs_unasked() {
+    let host = files().forbid(Access::Delete, "/work/a");
+    let text = plan(&[
+        step("s1", "fs.list", PLACE, "false"),
+        step("s2", "fs.delete", &named("a"), "false"),
+    ]);
+    let result = run(&[&text], &host, false);
+    assert!(result.answers.screens.is_empty());
+    assert!(matches!(
+        result.outcome,
+        Outcome::Executed { asked: false, .. }
+    ));
+    assert!(
+        host.executed
+            .borrow()
+            .iter()
+            .all(|a| !a.starts_with("fs.delete"))
+    );
+}
+
+#[test]
+fn a_read_made_root_by_an_administrator_asks_and_gets_its_panel() {
+    let text = plan_of("fs.read", &named("a"), "true");
+    let result = run(&[&text], &files(), true);
+    assert_eq!(result.answers.screens.len(), 1);
+    assert_eq!(result.answers.root_asked.len(), 1);
+}
+
+#[test]
+fn an_unasked_plan_whose_log_fails_still_shows_the_plan() {
+    let (result, _) = run_with(
+        &[LARGEST],
+        &files(),
+        &Authority::full(user(false)),
+        Answers::yes(),
+        MemoryLog::failing_after(5),
+    );
+    let shown = result.outcome.render();
+    assert!(
+        matches!(result.outcome, Outcome::LogFailed { .. }),
+        "{shown}"
+    );
+    assert!(shown.contains("Verdict"), "{shown}");
 }
