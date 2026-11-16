@@ -23,6 +23,9 @@ const MAX_STALE_KEYS: usize = 64;
 /// The firmware arms a watchdog before it starts a boot application, and a
 /// person who stopped the countdown must not be reset while they read.
 const WATCHDOG_CODE: u64 = 0x10000;
+/// The firmware's own default, put back once the menu is done so that a hang
+/// while loading the kernel still resets the machine.
+const WATCHDOG_SECONDS: usize = 300;
 
 /// How the entry was chosen, for the log.
 #[derive(Clone, Copy)]
@@ -41,10 +44,16 @@ impl core::fmt::Display for Reason {
 }
 
 /// Shows the menu until an entry is chosen; returns it.
-pub fn choose<'a>(mut menu: Menu<'a>) -> (Entry<'a>, Reason) {
-    let entries = menu.entries();
+pub fn choose<'a>(menu: Menu<'a>) -> (Entry<'a>, Reason) {
     // A failed watchdog call is not a reason to stop: the menu works without.
     let _ = boot::set_watchdog_timer(0, WATCHDOG_CODE, None);
+    let chosen = wait_for_choice(menu);
+    let _ = boot::set_watchdog_timer(WATCHDOG_SECONDS, WATCHDOG_CODE, None);
+    chosen
+}
+
+fn wait_for_choice<'a>(mut menu: Menu<'a>) -> (Entry<'a>, Reason) {
+    let entries = menu.entries();
     for _ in 0..MAX_STALE_KEYS {
         if next_key().is_none() {
             break;

@@ -63,7 +63,7 @@ pub fn banner() {
 pub fn menu(menu: &bootinfo::menu::Menu) {
     log(
         Level::Info,
-        format_args!("boot menu: arrows and Enter, or the number of an entry"),
+        format_args!("boot menu: arrows and Enter, or a number from 1 to 9"),
     );
     for (index, entry) in menu.entries().iter().enumerate() {
         let selected = index == menu.selected();

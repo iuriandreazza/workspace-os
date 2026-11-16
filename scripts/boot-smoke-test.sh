@@ -208,6 +208,12 @@ start_qemu() {
     local serial=(-serial "file:$serial_log")
     if [[ "${1:-}" == "--keys" ]]; then
         shift
+        local socket
+        socket="$(console_socket "$boot_name")"
+        # QEMU refuses a longer path, and its option string cannot hold a comma.
+        if [[ ${#socket} -ge 100 || "$socket" == *,* ]]; then
+            fail "the console socket path '$socket' is too long or holds a comma: set TMPDIR to a short directory"
+        fi
         serial=(-chardev "socket,id=console,path=$(console_socket "$boot_name"),server=on,wait=off,logfile=$serial_log"
             -serial chardev:console)
     fi
@@ -381,7 +387,8 @@ drive_menu() {
             up) send_key "$1" $'\033[A' ;;
             hold)
                 sleep $((AUTOBOOT_SECONDS + 2))
-                if grep -qF "booted on aarch64" "$serial_log" || grep -qF "  starting " "$serial_log"; then
+                # The plain log: a colour code sits between the tag and the text.
+                if grep -qF "booted on aarch64" "$serial_log" || plain_log | grep -qF "(boot mode "; then
                     fail "the boot continued by itself while the menu waited for a key"
                 fi
                 ;;
@@ -418,7 +425,9 @@ check_uefi_boot() {
     reason="chosen on the keyboard"
     [[ -n "$keys" ]] || reason="chosen by the timeout"
     BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
-    start_qemu "$1" --keys -machine virt,acpi=off -m "${mib}M" -bios "$uefi_firmware" \
+    local console=()
+    [[ -z "$keys" ]] || console=(--keys)
+    start_qemu "$1" "${console[@]}" -machine virt,acpi=off -m "${mib}M" -bios "$uefi_firmware" \
         -drive "file=$disk_image,format=raw,if=virtio" "${@:6}"
 
     if [[ -n "$keys" ]]; then

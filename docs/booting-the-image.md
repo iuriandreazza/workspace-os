@@ -38,7 +38,7 @@ ADR 0008). It is plain text on the firmware console, which is the serial line
 as well as the screen:
 
 ```
-  boot  info  boot menu: arrows and Enter, or the number of an entry
+  boot  info  boot menu: arrows and Enter, or a number from 1 to 9
         > 1  Normal
           2  Recovery
   boot  info  autoboot in 3 s, starting Normal
@@ -49,9 +49,16 @@ as well as the screen:
   line, for example `mode 1 (recovery)`. What recovery does once it runs is
   K13's work; today the same kernel starts with the other mode.
 - **Up** and **Down** move the selection and **Enter** starts it. A digit starts
-  the entry with that number at once.
+  the entry with that number (1 to 9) at once.
 - Any key stops the countdown, so the menu then waits for a person. With no
   key, Normal starts after three seconds, so an unattended machine boots.
+- A key pressed before the menu is drawn is dropped, so it cannot choose an
+  entry nobody saw: press it once the menu is on the console.
+- A byte on the console that nobody means (line noise, a terminal server
+  announcing itself) also stops the countdown, and then the machine waits for
+  a person. An unattended machine on a noisy serial line therefore needs the
+  firmware's boot order, not this menu. The firmware's watchdog is off while
+  the menu waits and is armed again once an entry is chosen.
 - The menu only appends lines to the console. The graphical menu (K2e) draws
   next to it and does not replace it, because the gate reads this one.
 
