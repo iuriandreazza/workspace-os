@@ -702,7 +702,8 @@ mod tests {
 
     #[test]
     fn a_relative_or_empty_home_gives_no_places() {
-        for home in ["", "relative/home"] {
+        // `src` exists next to the tests, so without the guard it would be a place.
+        for home in ["", "src", "relative/home"] {
             let host = UnixHost::new(Some(PathBuf::from(home)));
             for place in Place::ALL {
                 assert!(host.place_roots(place).is_empty(), "{home:?} {place:?}");
@@ -734,6 +735,20 @@ mod tests {
         fs::write(dir.join("docs/report.pdf"), "x").unwrap();
         let found = search(std::slice::from_ref(&dir), "report", 20).unwrap();
         assert_eq!(found.entries.len(), 1, "{found:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_search_ignores_case_in_the_needle_too() {
+        let dir = temp_dir("needlecase");
+        fs::write(dir.join("report.pdf"), "x").unwrap();
+        assert_eq!(
+            search(std::slice::from_ref(&dir), "REPORT.PDF", 10)
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
