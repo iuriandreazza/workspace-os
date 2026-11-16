@@ -308,10 +308,8 @@ pub fn destination(
     };
     // Into a link to a folder means into the folder: the file lands there,
     // so that is the location the broker judges and the person sees.
-    let destination = if into && matches!(direct, Direct::Path(_)) {
+    let destination = if into {
         Destination::Into(scope.host.canonicalize(path, true))
-    } else if into {
-        Destination::Into(path.clone())
     } else {
         Destination::Exact(path.clone())
     };

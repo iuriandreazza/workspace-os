@@ -161,7 +161,12 @@ impl Host for UnixHost {
             // macOS calls it Movies. Both count, so neither can be removed whole.
             Place::Videos => vec![home.join("Videos"), home.join("Movies")],
         };
-        folders.into_iter().filter(|p| p.is_dir()).collect()
+        // The real folders, so a place that is a link is judged and shown where it leads.
+        folders
+            .into_iter()
+            .filter_map(|p| fs::canonicalize(p).ok())
+            .filter(|p| p.is_dir())
+            .collect()
     }
 
     fn home(&self) -> Option<PathBuf> {
@@ -374,6 +379,7 @@ fn read(path: &Path, limit: u64) -> Result<Output, String> {
 
 fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, String> {
     refuse_hidden_link(root)?;
+    let root_is_hidden = is_hidden(root);
     use std::os::unix::fs::MetadataExt;
     let mut files: Vec<(u64, PathBuf)> = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -396,6 +402,11 @@ fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, 
             if walked > walk_limit {
                 truncated = true;
                 break;
+            }
+            // Hidden entries are not looked into unless the root is hidden itself:
+            // a ranking of a plain folder asks no question (ADR 0016).
+            if !root_is_hidden && entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
+                continue;
             }
             // `file_type` does not follow symlinks, so the walk stays inside `root`.
             let Ok(kind) = entry.file_type() else {
@@ -473,7 +484,9 @@ fn search(roots: &[PathBuf], needle: &str, walk_limit: usize) -> Result<Search, 
             if name.contains(&needle) {
                 entries.push(Entry {
                     path: path.clone(),
-                    is_dir: kind.is_dir(),
+                    // A link to a folder is a folder to enter, though never walked.
+                    is_dir: kind.is_dir()
+                        || (kind.is_symlink() && fs::metadata(&path).is_ok_and(|m| m.is_dir())),
                 });
             }
             if kind.is_dir() {
@@ -1138,7 +1151,7 @@ mod tests {
 
     #[test]
     fn a_link_that_leads_nowhere_yet_is_followed_to_where_a_write_would_create_it() {
-        let dir = temp_dir("dangling");
+        let dir = temp_dir("dangling-write");
         fs::create_dir(dir.join(".ssh")).unwrap();
         std::os::unix::fs::symlink(dir.join(".ssh/new_keys"), dir.join("lnk")).unwrap();
         std::os::unix::fs::symlink("lnk", dir.join("chain")).unwrap();
@@ -1176,6 +1189,54 @@ mod tests {
         let all = host().list_capped(&dir, 50).unwrap();
         assert_eq!(all.found.len(), 12);
         assert!(all.notes.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_place_that_is_a_link_is_the_real_folder_it_leads_to() {
+        let home = temp_dir("place-link");
+        fs::create_dir(home.join(".priv")).unwrap();
+        std::os::unix::fs::symlink(home.join(".priv"), home.join("Documents")).unwrap();
+        let host = UnixHost::new(Some(home.clone()));
+        assert_eq!(host.place_roots(Place::Documents), vec![home.join(".priv")]);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_a_folder_is_found_as_a_folder_but_not_walked() {
+        let dir = temp_dir("search-link");
+        fs::create_dir_all(dir.join("real/inside")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("films")).unwrap();
+        let found = search(std::slice::from_ref(&dir), "films", 100).unwrap();
+        assert_eq!(found.entries.len(), 1);
+        assert!(found.entries[0].is_dir);
+        let inside = search(std::slice::from_ref(&dir), "inside", 100).unwrap();
+        assert_eq!(
+            inside.entries.len(),
+            1,
+            "found once, under real/ and not again under the link"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_ranking_of_a_plain_folder_does_not_look_into_hidden_entries() {
+        let dir = temp_dir("rank-hidden");
+        fs::create_dir(dir.join(".ssh")).unwrap();
+        fs::write(dir.join(".ssh/id_rsa"), vec![0; 900]).unwrap();
+        fs::write(dir.join(".hidden-file"), vec![0; 800]).unwrap();
+        fs::write(dir.join("plain"), vec![0; 10]).unwrap();
+        let rank = |path: PathBuf| {
+            host()
+                .execute(&Action::FindLargest { path, count: 5 })
+                .unwrap()
+                .paths()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rank(dir.clone()), [dir.join("plain")]);
+        // Asking for the hidden folder itself is asked about by the broker, and shows it.
+        assert_eq!(rank(dir.join(".ssh")), [dir.join(".ssh/id_rsa")]);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

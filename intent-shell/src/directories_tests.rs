@@ -1222,3 +1222,20 @@ fn a_hidden_listing_is_not_read_to_expand_a_reference_before_the_person_confirms
     // The listing was not run during the review, to expand the reference.
     assert!(review.steps[0].items[0].output.is_none());
 }
+
+#[test]
+fn a_move_into_a_place_that_is_a_link_is_shown_where_the_file_lands() {
+    let host = home()
+        .link("/home/ana/Documents", "/home/ana/.priv")
+        .dir("/home/ana/.priv");
+    let args = r#"{"from":{"path":"Downloads/notes.txt"},"to":{"place":"documents"}}"#;
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.move", args),
+    );
+    assert_eq!(
+        exact(&run),
+        r#"fs.move from="/home/ana/Downloads/notes.txt" to="/home/ana/.priv/notes.txt""#
+    );
+}
