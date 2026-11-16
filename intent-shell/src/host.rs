@@ -71,10 +71,14 @@ impl UnixHost {
 
     fn list_capped(&self, path: &Path, cap: usize) -> Result<Output, String> {
         refuse_hidden_link(path)?;
+        // Not the whole folder: a huge one must not stall or fill the memory.
         let mut children: Vec<PathBuf> = fs::read_dir(path)
             .map_err(|e| io_error(path, e))?
             .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .take(cap + 1)
             .collect();
+        let listing_cut = children.len() > cap;
+        children.truncate(cap);
         children.sort();
         let mut tree = Vec::new();
         // Level by level, so a huge first folder cannot crowd out its siblings.
@@ -103,11 +107,14 @@ impl UnixHost {
                 pending.extend(names.into_iter().map(|n| (n, level + 1)));
             }
         }
-        let notes = if capped {
-            vec![format!("the tree stopped after {cap} entries: more exist")]
-        } else {
-            Vec::new()
-        };
+        let mut notes = Vec::new();
+        if listing_cut {
+            notes.push(format!(
+                "the listing stopped after {cap} entries: more exist"
+            ));
+        } else if capped {
+            notes.push(format!("the tree stopped after {cap} entries: more exist"));
+        }
         Ok(Output {
             found: children
                 .into_iter()
@@ -164,8 +171,15 @@ impl Host for UnixHost {
     }
 
     fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf {
-        if follow_last && let Ok(real) = fs::canonicalize(path) {
-            return real;
+        if follow_last {
+            if let Ok(real) = fs::canonicalize(path) {
+                return real;
+            }
+            // A link whose target does not exist yet still leads somewhere:
+            // writing to it creates the target, so that is the location.
+            if let Some(target) = dangling_target(path) {
+                return self.canonicalize(&target, true);
+            }
         }
         // Resolve the longest part that exists and can be reached; the rest
         // stays as written, and whether the user may touch it is the broker's.
@@ -185,6 +199,10 @@ impl Host for UnixHost {
 
     fn is_dir(&self, path: &Path) -> bool {
         fs::metadata(path).is_ok_and(|m| m.is_dir())
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
     }
 
     fn same(&self, a: &Path, b: &Path) -> bool {
@@ -274,6 +292,25 @@ fn stat(path: &Path) -> Result<Output, String> {
         text,
         ..Output::default()
     })
+}
+
+/// Where a link that leads nowhere yet points, as an absolute path, following
+/// a chain of such links a few steps.
+fn dangling_target(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    for _ in 0..8 {
+        let target = fs::read_link(&current).ok()?;
+        let absolute = if target.is_absolute() {
+            target
+        } else {
+            current.parent()?.join(target)
+        };
+        if fs::symlink_metadata(&absolute).is_err() || fs::canonicalize(&absolute).is_ok() {
+            return Some(absolute);
+        }
+        current = absolute;
+    }
+    None
 }
 
 /// A plain name can be a link to a hidden place (`notes.txt` to `.ssh/id_rsa`),
@@ -1096,6 +1133,49 @@ mod tests {
                 })
                 .is_ok()
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_leads_nowhere_yet_is_followed_to_where_a_write_would_create_it() {
+        let dir = temp_dir("dangling");
+        fs::create_dir(dir.join(".ssh")).unwrap();
+        std::os::unix::fs::symlink(dir.join(".ssh/new_keys"), dir.join("lnk")).unwrap();
+        std::os::unix::fs::symlink("lnk", dir.join("chain")).unwrap();
+        assert_eq!(
+            host().canonicalize(&dir.join("lnk"), true),
+            dir.join(".ssh/new_keys")
+        );
+        assert_eq!(
+            host().canonicalize(&dir.join("chain"), true),
+            dir.join(".ssh/new_keys")
+        );
+        // Naming it to remove it still names the link.
+        assert_eq!(
+            host().canonicalize(&dir.join("lnk"), false),
+            dir.join("lnk")
+        );
+        assert!(host().is_symlink(&dir.join("lnk")));
+        assert!(!host().is_symlink(&dir.join(".ssh")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_listing_of_a_huge_folder_stops_at_the_cap_and_says_so() {
+        let dir = temp_dir("listcap");
+        for n in 0..12 {
+            fs::write(dir.join(format!("f{n:02}")), "").unwrap();
+        }
+        let output = host().list_capped(&dir, 5).unwrap();
+        assert_eq!(output.found.len(), 5);
+        assert!(
+            output.notes[0].contains("listing stopped after 5"),
+            "{:?}",
+            output.notes
+        );
+        let all = host().list_capped(&dir, 50).unwrap();
+        assert_eq!(all.found.len(), 12);
+        assert!(all.notes.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

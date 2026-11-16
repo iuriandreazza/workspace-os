@@ -295,6 +295,10 @@ impl Host for Lying {
         self.0.canonicalize(path, follow_last)
     }
 
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.0.is_symlink(path)
+    }
+
     fn is_dir(&self, path: &Path) -> bool {
         self.0.is_dir(path)
     }

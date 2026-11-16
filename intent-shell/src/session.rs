@@ -442,6 +442,10 @@ impl Host for LoggedReads<'_, '_, '_> {
         self.inner.canonicalize(path, follow_last)
     }
 
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.inner.is_symlink(path)
+    }
+
     fn is_dir(&self, path: &Path) -> bool {
         self.inner.is_dir(path)
     }

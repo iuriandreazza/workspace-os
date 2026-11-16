@@ -346,10 +346,10 @@ pub fn review(
 /// asked to confirm (ADR 0011). Only plain reads run: never a held or
 /// mutating step, and never one that waits on a step that has not run.
 fn pre_run(step: &mut ReviewedStep, dependencies_ran: bool, host: &dyn Host) {
-    let plain_reads = step
-        .items
-        .iter()
-        .all(|i| i.action.is_read_only() && i.verdict == Verdict::Allowed);
+    let plain_reads = step.items.iter().all(|i| {
+        // What ADR 0016 says must ask is not read before the person says yes.
+        i.action.is_read_only() && i.verdict == Verdict::Allowed && !i.action.needs_confirmation()
+    });
     if !(plain_reads && dependencies_ran) {
         return;
     }
@@ -400,8 +400,19 @@ fn resolve_step(
                     step.spec.follows_last_link(),
                 )
                 .map_err(Refusal::Unresolved)?;
-                require_existing(&step.spec, slot, direct, &located.paths, scope.host)?;
-                sources = located.paths;
+                // However it was found (a name, a search, a path), what a step
+                // looks at, enters or writes to is where the link leads.
+                let paths: Vec<PathBuf> = if step.spec.follows_last_link() {
+                    located
+                        .paths
+                        .iter()
+                        .map(|p| scope.host.canonicalize(p, true))
+                        .collect()
+                } else {
+                    located.paths
+                };
+                require_existing(&step.spec, slot, direct, &paths, scope.host)?;
+                sources = paths;
                 notes.extend(located.notes);
             }
             (_, Target::Direct(direct)) => {
@@ -531,9 +542,15 @@ pub(crate) fn judge(
     if let Some(path) = removed_or_replaced.filter(|p| is_place_root(host, p)) {
         return Verdict::Refused(Refusal::PlaceRoot(path.clone()));
     }
-    // `same` also sees a folder written in another case on a volume that folds it.
+    // `same` also sees a folder written in another case on a volume that folds
+    // it. A link is moved as itself: only a folder that is not a link can hold
+    // what is moved into it, and a rename in place is not a move into itself.
     if let Action::Move { from, to } = action
-        && to.ancestors().any(|ancestor| host.same(from, ancestor))
+        && (to.starts_with(from)
+            || (!host.is_symlink(from)
+                && to
+                    .parent()
+                    .is_some_and(|p| p.ancestors().any(|a| host.same(from, a)))))
     {
         return Verdict::Refused(Refusal::MoveIntoItself(from.clone()));
     }

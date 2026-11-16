@@ -100,6 +100,8 @@ pub trait Host {
     fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf;
     /// Whether the location is a directory (through links).
     fn is_dir(&self, path: &Path) -> bool;
+    /// Whether the location itself is a symbolic link.
+    fn is_symlink(&self, path: &Path) -> bool;
     /// Whether two locations are the same thing on this machine (the same
     /// folder under a different case, or through a link), not only the same text.
     fn same(&self, a: &Path, b: &Path) -> bool;

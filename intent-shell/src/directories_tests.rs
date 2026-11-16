@@ -476,6 +476,10 @@ impl Host for Vanishing {
     fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf {
         self.inner.canonicalize(path, follow_last)
     }
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.inner.is_symlink(path)
+    }
+
     fn is_dir(&self, path: &Path) -> bool {
         let first = self.asked.get() == 0;
         self.asked.set(self.asked.get() + 1);
@@ -1157,4 +1161,64 @@ fn a_folder_cannot_be_moved_into_itself_written_in_another_case() {
         reviewed(&run.outcome).steps[0].items[0].verdict,
         Verdict::Refused(Refusal::MoveIntoItself(_))
     ));
+}
+
+#[test]
+fn a_write_to_a_link_found_by_name_is_judged_where_the_data_lands() {
+    let host = home()
+        .link("/home/ana/Downloads/lnk", "/home/ana/.ssh/authorized_keys")
+        .dir("/home/ana/.ssh");
+    let args =
+        r#"{"target":{"name":"lnk","in":"downloads","kind":"file"},"content":"x","mode":"append"}"#;
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.write", args),
+    );
+    assert_eq!(
+        exact(&run),
+        r#"fs.write path="/home/ana/.ssh/authorized_keys" mode=Append content="x""#
+    );
+    assert!(
+        reviewed(&run.outcome).steps[0].items[0]
+            .action
+            .needs_confirmation()
+    );
+}
+
+#[test]
+fn a_case_only_rename_and_a_link_moved_into_its_target_are_not_moves_into_themselves() {
+    let host = FakeHost::with_files(&[("/d/Foo/f", 1), ("/d/dir/g", 1)])
+        .dir("/d/Foo")
+        .dir("/d/dir")
+        .link("/d/dirlink", "/d/dir")
+        .alias("/d/Foo", "/d/foo")
+        .alias("/d/dirlink", "/d/dir");
+    for (from, to) in [("/d/Foo", "/d/foo"), ("/d/dirlink", "/d/dir/dirlink")] {
+        let args = format!(r#"{{"from":{{"path":"{from}"}},"to":{{"path":"{to}"}}}}"#);
+        let run = ask(&host, &mut session_in("/d"), &one_step("fs.move", &args));
+        let verdict = &reviewed(&run.outcome).steps[0].items[0].verdict;
+        assert!(
+            !matches!(verdict, Verdict::Refused(Refusal::MoveIntoItself(_))),
+            "{from} to {to}: {verdict:?}"
+        );
+    }
+}
+
+#[test]
+fn a_hidden_listing_is_not_read_to_expand_a_reference_before_the_person_confirms() {
+    let host = home().dir("/home/ana/.ssh");
+    let text = plan(&[
+        step("s1", "fs.list", &path_args("~/.ssh"), "false"),
+        r#"{"id":"s2","action":"fs.read","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}"#
+            .to_owned(),
+    ]);
+    let run = ask(&host, &mut session_in("/home/ana"), &text);
+    let review = reviewed(&run.outcome);
+    assert!(matches!(
+        review.steps[1].blocked,
+        Some(Refusal::CannotExpand(_))
+    ));
+    // The listing was not run during the review, to expand the reference.
+    assert!(review.steps[0].items[0].output.is_none());
 }

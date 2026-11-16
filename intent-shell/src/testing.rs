@@ -202,6 +202,10 @@ impl Host for FakeHost {
         }
     }
 
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.links.iter().any(|(from, _)| from == path)
+    }
+
     fn is_dir(&self, path: &Path) -> bool {
         self.holds_dir(&self.through_links(path))
             || self.places.values().flatten().any(|root| root == path)
@@ -243,6 +247,15 @@ impl Host for FakeHost {
                 if inside && named {
                     found.push(path.clone());
                 }
+            }
+        }
+        // A search does not follow links, but it does come across them.
+        for (link, _) in &self.links {
+            let named = link
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().to_lowercase().contains(&needle));
+            if named && roots.iter().any(|r| link.starts_with(r) && link != r) {
+                found.push(link.clone());
             }
         }
         let entries = found
