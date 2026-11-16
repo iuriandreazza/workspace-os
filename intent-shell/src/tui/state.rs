@@ -111,8 +111,6 @@ pub struct State {
     pub asked_ms: u64,
 }
 
-/// A character the person may type: one `printable` would leave as it is, so
-/// a pasted escape sequence or an invisible character never reaches the shell.
 /// A key press meant as an answer: a fresh press (not a repeat or a release)
 /// with no Ctrl, Alt or Super held. An escape byte followed by `y`, which a
 /// terminal reports as Alt-y, is not a confirmation.
@@ -123,6 +121,8 @@ fn deliberate(key: &KeyEvent) -> bool {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
 }
 
+/// A character the person may type: one `printable` would leave as it is, so
+/// a pasted escape sequence or an invisible character never reaches the shell.
 fn typeable(c: char) -> bool {
     let text = c.to_string();
     printable(&text, false) == text
@@ -307,7 +307,9 @@ impl State {
         if !deliberate(key) {
             return false;
         }
-        let answers = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
+        // Enter confirms only a selection; in a plan or a root panel it does nothing.
+        let answers = matches!(key.code, KeyCode::Char('y' | 'Y'))
+            || (key.code == KeyCode::Enter && matches!(self.mode, Mode::Choose { .. }));
         !answers || self.settled()
     }
 
@@ -328,7 +330,10 @@ impl State {
             KeyCode::Char('y' | 'Y') => self.answer("▸ confirmed", Reply::Yes),
             KeyCode::Char('n' | 'N') | KeyCode::Esc => self.answer("▸ cancelled", Reply::No),
             KeyCode::Char('d' | 'D') => {
-                self.blocks.push(Block::Plan(details.to_owned()));
+                // Once: a held key repeats, and the history is not a log of key presses.
+                if self.blocks.last() != Some(&Block::Plan(details.to_owned())) {
+                    self.blocks.push(Block::Plan(details.to_owned()));
+                }
                 self.scroll = 0;
                 Effect::Nothing
             }
@@ -728,6 +733,31 @@ mod tests {
             panel: "exact".to_owned(),
         });
         assert_eq!(state.on_key(press(KeyCode::Esc)), Effect::Reply(Reply::No));
+    }
+
+    #[test]
+    fn details_are_added_once_however_long_d_is_held() {
+        let mut state = asking_plan();
+        for _ in 0..50 {
+            state.on_key(press(KeyCode::Char('d')));
+        }
+        let shown = state
+            .blocks
+            .iter()
+            .filter(|b| **b == Block::Plan("the details".to_owned()))
+            .count();
+        assert_eq!(shown, 1);
+    }
+
+    #[test]
+    fn enter_on_a_plan_does_not_delay_the_answer() {
+        let mut state = asking_plan();
+        state.on_key(press(KeyCode::Enter));
+        state.clock_ms += 10;
+        assert_eq!(
+            state.on_key(press(KeyCode::Char('y'))),
+            Effect::Reply(Reply::Yes)
+        );
     }
 
     #[test]

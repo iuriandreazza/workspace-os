@@ -47,12 +47,16 @@ fn parse_options(home: &str) -> Result<Options, String> {
 }
 
 /// A terminal that can draw a screen: not a pipe, and not `dumb` or unset.
+fn can_draw_on(stdin_tty: bool, stdout_tty: bool, term: &str) -> bool {
+    stdin_tty && stdout_tty && !term.is_empty() && term != "dumb"
+}
+
 fn can_draw() -> bool {
-    let term = std::env::var("TERM").unwrap_or_default();
-    std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-        && !term.is_empty()
-        && term != "dumb"
+    can_draw_on(
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+        &std::env::var("TERM").unwrap_or_default(),
+    )
 }
 
 fn main() {
@@ -97,4 +101,25 @@ fn run() -> Result<(), String> {
         return Err("--transcript needs the conversational interface".to_owned());
     }
     plain::run(setup)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_draw_on;
+
+    #[test]
+    fn the_interface_needs_a_real_terminal_on_both_ends_and_a_capable_term() {
+        assert!(can_draw_on(true, true, "xterm-256color"));
+        for (stdin, stdout, term) in [
+            (false, true, "xterm"),
+            (true, false, "xterm"),
+            (true, true, "dumb"),
+            (true, true, ""),
+        ] {
+            assert!(
+                !can_draw_on(stdin, stdout, term),
+                "{stdin} {stdout} {term:?}"
+            );
+        }
+    }
 }

@@ -160,7 +160,7 @@ fn discard_pending_keys() -> std::io::Result<bool> {
     Ok(leave)
 }
 
-/// Set by SIGTERM and SIGHUP (a closed terminal, `kill`), so the loop can
+/// Counts SIGTERM, SIGHUP, SIGINT and SIGQUIT (a closed terminal, `kill`), so the loop can
 /// restore the screen instead of leaving the terminal in raw mode.
 static TERMINATIONS: AtomicUsize = AtomicUsize::new(0);
 
@@ -169,7 +169,7 @@ extern "C" fn on_terminate(_signal: libc::c_int) {
 }
 
 fn watch_termination() {
-    for signal in [libc::SIGTERM, libc::SIGHUP] {
+    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT] {
         // SAFETY: the handler only stores to an atomic, which is async-signal-safe,
         // and the function pointer has the signature `signal` expects.
         unsafe {
