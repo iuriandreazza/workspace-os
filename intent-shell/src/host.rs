@@ -680,6 +680,12 @@ mod tests {
     }
 
     #[test]
+    fn the_host_itself_refuses_to_write_or_remove_the_filesystem_root() {
+        assert!(!host().allows(Access::Write, Path::new("/")));
+        assert!(!host().allows(Access::Delete, Path::new("/")));
+    }
+
+    #[test]
     fn a_shallow_match_is_found_before_a_deep_tree_uses_up_the_budget() {
         let dir = temp_dir("breadth");
         let deep = dir.join("a/b/c");

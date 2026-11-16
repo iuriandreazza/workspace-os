@@ -71,7 +71,7 @@ request ─► model (output constrained by the schema, version 2)
 
 ## Tests and the gate
 
-`./scripts/check.sh` runs 166 tests for `intent-shell`, none needing the model,
+`./scripts/check.sh` runs 168 tests for `intent-shell`, none needing the model,
 including ambiguity (the person picks, cancels, a pick outside the candidates),
 a name that matches nothing, more than 20 matches, a visible file the user
 may not read or delete, a reference that tries to reach what a direct path
@@ -145,8 +145,9 @@ Every output was valid and none held a path.
 - A search that stopped early (the entry cap or an unreadable folder) never
   resolves silently, even to a single match: the person confirms it.
 - Names that differ only by Unicode normalisation (NFC and NFD) or look-alike
-  letters can look the same in a choice list; the details view has the real
-  locations.
+  letters can look the same in a choice list, and the list has no details view: the
+  real location is visible only after the pick, in the details view and the
+  root panel.
 - A name stored in a different Unicode normalisation than the model wrote it
   (NFD against NFC, common for downloaded files on macOS) is not found: telling
   them apart needs a normalisation table, which is a dependency this item did not add.

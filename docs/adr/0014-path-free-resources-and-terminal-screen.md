@@ -74,7 +74,7 @@ model ─► parse + semantic rules ─► resolver ─► broker ─► screen,
                          places, name search, from_step
 ```
 
-The **resolver** is deterministic code behind a port (`Catalog`). It turns
+The **resolver** is deterministic code behind the `Host` port (`place_roots`, `search`, `exists`). It turns
 each reference into a concrete resource: a real location plus a friendly name.
 The model never sees a real location and never chooses between candidates.
 Where places live is the adapter's business: the host adapter maps

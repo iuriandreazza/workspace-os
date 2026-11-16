@@ -234,7 +234,13 @@ fn escape_unsafe(c: char) -> String {
             | '\u{F0000}'..='\u{10FFFF}'
     );
     if c.is_control() || formatting || blank {
-        format!("\\u{:04x}", c as u32)
+        // Beyond the BMP the digits vary in number, so they are delimited:
+        // otherwise U+F0000 and U+F000 followed by "0" would print alike.
+        if (c as u32) > 0xFFFF {
+            format!("\\u{{{:x}}}", c as u32)
+        } else {
+            format!("\\u{:04x}", c as u32)
+        }
     } else {
         c.to_string()
     }
@@ -383,6 +389,14 @@ mod tests {
         assert_ne!(quoted_path(one), quoted_path(other));
         assert_eq!(quoted_path(one), "\"/x/a\\xff\"");
         assert_eq!(quoted_path(Path::new("/x/ação")), "\"/x/ação\"");
+    }
+
+    #[test]
+    fn code_points_beyond_the_bmp_never_print_like_a_bmp_one_followed_by_a_digit() {
+        let long = quoted("\u{f0000}");
+        let short = quoted("\u{f000}0");
+        assert_ne!(long, short);
+        assert_eq!(long, "\"\\u{f0000}\"");
     }
 
     #[test]
