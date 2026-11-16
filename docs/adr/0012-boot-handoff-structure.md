@@ -1,7 +1,7 @@
 ---
 title: "ADR 0012: Boot handoff structure between the bootloader and the kernel"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-15
 updated: 2026-11-15
 tags: [boot, bootloader, handoff, uefi, limine, aarch64, x86_64]
@@ -155,19 +155,37 @@ Rules about content:
 
 ### Processor state at entry, aarch64
 
-- Non-secure, at EL2 or EL1, whichever the firmware left; `boot.s` already
-  handles EL1 to EL3.
+- Non-secure, **at EL1**, little-endian AArch64. If the firmware ran the
+  bootloader at EL2, the bootloader drops to EL1 itself before the jump, with
+  the MMU state below already set up for EL1. `boot.s` must therefore not take
+  its EL2-to-EL1 drop on this path, because that drop would discard the MMU
+  configuration; the direct-load path keeps its drop.
 - `PSTATE.DAIF` all masked.
-- **MMU off** and data cache off for the kernel's memory. The bootloader turns
-  the MMU off at its own exception level from identity-mapped code, cleans the
-  kernel image, `BootInfo`, the memory map and the device tree copy to the
-  point of coherency, and invalidates the instruction cache. This is the
-  state the Linux boot document requires for an aarch64 kernel and the
-  one `boot.s` assumes, and it is the state Linux will need in K2d.
+- **MMU on, instruction and data caches on**, 4 KiB granule, with an identity
+  map in `TTBR0_EL1` built by the bootloader: every address in the memory map
+  maps to itself, RAM as Normal write-back cacheable and everything else the
+  firmware described as MMIO as Device, read, write and execute. `MAIR_EL1`,
+  `TCR_EL1` and `SCTLR_EL1` are set consistently with that map and are
+  otherwise unspecified. `TTBR1_EL1` is unused.
+- The page tables are in memory of kind BootloaderReclaimable. The kernel must
+  not reuse that memory until it has installed its own tables (K4). K3's
+  allocator therefore never hands out BootloaderReclaimable memory before K4.
+- The bootloader loaded the kernel through the cacheable map, so data is
+  coherent; it invalidates the instruction cache over the image before the
+  jump.
 - `x0` and `x1` as above; `x2` and `x3` are zero. All other registers undefined.
 - The kernel sets its own stack, in its own `.bss`; no stack of the bootloader
   is used. Only the boot processor runs; the others are not started until K11.
 - FP and SIMD are not used (kernel rule).
+- `boot.s` today assumes the MMU and caches are off and writes `SCTLR_EL1`
+  with only the reserved bits. On this path it must leave `SCTLR_EL1` alone
+  until K4 and must not clean or invalidate by set and way. A kernel that does
+  not touch `SCTLR_EL1` also keeps working with the MMU on only if its own
+  accesses to device memory and its atomics use the memory types of the
+  bootloader's map; that is a requirement on the code part.
+- Kernels that need the MMU off (Linux, K2d) are entered by their own protocol
+  code, which turns the MMU off from identity-mapped code and cleans the image
+  first; that code is part of K2d, not of this structure.
 
 ### Processor state at entry, x86_64 (for K14, not implemented now)
 
@@ -194,22 +212,24 @@ alternatives.
 
 | Option | For | Against |
 |---|---|---|
-| Own structure, with Limine's memory map kinds and EFI conversion rules (proposed) | Fits the kernel as it is (MMU off, no relocation); one struct and one entry convention, simple to test on the host; Limine's tested conversion table is reused; the kernel is not tied to another project's revisions | We maintain the contract and the loader's side; we do not get Limine's request features (framebuffer, modules, MP) for free, we add them as minor versions |
+| Own structure, with Limine's memory map kinds and EFI conversion rules (chosen) | Fits the kernel as it is (MMU off, no relocation); one struct and one entry convention, simple to test on the host; Limine's tested conversion table is reused; the kernel is not tied to another project's revisions | We maintain the contract and the loader's side; we do not get Limine's request features (framebuffer, modules, MP) for free, we add them as minor versions |
 | Adopt the Limine protocol as it is | Existing, documented, used by many kernels; framebuffer, modules, MP and entropy exist today; other Limine kernels could be loaded by the same code | The kernel must be higher-half with its own request section and run with the MMU on from the first instruction, which means K4 first or a rewrite of `boot.s` now; base revisions are deprecated every few releases (0 to 5 are deprecated at the pinned commit); the bootloader must build page tables; ADR 0008 chose to avoid tying the kernel to it |
 | Adapt only its request and response mechanism, with our own features | Version negotiation per feature, extensible without a global version | The loader scans the kernel image for request magics: more code on both sides for a handoff with a dozen fields; still needs a decision on MMU and memory layout |
 
 ### Processor state: MMU
 
+Chosen by the user: MMU on with an identity map. The "MMU off" row is the option that was recommended and not taken.
+
 | Option | For | Against |
 |---|---|---|
-| MMU off (proposed) | Matches `boot.s` and the Linux boot document, so one entry convention serves our kernel and Linux (K2d); the bootloader's cache maintenance is a short, fixed list | The bootloader turns the MMU off from identity-mapped code, which is delicate and must be tested; the kernel runs uncached until K4, so early memory is slow and exclusive accesses need care |
-| MMU on, identity map (Limine style, without the higher half) | The kernel starts cached; no mode switch in the bootloader just before the jump | The kernel must take over page tables it did not make and describe where they are; `boot.s` changes; Linux needs the MMU off anyway, so the bootloader would need both paths |
+| MMU off | Matches `boot.s` and the Linux boot document, so one entry convention serves our kernel and Linux (K2d); the bootloader's cache maintenance is a short, fixed list | The bootloader turns the MMU off from identity-mapped code, which is delicate and must be tested; the kernel runs uncached until K4, so early memory is slow and exclusive accesses need care |
+| MMU on, identity map (chosen) | The kernel starts cached; no mode switch in the bootloader just before the jump | The kernel must take over page tables it did not make and describe where they are; `boot.s` changes; Linux needs the MMU off anyway, so the bootloader would need both paths |
 
 ### How the kernel tells the entries apart
 
 | Option | For | Against |
 |---|---|---|
-| `x1` carries a magic (proposed) | A register compare in assembly, before any memory is read or any core is parked; unambiguous against QEMU's direct load, which does not set `x1` | Uses a second register; the Linux convention says `x1` is zero, but we are not Linux and the bootloader sets it only for our own kernel |
+| `x1` carries a magic (chosen) | A register compare in assembly, before any memory is read or any core is parked; unambiguous against QEMU's direct load, which does not set `x1` | Uses a second register; the Linux convention says `x1` is zero, but we are not Linux and the bootloader sets it only for our own kernel |
 | Magic at `*x0` | One register; the device tree already starts with `0xd00dfeed` so the two are distinguishable | Reads memory at a register value before the kernel knows it is valid; a wrong `x0` faults early; it cannot tell the core not to park |
 | Separate ELF entry symbol | No ambiguity at all | Two entry points to keep alive; QEMU's ELF loader and the bootloader each need to know theirs; still needs the MPIDR decision |
 
@@ -217,7 +237,7 @@ alternatives.
 
 | Option | For | Against |
 |---|---|---|
-| Fixed `0x40200000`, fail loudly (proposed for K2b) | No change to the kernel; the failure is understandable | VirtualBox VMs below about 900 MiB cannot boot; the address may already be used by firmware, which is only found out by running; the restriction stays until K4 |
+| Fixed `0x40200000`, fail loudly (chosen for K2b) | No change to the kernel; the failure is understandable | VirtualBox VMs below about 900 MiB cannot boot; the address may already be used by firmware, which is only found out by running; the restriction stays until K4 |
 | Position-independent kernel, relocated by the bootloader | Works wherever there is room | Relocation processing in the kernel's startup or in the loader, a change to the build and to `boot.s`, before the MMU exists to make it cheap |
 | Higher-half kernel (as Limine) | One virtual address, any physical placement; what K4 builds anyway | Needs the MMU and page tables, so it is K4's work and not available for K2b |
 
@@ -226,8 +246,8 @@ alternatives.
 - The bootloader and the kernel share one `no_std` crate with the layout and
   the checks. `scripts/check.sh` gains a host test for it, and a gate boot under
   QEMU with UEFI firmware.
-- `boot.s` grows a second entry convention and loses the MPIDR park on that
-  path; this is an edit to files the K3 session is also touching, which is why
+- `boot.s` grows a second entry convention, loses the MPIDR park and the
+  EL2 drop and the `SCTLR_EL1` reset on that path; this is an edit to files the K3 session is also touching, which is why
   the code part of K2b waits for K3.
 - K3 should take its input as a list of regions, not read the device tree
   directly, so the bootloader path can feed it. A note for that session is in
@@ -236,6 +256,8 @@ alternatives.
 - The bootloader's recovery entry works by setting `boot_mode`; what recovery
   does is K13's.
 - Kernels other than ours (K2d) use their own protocols, not `BootInfo`.
+- Until K4 the kernel runs on the bootloader's identity map; replacing it is
+  K4's first job, and K4's test must cover entry through the bootloader too.
 - The kernel cannot boot on a machine whose firmware offers only ACPI until it
   has an ACPI reader. This is a known limit, not an oversight.
 
