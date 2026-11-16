@@ -80,7 +80,7 @@ interface (S3d) are another feature and do not share this grammar.
 A line holds one plan: one to 16 steps separated by `;`.
 
 ```text
-step      = group action {flag}           e.g.  fs delete --name big.iso --in downloads
+step      = group action {flag}           e.g.  fs delete --name big.iso --in downloads --kind file
 group     = fs | process | user | system | soul
 action    = the part of the action name after the dot:  fs.find_largest is `fs find_largest`
 ```

@@ -1,6 +1,7 @@
 //! `intent-shell`: type a request, see the plan the broker would run, confirm.
 //!
-//! Needs `llama-server` running Bonsai 8B (docs/s3-intent-shell-prototype.md).
+//! Needs `llama-server` running Bonsai 8B (docs/s3-intent-shell-prototype.md),
+//! or `--no-model` for the deterministic shell, where lines are commands (ADR 0022).
 //! On a terminal it opens the conversational interface; with `--plain`, with
 //! no terminal, or on a `dumb` one it uses the line-by-line adapter (ADR 0015).
 

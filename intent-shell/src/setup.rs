@@ -55,6 +55,45 @@ pub fn model_label(model: Option<&LlamaPlanner>) -> &str {
 mod tests {
     use super::*;
 
+    fn setup(model: Option<LlamaPlanner>) -> Setup {
+        let log = std::env::temp_dir().join(format!(
+            "intent-shell-setup-{}-{}.jsonl",
+            std::process::id(),
+            model.is_some()
+        ));
+        Setup {
+            authority: Authority::full(crate::ports::User {
+                name: "ana".to_owned(),
+                administrator: false,
+            }),
+            host: UnixHost::from_environment(),
+            planner: model,
+            log: JsonlLog::open(&log).unwrap(),
+            log_name: "d.jsonl".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_session_with_a_model_reads_requests_and_asks_the_model_and_one_without_does_neither() {
+        // Nothing listens on this address: the answer is an error about the connection.
+        let with = setup(Some(LlamaPlanner {
+            address: "127.0.0.1:1".to_owned(),
+        }));
+        assert_eq!(with.entry(), Entry::Request);
+        let asked = planner_of(with.planner.as_ref())
+            .plan("x", None)
+            .unwrap_err();
+        assert!(!asked.contains("no model is loaded"), "{asked}");
+        let without = setup(None);
+        assert_eq!(without.entry(), Entry::Command);
+        let answer = planner_of(without.planner.as_ref())
+            .plan("x", None)
+            .unwrap_err();
+        assert!(answer.contains("no model is loaded"), "{answer}");
+        assert!(with.header().contains("127.0.0.1:1"));
+        assert!(without.header().contains("none (commands only)"));
+    }
+
     #[test]
     fn the_header_says_when_there_is_no_model() {
         assert_eq!(model_label(None), "none (commands only)");

@@ -587,7 +587,7 @@ fn build_arg(
             let text = required(flags, key)?;
             let number: u32 = text.parse().map_err(|_| {
                 CommandError::new(format!(
-                    "{name}: --{} must be a whole number that fits in 32 bits",
+                    "{name}: --{} must be a whole number from 0 to 4294967295",
                     flag_name(key)
                 ))
             })?;

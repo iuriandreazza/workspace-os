@@ -1083,7 +1083,10 @@ fn errors_name_what_to_type_and_what_is_wrong() {
     assert!(refused("fs write --content x").contains("--new-name NAME --in PLACE"));
     assert!(refused("fs move --name a --in home --kind file").contains("--to-in PLACE"));
     let why = refused("fs find_largest --in home --count 5000000000");
-    assert!(why.contains("--count") && why.contains("32 bits"), "{why}");
+    assert!(
+        why.contains("--count") && why.contains("4294967295"),
+        "{why}"
+    );
     for line in [
         "fs \"list\" --in home",
         "\"fs\" list --in home",
