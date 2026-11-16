@@ -428,7 +428,9 @@ impl Outcome {
                 format!("The model asks: {}\nNothing ran.", quoted(question))
             }
             Self::NoPlan(why) => format!(
-                "Could not make a plan: {why}\nNothing ran. Use the deterministic shell instead."
+                "Could not make a plan: {}\nNothing ran. Use the deterministic shell instead.",
+                // The reason quotes the model's text: on one line, so it cannot forge a report line.
+                printable(why, false)
             ),
             Self::AllRefused(review) => format!(
                 "{}\n  No step can run. Nothing ran.",

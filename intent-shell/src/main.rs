@@ -90,7 +90,7 @@ impl Confirm for TerminalConfirm {
 
     fn root_action(&mut self, panel: &str, _who: &User) -> bool {
         println!("{panel}");
-        print!("╚═ [y] confirm this exact action   [n] refuse > ");
+        print!("  [y] confirm this exact action   [n] refuse > ");
         read_line().is_some_and(|answer| is_yes(&answer))
     }
 
@@ -181,7 +181,17 @@ fn run() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_yes, parse_choice};
+    use super::{is_details, is_yes, parse_choice};
+
+    #[test]
+    fn details_are_asked_for_with_d() {
+        for yes in ["d", "D\n", "details"] {
+            assert!(is_details(yes), "{yes:?}");
+        }
+        for no in ["", "y", "dd", "n"] {
+            assert!(!is_details(no), "{no:?}");
+        }
+    }
 
     #[test]
     fn a_choice_is_a_number_inside_the_list() {

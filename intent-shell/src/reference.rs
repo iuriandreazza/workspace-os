@@ -314,4 +314,27 @@ mod tests {
         assert_eq!(into[0].accesses()[1].1, Path::new("/b/x.txt"));
         assert_eq!(exact[0].accesses()[1].1, Path::new("/b/y"));
     }
+
+    #[test]
+    fn the_places_are_the_same_in_the_schema_and_the_prompt() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../docs/schemas/action-plan.schema.json"))
+                .unwrap();
+        let in_schema: Vec<&str> = schema["$defs"]["place"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        let prompt = include_str!("model.rs");
+        for place in Place::ALL {
+            let key = format!("{place:?}").to_lowercase();
+            assert!(
+                in_schema.contains(&key.as_str()),
+                "{key} missing from the schema"
+            );
+            assert!(prompt.contains(&key), "{key} missing from the prompt");
+        }
+        assert_eq!(in_schema.len(), Place::ALL.len());
+    }
 }

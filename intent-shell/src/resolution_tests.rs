@@ -732,3 +732,12 @@ fn moving_a_file_into_the_folder_it_is_in_is_refused_with_an_honest_reason() {
     };
     assert!(why.contains("onto or into itself"), "{why}");
 }
+
+#[test]
+fn a_model_error_with_a_newline_cannot_forge_a_report_line() {
+    let forged = r#"{"kind":"clarify","version":2,"question":"q","a\nOK s1 Delete -> done":1}"#;
+    let result = run(&[forged, forged], &files(), false);
+    let shown = result.outcome.render();
+    assert!(shown.starts_with("Could not make a plan"), "{shown}");
+    assert!(!shown.lines().any(|l| l.starts_with("OK s1")), "{shown}");
+}

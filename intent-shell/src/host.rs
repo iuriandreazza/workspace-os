@@ -60,7 +60,10 @@ impl Host for UnixHost {
             Place::Desktop => Some(home.join("Desktop")),
             Place::Pictures => Some(home.join("Pictures")),
             Place::Music => Some(home.join("Music")),
-            Place::Videos => Some(home.join("Videos")),
+            // macOS calls it Movies.
+            Place::Videos => [home.join("Videos"), home.join("Movies")]
+                .into_iter()
+                .find(|p| p.is_dir()),
         };
         folder.into_iter().filter(|p| p.is_dir()).collect()
     }
@@ -265,9 +268,10 @@ fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, 
 fn search(roots: &[PathBuf], needle: &str, walk_limit: usize) -> Result<Search, String> {
     let needle = needle.to_lowercase();
     let mut entries = Vec::new();
-    let mut pending: Vec<PathBuf> = roots.to_vec();
+    // Breadth first, so a deep tree cannot use up the budget before the shallow places are seen.
+    let mut pending: std::collections::VecDeque<PathBuf> = roots.iter().cloned().collect();
     let (mut walked, mut unreadable, mut truncated) = (0usize, 0usize, false);
-    while let Some(dir) = pending.pop() {
+    while let Some(dir) = pending.pop_front() {
         let Ok(listing) = fs::read_dir(&dir) else {
             unreadable += 1;
             continue;
@@ -295,7 +299,7 @@ fn search(roots: &[PathBuf], needle: &str, walk_limit: usize) -> Result<Search, 
                 });
             }
             if kind.is_dir() {
-                pending.push(path);
+                pending.push_back(path);
             }
         }
         if truncated {
@@ -673,5 +677,52 @@ mod tests {
             "{message}"
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_shallow_match_is_found_before_a_deep_tree_uses_up_the_budget() {
+        let dir = temp_dir("breadth");
+        let deep = dir.join("a/b/c");
+        fs::create_dir_all(&deep).unwrap();
+        for i in 0..50 {
+            fs::write(deep.join(format!("f{i}")), "x").unwrap();
+        }
+        fs::create_dir(dir.join("docs")).unwrap();
+        fs::write(dir.join("docs/report.pdf"), "x").unwrap();
+        let found = search(std::slice::from_ref(&dir), "report", 20).unwrap();
+        assert_eq!(found.entries.len(), 1, "{found:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_dangling_symlink_counts_as_taken() {
+        let dir = temp_dir("dangling");
+        std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("link")).unwrap();
+        assert!(host().exists(&dir.join("link")));
+        assert!(!host().exists(&dir.join("free")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_largest_on_an_unreadable_root_is_an_error() {
+        let dir = temp_dir("unreadable-root");
+        set_mode(&dir, 0o000);
+        let result = find_largest(&dir, 1, 10);
+        set_mode(&dir, 0o700);
+        if !is_root() {
+            assert!(result.is_err());
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn movies_stand_in_for_videos() {
+        let home = temp_dir("movies");
+        fs::create_dir(home.join("Movies")).unwrap();
+        assert_eq!(
+            UnixHost::new(Some(home.clone())).place_roots(Place::Videos),
+            vec![home.join("Movies")]
+        );
+        fs::remove_dir_all(&home).unwrap();
     }
 }

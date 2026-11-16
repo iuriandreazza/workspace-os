@@ -101,9 +101,10 @@ server decides. The core does not know.
 Always the resolved resource, never the reference. After resolution the
 broker runs exactly the checks of ADR 0011: capability, the user's
 permissions on the real location, the protected filesystem root, root
-holds. A place that maps to the filesystem root, a symlink, a name that
+holds. A place that maps to the filesystem root, a name that
 resolves to a file the user cannot touch: all reach the broker as real
-locations and get the verdict a direct path would have got. Resolution is
+locations and get the verdict a direct path would have got. A symlink is judged and shown as
+the link, not as where it leads (a limit, see `docs/s3b-path-free-shell.md`). Resolution is
 not a way around it. Resolving and judging are two separate steps so that a
 mistake in one cannot grant what only the other may.
 

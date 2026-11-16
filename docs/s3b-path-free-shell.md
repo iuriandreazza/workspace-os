@@ -71,7 +71,7 @@ request ─► model (output constrained by the schema, version 2)
 
 ## Tests and the gate
 
-`./scripts/check.sh` runs 157 tests for `intent-shell`, none needing the model,
+`./scripts/check.sh` runs 166 tests for `intent-shell`, none needing the model,
 including ambiguity (the person picks, cancels, a pick outside the candidates),
 a name that matches nothing, more than 20 matches, a visible file the user
 may not read or delete, a reference that tries to reach what a direct path
@@ -134,8 +134,9 @@ Every output was valid and none held a path.
 
 - `everywhere` is `$HOME` on this host, so system files are out of reach until
   the OS maps it differently. This is the adapter's choice (ADR 0014).
-- The resolver walks the tree for a name: at most 100,000 entries, with a note
-  when it stops. There is no index.
+- The resolver walks the tree for a name breadth first: at most 100,000
+  entries, with a note when it stops, so on a large home a deep match can still
+  be missed and is reported as not found. There is no index.
 - Table columns are aligned by characters, not by terminal cell width, so wide
   characters misalign a row. Escaping and uniqueness do not depend on it.
 - The log records real locations. It is private to the user, as in S3.
