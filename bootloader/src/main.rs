@@ -27,7 +27,7 @@ use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode, RegularFile};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::table::cfg::ConfigTableEntry;
-use uefi::{cstr16, guid, println};
+use uefi::{cstr16, guid};
 
 /// Where the kernel is on the EFI system partition.
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\KERNEL.ELF");
@@ -126,12 +126,12 @@ fn load_kernel(file: &[u8]) -> Outcome<elf::LoadPlan> {
     )
     .map_err(|error| {
         print_memory_map();
-        println!(
-            "workspace-os bootloader: the kernel needs {:#x}..{:#x} and the firmware refused it ({})",
+        ui::error(format_args!(
+            "the kernel needs {:#x}..{:#x} and the firmware refused it ({})",
             plan.base,
             plan.base + pages as u64 * PAGE_SIZE,
             error.status()
-        );
+        ));
         Failure::Message(
             "the kernel's load address is not free RAM (the machine needs more memory, or the firmware uses that address)",
         )
@@ -154,12 +154,12 @@ fn load_kernel(file: &[u8]) -> Outcome<elf::LoadPlan> {
 fn print_memory_map() {
     if let Ok(map) = boot::memory_map(MemoryType::LOADER_DATA) {
         for descriptor in map.entries() {
-            println!(
-                "workspace-os bootloader: memory map: {:#x}..{:#x} {:?}",
+            ui::info(format_args!(
+                "memory map: {:#x}..{:#x} {:?}",
                 descriptor.phys_start,
                 descriptor.phys_start + descriptor.page_count * PAGE_SIZE,
                 descriptor.ty
-            );
+            ));
         }
     }
 }
@@ -218,10 +218,7 @@ fn fail_on_uart(uart: usize, reason: impl core::fmt::Display) -> ! {
 
 fn run() -> Outcome<core::convert::Infallible> {
     ui::banner();
-    println!(
-        "workspace-os bootloader: started at EL{}",
-        cpu::current_el()
-    );
+    ui::ok(format_args!("started at EL{}", cpu::current_el()));
     if cpu::current_el() == 2 && cpu::virtualization_host_extensions() {
         return Err(Failure::Message(
             "started at EL2 with the host extensions (E2H): not supported yet",
@@ -233,10 +230,10 @@ fn run() -> Outcome<core::convert::Infallible> {
 
     let kernel_file = read_kernel_file()?;
     let plan = load_kernel(kernel_file)?;
-    println!(
-        "workspace-os bootloader: kernel loaded at {:#x}..{:#x}, entry {:#x}",
+    ui::ok(format_args!(
+        "kernel loaded at {:#x}..{:#x}, entry {:#x}",
         plan.base, plan.end, plan.entry
-    );
+    ));
 
     let tables = find_tables();
     let Some((device_tree, device_tree_size)) = tables.device_tree else {
@@ -255,10 +252,10 @@ fn run() -> Outcome<core::convert::Infallible> {
     if device_tree_size > MAX_DEVICE_TREE {
         return Err(Failure::Message("the device tree is too large"));
     }
-    println!(
-        "workspace-os bootloader: device tree at {device_tree:#x} ({device_tree_size} bytes), acpi rsdp {:#x}, pl011 at {:#x}",
+    ui::ok(format_args!(
+        "device tree at {device_tree:#x} ({device_tree_size} bytes), acpi rsdp {:#x}, pl011 at {:#x}",
         tables.rsdp, uart.base
-    );
+    ));
 
     // Everything the kernel will read is allocated now: after boot services
     // are gone nothing can be.
@@ -331,8 +328,8 @@ fn run() -> Outcome<core::convert::Infallible> {
         device_tree_bytes: device_tree_size,
         exception_level: cpu::current_el(),
     });
-    println!("workspace-os bootloader: page tables at {pool_address:#x}");
-    println!("workspace-os bootloader: leaving boot services, entering the kernel");
+    ui::info(format_args!("page tables at {pool_address:#x}"));
+    ui::go(format_args!("leaving boot services, entering the kernel"));
     let uart_base = uart.base as usize;
 
     // Interrupts are masked first: the firmware's handlers must not run while
@@ -404,7 +401,6 @@ fn main() -> Status {
     match run() {
         Ok(never) => match never {},
         Err(failure) => {
-            println!("workspace-os bootloader: {failure}");
             ui::failure(format_args!("{failure}"));
             boot::stall(Duration::from_secs(5));
             match failure {

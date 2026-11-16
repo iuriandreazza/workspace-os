@@ -1,9 +1,10 @@
 //! What the person at the console sees. Plain text on the firmware console, so
-//! it reads the same on a screen and on a serial line. The log lines the gate
-//! reads (`workspace-os bootloader: ...`) are printed uncoloured by `main.rs`;
-//! only the banner, the summary box and the failure report are decorated here,
-//! and a colour is always reset before the end of its line so that the
-//! escape codes never sit in front of a log line.
+//! it reads the same on a screen and on a serial line.
+//!
+//! A log line is `  boot  <tag>  <message>`: the component, a coloured tag
+//! for the kind of event and the message, which is one contiguous run of text
+//! in one colour so that a test can search for it. A colour is always reset
+//! before the end of its line, so escape codes never start a line.
 
 use uefi::println;
 use uefi::proto::console::text::Color;
@@ -117,13 +118,70 @@ fn row(label: &str, value: core::fmt::Arguments) {
     println!();
 }
 
-/// The failure report, in red, with what to do about it.
+/// The failure report, in red, with what happens next.
 pub fn failure(reason: core::fmt::Arguments) {
     println!();
-    paint(Color::LightRed, format_args!("  !! the boot stopped"));
-    paint(Color::LightRed, format_args!("  !! {reason}"));
+    log(Level::Error, format_args!("the boot stopped: {reason}"));
     paint(
         Color::DarkGray,
-        format_args!("  returning to the firmware in five seconds"),
+        format_args!("  boot  returning to the firmware in five seconds"),
     );
+}
+
+/// The kind of event a log line reports.
+#[derive(Clone, Copy)]
+pub enum Level {
+    Ok,
+    Info,
+    Error,
+    Go,
+}
+
+impl Level {
+    fn tag(self) -> (&'static str, Color) {
+        match self {
+            Self::Ok => ("ok  ", Color::LightGreen),
+            Self::Info => ("info", Color::LightCyan),
+            Self::Error => ("fail", Color::LightRed),
+            Self::Go => (" >> ", Color::LightMagenta),
+        }
+    }
+}
+
+fn set(foreground: Color) {
+    uefi::system::with_stdout(|out| {
+        let _ = out.set_color(foreground, Color::Black);
+    });
+}
+
+pub fn log(level: Level, message: core::fmt::Arguments) {
+    let (tag, color) = level.tag();
+    set(Color::DarkGray);
+    uefi::print!("  boot  ");
+    set(color);
+    uefi::print!("{tag}  ");
+    set(if matches!(level, Level::Error) {
+        Color::LightRed
+    } else {
+        Color::White
+    });
+    uefi::print!("{message}");
+    set(Color::LightGray);
+    println!();
+}
+
+pub fn ok(message: core::fmt::Arguments) {
+    log(Level::Ok, message);
+}
+
+pub fn info(message: core::fmt::Arguments) {
+    log(Level::Info, message);
+}
+
+pub fn go(message: core::fmt::Arguments) {
+    log(Level::Go, message);
+}
+
+pub fn error(message: core::fmt::Arguments) {
+    log(Level::Error, message);
 }

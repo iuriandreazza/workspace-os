@@ -47,7 +47,7 @@ qemu-system-aarch64 -machine virt,acpi=off -cpu cortex-a72 -m 512M \
 ```
 
 The firmware prints its own lines first. The bootloader's lines start with
-`workspace-os bootloader:` and the kernel's with `workspace-os kernel:`; the
+`boot` and a tag (`ok`, `info`, `>>`, `fail`), and the kernel's with `workspace-os kernel:`; the
 kernel's `entry: bootloader, boot info 1.0` line shows how it was entered, and
 `booted on aarch64 in EL1` is the banner. Leave QEMU with Ctrl-A then X.
 

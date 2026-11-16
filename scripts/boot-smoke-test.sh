@@ -332,8 +332,8 @@ check_uefi_boot() {
     # The bootloader said where it put the kernel, and that is where the linker
     # placed the image (the stack included): a loader that misplaces or cuts
     # the image cannot print this.
-    expect_once "workspace-os bootloader: started at EL$bootloader_el" "bootloader's exception level"
-    expect_once "workspace-os bootloader: kernel loaded at $(hex "$(symbol_address __image_start | sed 's/^0x//')")..$(hex "$(symbol_address __stack_top | sed 's/^0x//')"), entry $(hex "$(symbol_address _start | sed 's/^0x//')")" \
+    expect_once "started at EL$bootloader_el" "bootloader's exception level"
+    expect_once "kernel loaded at $(hex "$(symbol_address __image_start | sed 's/^0x//')")..$(hex "$(symbol_address __stack_top | sed 's/^0x//')"), entry $(hex "$(symbol_address _start | sed 's/^0x//')")" \
         "bootloader's report of the kernel placement"
     expect_once "$EXPECTED_BANNER" "boot banner"
     expect_once "$UART_REPORT" "UART report"
@@ -356,7 +356,7 @@ check_uefi_boot() {
 
     # The kernel found an intact copy of the device tree, as big as the firmware's.
     local blob_size copy
-    blob_size="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os bootloader: device tree at 0x[0-9a-f]* (\([0-9]*\) bytes).*$/\1/p')"
+    blob_size="$(tr -d '\r' < "$serial_log" | sed -n 's/.*[^ ] *device tree at 0x[0-9a-f]* (\([0-9]*\) bytes).*/\1/p')"
     copy="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
     [[ -n "$blob_size" && "$(echo "$copy" | wc -l)" -eq 1 && -n "$copy" ]] || fail "device tree copy not reported exactly once"
     read -r copy_start copy_end <<< "$copy"
@@ -422,7 +422,7 @@ check_uefi_boot() {
         && $(((sctlr >> 1) & 1)) -eq 0 && $(((sctlr >> 19) & 1)) -eq 0 ]] \
         || fail "SCTLR_EL1 is $sctlr: expected MMU, D-cache and I-cache on, alignment checks and WXN off"
     local tables
-    tables="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os bootloader: page tables at \(0x[0-9a-f]*\)$/\1/p')"
+    tables="$(tr -d '\r' < "$serial_log" | sed -n 's/.*page tables at \(0x[0-9a-f]*\).*/\1/p')"
     [[ -n "$tables" ]] || fail "bootloader did not report its page tables"
     # The tables are memory the bootloader owns and the kernel may reclaim later.
     local owned=0 table_start table_end table_kind
@@ -449,7 +449,7 @@ check_uefi_refusal() {
     BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
     start_qemu "$1" -machine virt -m 256M -bios "$uefi_firmware" \
         -drive "file=$disk_image,format=raw,if=virtio"
-    wait_for_line "workspace-os bootloader: the firmware offers ACPI only"
+    wait_for_line "the firmware offers ACPI only"
     sleep "$SETTLE_SECONDS"
     if grep -qF "workspace-os kernel:" "$serial_log"; then
         fail "the kernel started on a machine that offers ACPI only"
