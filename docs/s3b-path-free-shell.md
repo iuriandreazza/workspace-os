@@ -71,7 +71,7 @@ request ─► model (output constrained by the schema, version 2)
 
 ## Tests and the gate
 
-`./scripts/check.sh` runs 147 tests for `intent-shell`, none needing the model,
+`./scripts/check.sh` runs 151 tests for `intent-shell`, none needing the model,
 including ambiguity (the person picks, cancels, a pick outside the candidates),
 a name that matches nothing, more than 20 matches, a visible file the user
 may not read or delete, a reference that tries to reach what a direct path
@@ -131,10 +131,12 @@ Every output was valid and none held a path.
 - The log records real locations. It is private to the user, as in S3.
 - A symlink matches by its own name and is not resolved to its target, so a
   root confirmation shows the link, not where it leads. `access(2)` follows it.
-- Look-alike letters from other scripts can still make two names look the same
-  in a choice list (as in S3); the real locations are in the details view.
-- `new_name` does not check whether the item exists, so on a case-insensitive
-  filesystem a "Create" can be an overwrite of a differently-cased file.
+- A search that stopped early (the entry cap or an unreadable folder) never
+  resolves silently, even to a single match: the person confirms it.
+- Names that differ only by Unicode normalisation (NFC and NFD) or look-alike
+  letters can look the same in a choice list; the details view has the real
+  locations.
+- A move into a folder that already holds an item of that name is not checked.
 - The schema is compared with the examples by `validate.py` by hand, not in the
   gate (ADR 0011); the Rust parser is stricter than the schema for `2.0`.
 - A search runs again after each choice the person makes, so a plan with

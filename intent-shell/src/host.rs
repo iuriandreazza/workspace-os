@@ -65,6 +65,10 @@ impl Host for UnixHost {
         folder.into_iter().filter(|p| p.is_dir()).collect()
     }
 
+    fn exists(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok()
+    }
+
     fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String> {
         search(roots, needle, MAX_WALKED_ENTRIES)
     }

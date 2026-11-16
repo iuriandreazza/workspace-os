@@ -61,6 +61,9 @@ pub trait Host {
     /// Where a place lives on this machine, if it has one. The core knows no
     /// directory layout: this is the adapter's mapping (ADR 0014).
     fn place_roots(&self, place: Place) -> Vec<PathBuf>;
+    /// Whether something already has this location (case-folded where the
+    /// filesystem folds case).
+    fn exists(&self, path: &Path) -> bool;
     /// Look below `roots`, only where the user may list, for names that
     /// contain `needle`. Says what it could not look at.
     fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String>;

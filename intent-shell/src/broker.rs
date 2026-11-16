@@ -13,7 +13,7 @@ use crate::action::{Access, Action, Capability, RootRule, quoted_path};
 use crate::label::Labels;
 use crate::plan::{Plan, Step, StepId};
 use crate::ports::{Host, Output, User};
-use crate::reference::{Destination, Slot, Spec, Target};
+use crate::reference::{Destination, Place, Slot, Spec, Target};
 use crate::resolve::{Ambiguity, Choices, ResolveError, destination, locate};
 
 /// Most paths one `from_step` reference may expand to.
@@ -54,6 +54,8 @@ pub enum Refusal {
     ConfigKeyNotAllowed(String),
     ProtectedPath(PathBuf),
     MoveIntoItself(PathBuf),
+    /// A place is a container: it can be read, never removed, moved or overwritten whole.
+    PlaceRoot(PathBuf),
     DependencyRefused(StepId),
     CannotExpand(String),
     PreRunFailed(String),
@@ -84,6 +86,11 @@ impl fmt::Display for Refusal {
             Self::MoveIntoItself(path) => {
                 write!(f, "{} cannot be moved into itself", quoted_path(path))
             }
+            Self::PlaceRoot(path) => write!(
+                f,
+                "{} is a whole place and cannot be removed, moved or overwritten",
+                quoted_path(path)
+            ),
             Self::ConfigKeyNotAllowed(k) => write!(f, "configuration key {k:?} is not accepted"),
             Self::DependencyRefused(id) => {
                 write!(f, "step {id} did not pass, and this step depends on it")
@@ -112,6 +119,10 @@ impl Refusal {
             Self::MoveIntoItself(path) => {
                 format!("{} cannot be moved into itself", labels.of(path))
             }
+            Self::PlaceRoot(path) => format!(
+                "{} is a whole place and cannot be removed, moved or overwritten",
+                labels.of(path)
+            ),
             other => other.to_string(),
         }
     }
@@ -390,6 +401,19 @@ fn judge(action: &Action, elevate: bool, authority: &Authority, host: &dyn Host)
         matches!(access, Access::Write | Access::Delete) && path.parent().is_none()
     }) {
         return Verdict::Refused(Refusal::ProtectedPath(path.to_path_buf()));
+    }
+    // However a path was reached (a name, a listing), a place is never a target.
+    let roots: Vec<PathBuf> = Place::ALL
+        .into_iter()
+        .flat_map(|place| host.place_roots(place))
+        .collect();
+    let removed_or_replaced = match action {
+        Action::Delete { path } | Action::Write { path, .. } => Some(path),
+        Action::Move { from, .. } => Some(from),
+        _ => None,
+    };
+    if let Some(path) = removed_or_replaced.filter(|p| roots.contains(p)) {
+        return Verdict::Refused(Refusal::PlaceRoot(path.clone()));
     }
     if let Action::Move { from, to } = action
         && to.starts_with(from)

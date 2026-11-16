@@ -272,6 +272,10 @@ impl Host for Lying {
         self.0.place_roots(place)
     }
 
+    fn exists(&self, path: &Path) -> bool {
+        self.0.exists(path)
+    }
+
     fn search(&self, _: &[PathBuf], _: &str) -> Result<Search, String> {
         Ok(Search {
             entries: vec![crate::ports::Entry {
@@ -565,4 +569,68 @@ fn a_folder_cannot_be_moved_into_itself() {
         review.steps[0].items[0].verdict,
         Verdict::Refused(Refusal::MoveIntoItself(_))
     ));
+}
+
+#[test]
+fn a_place_reached_through_a_listing_cannot_be_deleted_or_moved_either() {
+    let host = FakeHost::with_files(&[("/h/Dl/x", 1)])
+        .place(Place::Home, "/h")
+        .place(Place::Downloads, "/h/Dl")
+        .listing("/h", &["/h/Dl"]);
+    for (action, args) in [
+        ("fs.delete", r#"{"target":{"from_step":"s1"}}"#),
+        (
+            "fs.move",
+            r#"{"from":{"from_step":"s1"},"to":{"place":"documents"}}"#,
+        ),
+    ] {
+        let list = step("s1", "fs.list", r#"{"target":{"place":"home"}}"#, "false");
+        let mut second = step("s2", action, args, "false");
+        second = second.replace(r#""depends_on":[]"#, r#""depends_on":["s1"]"#);
+        let result = run(&[&plan(&[list, second])], &host, true);
+        let review = reviewed(&result.outcome);
+        assert!(
+            review.steps[1]
+                .items
+                .iter()
+                .any(|i| matches!(i.verdict, Verdict::Refused(Refusal::PlaceRoot(_)))),
+            "{action}: {:?}",
+            review.steps[1]
+        );
+    }
+}
+
+#[test]
+fn a_new_item_cannot_take_a_name_that_is_already_there() {
+    let host = FakeHost::with_files(&[("/work/report.pdf", 1)]);
+    let args =
+        r#"{"target":{"new_name":"report.pdf","in":"downloads"},"content":"x","mode":"create"}"#;
+    let result = run(
+        &[&plan(&[step("s1", "fs.write", args, "false")])],
+        &host,
+        false,
+    );
+    let review = reviewed(&result.outcome);
+    assert!(matches!(
+        review.steps[0].blocked,
+        Some(Refusal::Unresolved(ResolveError::AlreadyExists(_)))
+    ));
+}
+
+#[test]
+fn a_single_match_from_a_search_that_did_not_finish_is_confirmed_by_the_person() {
+    let host = FakeHost::with_files(&[("/work/old-report-draft.txt", 1)])
+        .with_note("stopped after 100000 entries: more matches may exist");
+    let (result, _) = run_picking(&host, &[Some(0)]);
+    assert_eq!(result.answers.questions.len(), 1);
+    let (_, options) = &result.answers.questions[0];
+    assert_eq!(options.len(), 1);
+}
+
+#[test]
+fn a_multibyte_name_over_the_byte_limit_is_refused_at_parse() {
+    let name = "ã".repeat(200);
+    let args = format!(r#"{{"target":{{"name":"{name}","in":"home","kind":"file"}}}}"#);
+    let text = plan(&[step("s1", "fs.read", &args, "false")]);
+    assert!(crate::plan::parse(&text).is_err());
 }

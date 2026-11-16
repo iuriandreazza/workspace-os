@@ -27,6 +27,8 @@ pub struct FakeHost {
     pub search_fails: bool,
     pub executed: RefCell<Vec<String>>,
     pub searched: RefCell<Vec<String>>,
+    /// What listing a folder returns, instead of the files below it.
+    pub listings: HashMap<PathBuf, Vec<PathBuf>>,
 }
 
 impl Default for FakeHost {
@@ -50,6 +52,7 @@ impl Default for FakeHost {
             search_fails: false,
             executed: RefCell::default(),
             searched: RefCell::default(),
+            listings: HashMap::new(),
         }
     }
 }
@@ -82,6 +85,14 @@ impl FakeHost {
         self
     }
 
+    pub fn listing(mut self, folder: &str, children: &[&str]) -> Self {
+        self.listings.insert(
+            PathBuf::from(folder),
+            children.iter().map(PathBuf::from).collect(),
+        );
+        self
+    }
+
     pub fn dir(mut self, path: &str) -> Self {
         self.dirs.push(PathBuf::from(path));
         self
@@ -96,6 +107,10 @@ impl FakeHost {
 impl Host for FakeHost {
     fn place_roots(&self, place: Place) -> Vec<PathBuf> {
         self.places.get(&place).cloned().unwrap_or_default()
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.files.contains_key(path) || self.dirs.iter().any(|d| d == path)
     }
 
     fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String> {
@@ -167,6 +182,9 @@ impl Host for FakeHost {
                     .filter(|p| p.starts_with(path))
                     .cloned()
                     .collect();
+                if let Some(children) = self.listings.get(path) {
+                    paths = children.clone();
+                }
                 paths.sort();
                 Ok(Output {
                     found: paths

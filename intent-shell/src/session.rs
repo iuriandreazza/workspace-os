@@ -363,6 +363,10 @@ impl Host for LoggedReads<'_, '_, '_> {
         self.inner.place_roots(place)
     }
 
+    fn exists(&self, path: &Path) -> bool {
+        self.inner.exists(path)
+    }
+
     fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String> {
         self.log
             .borrow_mut()

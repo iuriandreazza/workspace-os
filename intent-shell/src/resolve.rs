@@ -42,8 +42,13 @@ pub struct Ambiguity {
 pub enum ResolveError {
     NotFound(String),
     Ambiguous(Ambiguity),
-    TooMany { what: String, found: usize },
+    TooMany {
+        what: String,
+        found: usize,
+    },
     CannotCreateThere(String),
+    /// A "new" item whose name is already taken.
+    AlreadyExists(String),
     SearchFailed(String),
 }
 
@@ -57,6 +62,7 @@ impl fmt::Display for ResolveError {
                 "{found} matches for {what}, more than {MAX_CANDIDATES}: say more about it"
             ),
             Self::CannotCreateThere(what) => write!(f, "cannot create {what}: no single place"),
+            Self::AlreadyExists(what) => write!(f, "{what} already exists"),
             Self::SearchFailed(why) => write!(f, "the search could not run: {why}"),
         }
     }
@@ -94,6 +100,9 @@ pub fn locate(
         Direct::New { name, within } => {
             let roots = host.place_roots(*within);
             match (roots.as_slice(), is_single_name(name)) {
+                ([root], true) if host.exists(&root.join(name)) => {
+                    Err(ResolveError::AlreadyExists(what))
+                }
                 ([root], true) => Ok(Located {
                     paths: vec![root.join(name)],
                     notes: Vec::new(),
@@ -132,7 +141,8 @@ pub fn locate(
             };
             let path = match matches.as_slice() {
                 [] => return Err(ResolveError::NotFound(what)),
-                [only] => only.clone(),
+                // A search that did not finish may have missed the better match.
+                [only] if search.notes.is_empty() => only.clone(),
                 many if many.len() > MAX_CANDIDATES => {
                     return Err(ResolveError::TooMany {
                         what,
