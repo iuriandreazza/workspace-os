@@ -105,6 +105,8 @@ pub struct State {
     /// Set by the first Ctrl-C while a step runs: the next one leaves without
     /// waiting for the step.
     pub forced_quit: bool,
+    /// When the warning about a running step was shown, or a Ctrl-C last arrived after it.
+    pub quit_warned_ms: u64,
     /// When the current question was put to the person.
     pub asked_ms: u64,
 }
@@ -139,6 +141,7 @@ impl State {
             clock_ms: 0,
             asked_ms: 0,
             forced_quit: false,
+            quit_warned_ms: 0,
         }
     }
 
@@ -233,11 +236,21 @@ impl State {
                     // Quitting now would stop a step half way and lose its
                     // result; a second Ctrl-C is for a step that never ends.
                     self.forced_quit = true;
+                    self.quit_warned_ms = self.clock_ms;
                     self.blocks.push(Block::Note(
                         "A step is running. Ctrl-C again to leave without waiting for it."
                             .to_owned(),
                     ));
                     return Effect::Nothing;
+                }
+                if running {
+                    // A held key repeats: only a fresh press after a quiet gap
+                    // is the second Ctrl-C.
+                    let quiet = self.clock_ms.saturating_sub(self.quit_warned_ms) >= DWELL_MS;
+                    self.quit_warned_ms = self.clock_ms;
+                    if !(quiet && key.kind == KeyEventKind::Press) {
+                        return Effect::Nothing;
+                    }
                 }
                 return Effect::Quit;
             }
@@ -287,16 +300,14 @@ impl State {
         Effect::Reply(reply)
     }
 
-    /// Whether this key may be taken as an answer. Moving a selection or
-    /// asking for details is not an answer and needs no quiet gap.
+    /// Whether this key may be taken as an answer. Only a confirmation needs
+    /// the quiet gap: refusing, cancelling, moving a selection and asking for
+    /// details are safe whatever their timing.
     fn may_answer(&mut self, key: &KeyEvent) -> bool {
         if !deliberate(key) {
             return false;
         }
-        let answers = matches!(
-            key.code,
-            KeyCode::Char('y' | 'Y' | 'n' | 'N') | KeyCode::Enter | KeyCode::Esc
-        );
+        let answers = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
         !answers || self.settled()
     }
 
@@ -688,6 +699,38 @@ mod tests {
     }
 
     #[test]
+    fn a_held_ctrl_c_does_not_leave_a_running_step() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let mut state = State::new(String::new());
+        state.on_event(Event::Busy("working"));
+        assert_eq!(state.on_key(ctrl_c), Effect::Nothing);
+        for step in 1..100 {
+            state.clock_ms = step * 30;
+            assert_eq!(state.on_key(ctrl_c), Effect::Nothing, "repeat {step}");
+        }
+        state.clock_ms += DWELL_MS;
+        assert_eq!(state.on_key(ctrl_c), Effect::Quit);
+    }
+
+    #[test]
+    fn refusing_needs_no_quiet_gap() {
+        let mut state = State::new(String::new());
+        state.on_event(Event::AskPlan {
+            screen: "plan".to_owned(),
+            details: String::new(),
+        });
+        assert_eq!(
+            state.on_key(press(KeyCode::Char('n'))),
+            Effect::Reply(Reply::No)
+        );
+        let mut state = State::new(String::new());
+        state.on_event(Event::AskRoot {
+            panel: "exact".to_owned(),
+        });
+        assert_eq!(state.on_key(press(KeyCode::Esc)), Effect::Reply(Reply::No));
+    }
+
+    #[test]
     fn a_paste_can_fill_the_request_but_never_answers() {
         let mut state = State::new(String::new());
         state.paste("list\ndownloads\u{1b}y\u{202e}");
@@ -721,6 +764,7 @@ mod tests {
         state.on_key(press(KeyCode::Char('y')));
         assert_eq!(state.on_key(ctrl_c), Effect::Nothing);
         assert!(matches!(state.blocks.last(), Some(Block::Note(n)) if n.contains("running")));
+        state.clock_ms += DWELL_MS;
         assert_eq!(state.on_key(ctrl_c), Effect::Quit);
         assert!(state.forced_quit);
         let mut waiting = State::new(String::new());

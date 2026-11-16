@@ -55,6 +55,9 @@ main thread: terminal, state, drawing        worker thread: Shell::handle
 - Answer keys are ignored for 0.7 s after a question is drawn, because a terminal
   without the kitty keyboard protocol reports a held or double-tapped \`y\` as
   fresh presses.
+- Pasted text only stays out of the answers if the terminal honours bracketed
+  paste (most do; a multiplexer that does not delivers a paste as key presses,
+  and the quiet gap above is then the only guard).
 - An answer needs a plain key press: Ctrl-, Alt- or repeated keys never answer, and
   a paste (bracketed) only fills the request line. Quitting at a question is a
   refusal and is logged; Ctrl-C is refused while a step runs. SIGTERM and SIGHUP

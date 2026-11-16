@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as Input, KeyEventKind, MouseEventKind,
+    Event as Input, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 
@@ -147,12 +147,17 @@ fn worker(
 }
 
 /// Discard what was typed before a question was drawn, so a key meant for
-/// something else cannot answer it.
-fn discard_pending_keys() -> std::io::Result<()> {
+/// something else cannot answer it. A Ctrl-C among them is not discarded: it
+/// is reported, so wanting to leave is never lost.
+fn discard_pending_keys() -> std::io::Result<bool> {
+    let mut leave = false;
     while event::poll(Duration::ZERO)? {
-        event::read()?;
+        if let Input::Key(key) = event::read()? {
+            leave |=
+                key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        }
     }
-    Ok(())
+    Ok(leave)
 }
 
 /// Set by SIGTERM and SIGHUP (a closed terminal, `kill`), so the loop can
@@ -233,7 +238,9 @@ fn event_loop(
                     if state.on_event(event) {
                         // Draw the question first, then drop earlier keys.
                         terminal.draw(|frame| view::draw(frame, state))?;
-                        discard_pending_keys()?;
+                        if discard_pending_keys()? {
+                            return Ok(());
+                        }
                     }
                 }
                 Err(TryRecvError::Empty) => break,
