@@ -35,6 +35,23 @@
 #
 #   memreserve  `-dtb` with the machine's tree plus those entries
 #
+# The kernel is also booted through the bootloader, from a disk image under
+# QEMU with UEFI firmware (ADR 0013): the bootloader must load the kernel from
+# the EFI system partition, leave boot services and hand over the boot info,
+# and the kernel must say it was entered that way and report a coherent
+# memory map. The firmware is found at the usual places, or in UEFI_FIRMWARE.
+#
+#   uefi      256 MiB, the default
+#   uefi-768  768 MiB: the kernel sizes memory from the bootloader's map, so
+#             the amount it reports follows
+#   uefi-acpi-only  ACPI left on: no device tree is published, so the
+#             bootloader must refuse and the kernel must not start
+#   uefi-el2-high  EL2 with 3.5 GiB: RAM and the page tables lie above 4 GiB,
+#             which only works if the physical address size reaches EL1's
+#             translation registers
+#   uefi-el2  the firmware runs the bootloader at EL2, which the bootloader
+#             must leave for EL1 itself before the kernel starts
+#
 # Three more boots use kernels built to raise an exception nothing resumes
 # from, and must end in a kernel panic that names it:
 #
@@ -44,12 +61,12 @@
 #                     not be resumed like the kernel's own breakpoint
 set -euo pipefail
 
-readonly EXPECTED_BANNER="workspace-os kernel: booted on aarch64 in EL1"
+readonly EXPECTED_BANNER="booted on aarch64 in EL1"
 readonly DEFAULT_MEMORY_MIB=128
 readonly RAM_BASE="0x40000000"
-readonly UART_REPORT="workspace-os kernel: uart pl011 at 0x9000000"
+readonly UART_REPORT="uart pl011 at 0x9000000"
 readonly BREAKPOINT_REPORT="exception: breakpoint #0x800 at"
-readonly RESUME_MARKER="workspace-os kernel: resumed after breakpoint"
+readonly RESUME_MARKER="resumed after breakpoint"
 readonly PANIC_MARKER="kernel panic"
 readonly FRAME_SIZE=4096
 # `/memreserve/` entries the memreserve boot adds: 16 frames, then a range that
@@ -57,7 +74,10 @@ readonly FRAME_SIZE=4096
 readonly MEMRESERVE_FRAMES=17
 # The kernel image, boot stack and device tree blob together stay well below this.
 readonly MAX_RESERVED_FRAMES=1024
-readonly BOOT_TIMEOUT_SECONDS=10
+# Not readonly: the boots that start from UEFI firmware take longer to reach the
+# kernel, and set a longer wait for their own duration.
+BOOT_TIMEOUT_SECONDS=10
+readonly UEFI_BOOT_TIMEOUT_SECONDS=90
 readonly SETTLE_SECONDS=1
 # Fixed target directory: with CARGO_TARGET_DIR set, cargo would build
 # elsewhere and the test would boot a stale binary from here.
@@ -67,6 +87,13 @@ readonly KERNEL_ELF="$TARGET_DIR/aarch64-unknown-none-softfloat/debug/kernel"
 # -nodefaults: the default virtio network card needs an option ROM that
 # minimal QEMU installs (such as the CI runner) do not ship.
 readonly QEMU_MACHINE=(-machine virt -cpu cortex-a72 -nodefaults -display none -m "${DEFAULT_MEMORY_MIB}M")
+
+# plain_log: the serial log without carriage returns and colour codes, for the
+# checks that read a line as a whole. The text of a message is never split by a
+# colour code, so the plain `grep -F` checks read the log as it is.
+plain_log() {
+    tr -d '\r' < "$serial_log" | LC_ALL=C sed $'s/\033\\[[0-9;]*m//g'
+}
 
 cd "$(dirname "$0")/.."
 cargo build --quiet --target-dir "$TARGET_DIR"
@@ -174,10 +201,10 @@ expected_blob_size=""
 # amount of RAM and the layout the linker chose.
 check_frames() {
     local mib="$1" counts total reserved free
-    expect_once "workspace-os kernel: reserved kernel image $image_range" "kernel image reservation"
-    expect_once "workspace-os kernel: reserved boot stack $stack_range" "boot stack reservation"
+    expect_once "reserved kernel image $image_range" "kernel image reservation"
+    expect_once "reserved boot stack $stack_range" "boot stack reservation"
     expect_once "in memory map" "frame map report"
-    counts="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: frames: \([0-9]*\) in memory map, \([0-9]*\) reserved, \([0-9]*\) free$/\1 \2 \3/p')"
+    counts="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: \([0-9]*\) in memory map, \([0-9]*\) reserved, \([0-9]*\) free$/\1 \2 \3/p')"
     [[ -n "$counts" ]] || fail "frame map report has an unexpected format"
     read -r total reserved free <<< "$counts"
 
@@ -192,7 +219,7 @@ check_frames() {
     # The device tree blob must be reserved too, and the reserved count must
     # cover the kernel (image and stack) and the blob, whichever way it is built.
     local blob blob_start blob_end kernel_frames blob_frames
-    blob="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
+    blob="$(plain_log | sed -n 's/^  kernel  .\{4\}  reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
     [[ "$(echo "$blob" | wc -l)" -eq 1 && -n "$blob" ]] || fail "device tree reservation not reported exactly once"
     read -r blob_start blob_end <<< "$blob"
     # QEMU loads the tree at the start of RAM, with the size its header holds.
@@ -206,16 +233,16 @@ check_frames() {
     # The machine's own tree declares nothing else to reserve.
     [[ "$reserved" -eq $((kernel_frames + blob_frames + extra_reserved_frames)) ]] \
         || fail "$reserved frames reserved, expected $((kernel_frames + blob_frames + extra_reserved_frames))"
-    expect_once "workspace-os kernel: reserved by the device tree: $extra_reserved_ranges regions" \
+    expect_once "reserved by the device tree: $extra_reserved_ranges regions" \
         "device tree reservation count"
 
-    expect_once "workspace-os kernel: frames: exhausted after $free allocations, next request refused" \
+    expect_once "frames: exhausted after $free allocations, next request refused" \
         "exhaustion report"
-    expect_once "workspace-os kernel: frames: returned $free, $free free again" "return of every frame"
-    expect_once "workspace-os kernel: frames: double free refused" "double free refusal"
+    expect_once "frames: returned $free, $free free again" "return of every frame"
+    expect_once "frames: double free refused" "double free refusal"
 
     local reused ram_end
-    reused="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: frames: reused \(0x[0-9a-f]*\) after freeing it$/\1/p')"
+    reused="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: reused \(0x[0-9a-f]*\) after freeing it$/\1/p')"
     [[ "$(echo "$reused" | wc -l)" -eq 1 && -n "$reused" ]] || fail "frame reuse not reported exactly once"
     ram_end=$((RAM_BASE + mib * 1024 * 1024))
     [[ "$reused" -ge "$RAM_BASE" && "$reused" -lt "$ram_end" && $((reused % FRAME_SIZE)) -eq 0 ]] \
@@ -225,7 +252,7 @@ check_frames() {
 # check_boot NAME QEMU_IMAGE_ARGS...
 check_boot() {
     local expected_memory
-    expected_memory="workspace-os kernel: memory $(memory_mib_of "$@") MiB at $RAM_BASE"
+    expected_memory="memory $(memory_mib_of "$@") MiB at $RAM_BASE"
     start_qemu "$@"
 
     wait_for_banner
@@ -267,6 +294,176 @@ check_panic() {
 
     stop_qemu
     echo "PASS ($boot_name): unhandled exception ended in a kernel panic"
+}
+
+# find_uefi_firmware: prints the AArch64 UEFI firmware image QEMU can load with
+# `-bios`: UEFI_FIRMWARE if set, else the first of the packaged locations.
+find_uefi_firmware() {
+    if [[ -n "${UEFI_FIRMWARE:-}" ]]; then
+        echo "$UEFI_FIRMWARE"
+        return
+    fi
+    local candidate
+    for candidate in \
+        /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+        /usr/local/share/qemu/edk2-aarch64-code.fd \
+        /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+        /usr/share/AAVMF/AAVMF_CODE.fd \
+        /usr/share/qemu/edk2-aarch64-code.fd; do
+        if [[ -f "$candidate" ]]; then
+            echo "$candidate"
+            return
+        fi
+    done
+    echo "boot smoke test: no AArch64 UEFI firmware found. Install qemu-efi-aarch64 (Debian, Ubuntu) or QEMU's edk2 files (Homebrew), or set UEFI_FIRMWARE." >&2
+    exit 1
+}
+
+# check_uefi_boot NAME MEMORY_MIB BOOTLOADER_EL [QEMU_ARGS...]: boots the disk image through the UEFI
+# firmware and the bootloader. The firmware publishes a device tree only with
+# ACPI off (ADR 0013, "What is not yet known"), hence `acpi=off`.
+check_uefi_boot() {
+    local mib="$2" bootloader_el="$3" counts total reserved free copy_start copy_end
+    BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+    start_qemu "$1" -machine virt,acpi=off -m "${mib}M" -bios "$uefi_firmware" \
+        -drive "file=$disk_image,format=raw,if=virtio" "${@:4}"
+
+    wait_for_banner
+    wait_for_line "$RESUME_MARKER"
+    sleep "$SETTLE_SECONDS"
+    qemu_is_running || fail "QEMU exited after the boot banner"
+    if grep -qF "$PANIC_MARKER" "$serial_log"; then
+        fail "kernel panicked after the boot banner"
+    fi
+
+    # The bootloader said where it put the kernel, and that is where the linker
+    # placed the image (the stack included): a loader that misplaces or cuts
+    # the image cannot print this.
+    expect_once "started at EL$bootloader_el" "bootloader's exception level"
+    expect_once "kernel loaded at $(hex "$(symbol_address __image_start | sed 's/^0x//')")..$(hex "$(symbol_address __stack_top | sed 's/^0x//')"), entry $(hex "$(symbol_address _start | sed 's/^0x//')")" \
+        "bootloader's report of the kernel placement"
+    expect_once "$EXPECTED_BANNER" "boot banner"
+    expect_once "$UART_REPORT" "UART report"
+    expect_once "$BREAKPOINT_REPORT" "breakpoint report"
+    expect_once "$RESUME_MARKER" "resume after the breakpoint"
+    # The origin of the entry is visible on the serial console.
+    expect_once "entry: bootloader, boot info 1.0, mode 0," "entry through the bootloader"
+    if grep -qF "entry: direct load" "$serial_log"; then
+        fail "kernel reports a direct load after a boot through the bootloader"
+    fi
+    # The processor identity, the tables and the registers the ADR fixes to zero:
+    # the boot processor of QEMU `virt` is 0, ACPI is off, the system table is set.
+    expect_once "handoff: boot cpu 0x0, rsdp 0x0, efi system table 0x" "handoff fields"
+    if grep -qF "efi system table 0x0," "$serial_log"; then
+        fail "boot info carries no EFI system table"
+    fi
+    expect_once ", x2|x3 0" "x2 and x3 at entry"
+    expect_once "reserved kernel image $image_range" "kernel image reservation"
+    expect_once "reserved boot stack $stack_range" "boot stack reservation"
+
+    # The kernel found an intact copy of the device tree, as big as the firmware's.
+    local blob_size copy
+    blob_size="$(plain_log | sed -n 's/.*[^ ] *device tree at 0x[0-9a-f]* (\([0-9]*\) bytes).*/\1/p')"
+    copy="$(plain_log | sed -n 's/^  kernel  .\{4\}  reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
+    [[ -n "$blob_size" && "$(echo "$copy" | wc -l)" -eq 1 && -n "$copy" ]] || fail "device tree copy not reported exactly once"
+    read -r copy_start copy_end <<< "$copy"
+    [[ $((copy_end - copy_start)) -eq "$blob_size" ]] \
+        || fail "kernel reserves $((copy_end - copy_start)) bytes of device tree, the bootloader copied $blob_size"
+
+    # The memory line comes from the bootloader's map: most of the machine's RAM.
+    local reported
+    reported="$(plain_log | sed -n 's/^  kernel  .\{4\}  memory \([0-9]*\) MiB at 0x40000000$/\1/p')"
+    [[ "$(echo "$reported" | wc -l)" -eq 1 && -n "$reported" ]] || fail "memory report not found exactly once"
+    [[ "$reported" -le "$mib" && "$reported" -ge $((mib * 9 / 10)) ]] \
+        || fail "kernel reports $reported MiB of memory, expected most of ${mib} MiB"
+
+    counts="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: \([0-9]*\) in memory map, \([0-9]*\) reserved, \([0-9]*\) free$/\1 \2 \3/p')"
+    [[ -n "$counts" ]] || fail "frame map report has an unexpected format"
+    read -r total reserved free <<< "$counts"
+    [[ "$total" -le $((mib * 1024 * 1024 / FRAME_SIZE)) && "$total" -ge $((mib * 1024 * 1024 / FRAME_SIZE * 9 / 10)) ]] \
+        || fail "frame map holds $total frames, expected most of ${mib} MiB"
+    [[ $((reserved + free)) -eq "$total" ]] || fail "$reserved reserved and $free free frames do not add up to $total"
+    [[ "$free" -gt 0 ]] || fail "no free frames"
+
+    # The memory map the kernel printed is sorted and disjoint, holds the kernel
+    # image as one entry exactly where the linker put it, and the allocator
+    # follows it: RAM is everything but firmware regions, and what is not usable
+    # (the kernel, the bootloader's memory, ACPI tables) is reserved.
+    local start end kind previous_end=0 ram_frames=0 held_frames=0 kernel_entries=0 entries=0
+    local kernel_end=$(( (image_end_address + FRAME_SIZE - 1) / FRAME_SIZE * FRAME_SIZE ))
+    while read -r start end kind; do
+        entries=$((entries + 1))
+        [[ $((start)) -ge "$previous_end" && $((end)) -gt $((start)) ]] || fail "memory map entry $start..$end is out of order or empty"
+        previous_end=$((end))
+        if [[ "$kind" == kernel ]]; then
+            kernel_entries=$((kernel_entries + 1))
+            [[ $((start)) -eq "$image_start_address" && $((end)) -eq "$kernel_end" ]] \
+                || fail "kernel entry $start..$end is not the image $(printf '%#x..%#x' "$image_start_address" "$kernel_end")"
+        fi
+        case "$kind" in
+            usable | kernel | bootloader-reclaimable | acpi-reclaimable)
+                ram_frames=$((ram_frames + (end - start) / FRAME_SIZE))
+                if [[ "$kind" != usable ]]; then
+                    held_frames=$((held_frames + (end - start) / FRAME_SIZE))
+                fi
+                ;;
+        esac
+    done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    [[ "$entries" -gt 0 && "$kernel_entries" -eq 1 ]] || fail "memory map has $entries entries and $kernel_entries kernel entries"
+    [[ "$total" -eq "$ram_frames" ]] || fail "allocator map holds $total frames but the memory map has $ram_frames of RAM"
+    [[ "$reserved" -eq "$held_frames" ]] \
+        || fail "$reserved frames reserved, but the kernel and the bootloader's memory in the map take $held_frames"
+
+    # Normal cacheable memory for the kernel and Device memory for the UART:
+    # the translation the bootloader installed, as the hardware reports it.
+    # The kernel runs on the bootloader's own tables, not the firmware's (the
+    # root is the pool the bootloader printed), and what the tables map holds up
+    # at the kernel, the UART and the boot info.
+    expect_once "mapping: runtime services 0xff" "memory type of the runtime services regions"
+    # SCTLR_EL1: MMU (bit 0), data cache (2) and instruction cache (12) on;
+    # alignment check (1) and write-implies-execute-never (19) off.
+    local sctlr
+    sctlr="$(plain_log | sed -n 's/^  kernel  .\{4\}  sctlr_el1 \(0x[0-9a-f]*\)$/\1/p')"
+    [[ -n "$sctlr" ]] || fail "SCTLR_EL1 not reported"
+    [[ $(((sctlr >> 0) & 1)) -eq 1 && $(((sctlr >> 2) & 1)) -eq 1 && $(((sctlr >> 12) & 1)) -eq 1 \
+        && $(((sctlr >> 1) & 1)) -eq 0 && $(((sctlr >> 19) & 1)) -eq 0 ]] \
+        || fail "SCTLR_EL1 is $sctlr: expected MMU, D-cache and I-cache on, alignment checks and WXN off"
+    local tables
+    tables="$(plain_log | sed -n 's/.*page tables at \(0x[0-9a-f]*\).*/\1/p')"
+    [[ -n "$tables" ]] || fail "bootloader did not report its page tables"
+    # The tables are memory the bootloader owns and the kernel may reclaim later.
+    local owned=0 table_start table_end table_kind
+    while read -r table_start table_end table_kind; do
+        if [[ "$table_kind" == bootloader-reclaimable \
+            && $((table_start)) -le $((tables)) && $((tables)) -lt $((table_end)) ]]; then
+            owned=1
+        fi
+    done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    [[ "$owned" -eq 1 ]] || fail "the page tables at $tables are not in a bootloader-reclaimable entry of the memory map"
+    expect_once "mapping: kernel image 0xff, uart 0x00, boot info 0xff, tables at $tables" "memory types and root of the bootloader's map"
+    expect_once "frames: exhausted after $free allocations, next request refused" "exhaustion report"
+    expect_once "frames: returned $free, $free free again" "return of every frame"
+    expect_once "frames: double free refused" "double free refusal"
+
+    BOOT_TIMEOUT_SECONDS=10
+    stop_qemu
+    echo "PASS ($boot_name): kernel booted through the bootloader and stayed up"
+}
+
+# check_uefi_refusal NAME: with ACPI on, the firmware publishes no device tree
+# and the bootloader must say so and not start the kernel.
+check_uefi_refusal() {
+    BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+    start_qemu "$1" -machine virt -m 256M -bios "$uefi_firmware" \
+        -drive "file=$disk_image,format=raw,if=virtio"
+    wait_for_line "the firmware offers ACPI only"
+    sleep "$SETTLE_SECONDS"
+    if grep -qF "booted on aarch64" "$serial_log"; then
+        fail "the kernel started on a machine that offers ACPI only"
+    fi
+    BOOT_TIMEOUT_SECONDS=10
+    stop_qemu
+    echo "PASS ($boot_name): the bootloader refused an ACPI-only machine"
 }
 
 # build_with_feature FEATURE DESTINATION: builds the kernel with a self-test
@@ -353,6 +550,14 @@ expected_blob_size=""
 check_boot memreserve -dtb "$memreserve_dtb" -kernel "$KERNEL_ELF"
 extra_reserved_frames=0
 extra_reserved_ranges=0
+uefi_firmware="$(find_uefi_firmware)"
+disk_image="$work_dir/disk.img"
+./scripts/build-disk-image.sh "$disk_image" > /dev/null
+check_uefi_boot uefi 256 1
+check_uefi_boot uefi-768 768 1
+check_uefi_boot uefi-el2 256 2 -machine virtualization=on
+check_uefi_boot uefi-el2-high 3584 2 -machine virtualization=on
+check_uefi_refusal uefi-acpi-only
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"

@@ -2,7 +2,6 @@
 //! decoding of the syndrome.
 
 use core::arch::asm;
-use core::fmt::Write;
 use core::mem::{offset_of, size_of};
 
 use crate::board;
@@ -135,7 +134,8 @@ extern "C" fn handle_sync_exception(frame: &mut TrapFrame) {
     let syndrome = Syndrome::new(frame.esr);
     if syndrome.class == EC_BRK_A64 && syndrome.iss & 0xffff == RESUMABLE_BREAKPOINT {
         let mut console = board::console();
-        let _ = writeln!(
+        crate::log::klog!(
+            Info,
             console,
             "exception: breakpoint #{:#x} at {:#x}",
             syndrome.iss & 0xffff,

@@ -21,11 +21,16 @@ cargo fmt --all --check
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings
 cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap -- -D warnings
-# The device tree reader and the frame allocator are plain Rust with unit
-# tests, so they are checked and tested on the host: the test harness cannot be
-# built for the bare-metal target.
+# The device tree reader, the frame allocator and the handoff structure
+# (`bootinfo`) are plain Rust with unit tests, so they are checked and tested on
+# the host: the test harness cannot be built for the bare-metal target. The
+# kernel also builds `bootinfo` for the bare-metal target, as a dependency.
 host_target="$(rustc -vV | sed -n 's/^host: //p')"
-cargo clippy --all-targets -p devicetree -p physmem --target "$host_target" -- -D warnings
+cargo clippy --all-targets -p devicetree -p physmem -p bootinfo --target "$host_target" -- -D warnings
+# The bootloader is a third target: a UEFI application, which neither the
+# bare-metal kernel target nor the host can build. It is not a default member
+# of the workspace, so a bare `cargo build` never tries.
+cargo clippy --all-targets -p bootloader --target aarch64-unknown-uefi -- -D warnings
 # The intent shell is host code (std, sockets, the real filesystem), so like the
 # device tree reader it is built for the host. Its tests never need the model.
 cargo clippy --all-targets -p intent-shell --target "$host_target" -- -D warnings
@@ -33,7 +38,7 @@ cargo clippy --all-targets -p intent-shell --target "$host_target" -- -D warning
 cargo clippy --all-targets -p intent-shell --target "$host_target" --no-default-features -- -D warnings
 
 echo "==> unit tests"
-cargo test --quiet -p devicetree -p physmem --target "$host_target"
+cargo test --quiet -p devicetree -p physmem -p bootinfo --target "$host_target"
 cargo test --quiet -p intent-shell --target "$host_target"
 cargo test --quiet -p intent-shell --target "$host_target" --no-default-features
 
