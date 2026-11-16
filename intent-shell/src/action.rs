@@ -77,6 +77,12 @@ pub enum Action {
     },
 }
 
+/// Whether any part of the path is hidden (starts with a dot).
+fn hidden(path: &Path) -> bool {
+    path.components()
+        .any(|part| part.as_os_str().as_bytes().first() == Some(&b'.'))
+}
+
 impl Action {
     /// Whether the person is asked before this action runs (ADR 0016). Reading
     /// and adding are not asked about; anything that changes, removes or
@@ -84,12 +90,12 @@ impl Action {
     /// classified before it compiles.
     pub fn needs_confirmation(&self) -> bool {
         match self {
-            Self::List { .. }
-            | Self::Stat { .. }
-            | Self::Read { .. }
-            | Self::FindLargest { .. } => false,
-            Self::Write { mode, .. } => match mode {
-                WriteMode::Create | WriteMode::Append => false,
+            Self::List { .. } | Self::Stat { .. } | Self::FindLargest { .. } => false,
+            // Startup files and credentials are dotfiles or live under one
+            // (`.zshrc`, `.ssh/`): showing them, or adding to them, is asked.
+            Self::Read { path } => hidden(path),
+            Self::Write { path, mode, .. } => match mode {
+                WriteMode::Create | WriteMode::Append => hidden(path),
                 WriteMode::Overwrite => true,
             },
             Self::Move { .. }

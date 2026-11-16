@@ -62,6 +62,9 @@ pub enum Outcome {
     /// The log could not be written, so the shell stopped before the next action.
     LogFailed {
         reason: String,
+        /// The plan screen, when the plan ran without a question and so was
+        /// never shown (ADR 0016).
+        plan: Option<String>,
         steps: Vec<ExecutedStep>,
         labels: Labels,
     },
@@ -80,6 +83,7 @@ impl Shell<'_> {
         self.run(request)
             .unwrap_or_else(|reason| Outcome::LogFailed {
                 reason,
+                plan: None,
                 steps: Vec::new(),
                 labels: Labels::default(),
             })
@@ -148,6 +152,7 @@ impl Shell<'_> {
             },
             Err(reason) => Outcome::LogFailed {
                 reason,
+                plan: (!asked).then(|| screen::plan_screen(&reviewed, View::Friendly)),
                 steps,
                 labels,
             },
@@ -473,18 +478,22 @@ impl Outcome {
                 steps,
                 labels,
             } => format!(
-                "{}\n  Ran without asking: nothing in it changes or removes anything.\n{}",
+                "{}\n  Ran without asking: it only read or added.\n{}",
                 screen::plan_screen(review, View::Friendly),
                 render_steps(steps, labels)
             ),
             Self::Executed { steps, labels, .. } => render_steps(steps, labels),
             Self::LogFailed {
                 reason,
+                plan,
                 steps,
                 labels,
             } => {
                 format!(
-                    "{}The decision log cannot be written ({reason}); stopped before the next action.",
+                    "{}{}The decision log cannot be written ({reason}); stopped before the next action.",
+                    plan.as_deref()
+                        .map(|p| format!("{p}\n"))
+                        .unwrap_or_default(),
                     render_steps(steps, labels)
                 )
             }

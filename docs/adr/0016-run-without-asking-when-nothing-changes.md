@@ -30,6 +30,11 @@ could run** (every step not blocked, every item not refused) is one of:
 | `fs.write` with mode `create` | Adds a file that does not exist; the broker already refuses to create over an existing one |
 | `fs.write` with mode `append` | Adds to a file; does not remove what was there |
 
+A **hidden path** (any component starting with a dot: `.zshrc`, `.ssh/key`)
+always asks, even for the actions above, whether it is read, created or
+appended to. Startup files and credentials are hidden files, and appending a
+line to one is persistent code execution or a leaked key, not a harmless add.
+
 The plan is confirmed, as today, when **any** such action is one of:
 `fs.write` with mode `overwrite`, `fs.move`, `fs.delete`, `process.run`,
 `user.manage`, `system.configure`, `soul.propose_change`, or anything held for
@@ -63,6 +68,16 @@ What does not change:
 | D. A per-user setting | Each person chooses | A policy knob in the trusted path, and a default still has to be chosen |
 
 ## Consequences
+
+- When the host gains writes (it executes only reads today), `append` must use
+  `O_NOFOLLOW` and `create` must use `create_new`, so a symlink cannot redirect
+  an unasked append and a file that appears after the review is never
+  overwritten. This is a condition of enabling writes, with its own test.
+- An unasked `fs.read` shows file content in the terminal and writes a
+  truncated copy to the decision log. The user's permissions bound it (ADR 0007)
+  and hidden paths ask, but a readable non-hidden file with secrets in it is
+  read without a question. Accepted by the user's decision above; redacting
+  read output in the log is a possible later change.
 
 - `session.rs` decides from the review whether to ask; the terminal adapters do
   not change, and a plan that is not asked about simply produces no question.

@@ -1177,10 +1177,7 @@ fn auto_plans() -> Vec<(&'static str, String)> {
             "append",
             plan_of(
                 "fs.write",
-                &format!(
-                    r#"{{"target":{},"content":"x","mode":"append"}}"#,
-                    &named("a")[10..named("a").len() - 1]
-                ),
+                r#"{"target":{"name":"a","in":"downloads","kind":"file"},"content":"x","mode":"append"}"#,
                 "false",
             ),
         ),
@@ -1258,4 +1255,74 @@ fn an_unasked_plan_is_on_record_before_it_runs() {
         .unwrap();
     let executed = names.iter().position(|n| n == "execute").unwrap();
     assert!(approved < executed);
+}
+
+#[test]
+fn a_hidden_file_is_asked_about_to_read_to_add_to_or_to_create() {
+    let host = FakeHost::with_files(&[("/work/.zshrc", 10), ("/work/a", 10)]);
+    let hidden = |action: &str, args: &str| plan_of(action, args, "false");
+    let cases = [
+        hidden(
+            "fs.read",
+            r#"{"target":{"name":".zshrc","in":"downloads","kind":"file"}}"#,
+        ),
+        hidden(
+            "fs.write",
+            r#"{"target":{"name":".zshrc","in":"downloads","kind":"file"},"content":"x","mode":"append"}"#,
+        ),
+        hidden(
+            "fs.write",
+            r#"{"target":{"new_name":".zshenv","in":"downloads"},"content":"x","mode":"create"}"#,
+        ),
+    ];
+    for text in cases {
+        let result = run(&[&text], &host, false);
+        assert_eq!(result.answers.screens.len(), 1, "{text}");
+    }
+}
+
+#[test]
+fn a_read_next_to_a_refused_destructive_step_still_runs_unasked() {
+    let host = files().forbid(Access::Delete, "/work/a");
+    let text = plan(&[
+        step("s1", "fs.list", PLACE, "false"),
+        step("s2", "fs.delete", &named("a"), "false"),
+    ]);
+    let result = run(&[&text], &host, false);
+    assert!(result.answers.screens.is_empty());
+    assert!(matches!(
+        result.outcome,
+        Outcome::Executed { asked: false, .. }
+    ));
+    assert!(
+        host.executed
+            .borrow()
+            .iter()
+            .all(|a| !a.starts_with("fs.delete"))
+    );
+}
+
+#[test]
+fn a_read_made_root_by_an_administrator_asks_and_gets_its_panel() {
+    let text = plan_of("fs.read", &named("a"), "true");
+    let result = run(&[&text], &files(), true);
+    assert_eq!(result.answers.screens.len(), 1);
+    assert_eq!(result.answers.root_asked.len(), 1);
+}
+
+#[test]
+fn an_unasked_plan_whose_log_fails_still_shows_the_plan() {
+    let (result, _) = run_with(
+        &[LARGEST],
+        &files(),
+        &Authority::full(user(false)),
+        Answers::yes(),
+        MemoryLog::failing_after(5),
+    );
+    let shown = result.outcome.render();
+    assert!(
+        matches!(result.outcome, Outcome::LogFailed { .. }),
+        "{shown}"
+    );
+    assert!(shown.contains("Verdict"), "{shown}");
 }
