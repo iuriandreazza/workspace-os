@@ -11,4 +11,9 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "devicetree",
+ "physmem",
 ]
+
+[[package]]
+name = "physmem"
+version = "0.1.0"

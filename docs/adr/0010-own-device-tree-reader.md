@@ -30,7 +30,9 @@ a third-party crate.
   first enabled node with a given `compatible`, among the direct children of
   the root. Cell counts of 1 or 2 are supported. `reg` values are taken as CPU
   physical addresses, so nodes below another bus are ignored rather than
-  translated. K3 will extend the reader to the full memory map.
+  translated. K3 extended the reader to every `reg` entry of every memory node and to the
+  reserved regions (`/memreserve/` and the children of `reserved-memory`, whose
+  own `ranges` must be empty).
 
 Alternatives considered: `fdt` and `fdt-parser` style crates avoid writing
 parsing code, but their allocation behaviour, unsafe use and licences each need

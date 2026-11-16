@@ -1,5 +1,5 @@
 [workspace]
-members = ["kernel", "devicetree"]
+members = ["kernel", "devicetree", "physmem"]
 resolver = "3"
 
 [workspace.lints.clippy]
