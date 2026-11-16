@@ -834,3 +834,41 @@ fn a_step_cannot_act_on_what_an_earlier_step_removes() {
         Verdict::Refused(Refusal::ConflictsWithStep(..))
     ));
 }
+
+#[test]
+fn a_move_into_a_folder_that_holds_the_same_name_is_refused() {
+    let host = FakeHost::with_files(&[("/work/a.txt", 1), ("/docs/a.txt", 5)]);
+    let args =
+        r#"{"from":{"name":"a.txt","in":"downloads","kind":"file"},"to":{"place":"documents"}}"#;
+    let result = run(
+        &[&plan(&[step("s1", "fs.move", args, "false")])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[0].items[0].verdict,
+        Verdict::Refused(Refusal::DestinationTaken(_))
+    ));
+}
+
+#[test]
+fn two_steps_naming_one_file_in_different_case_conflict() {
+    let host = FakeHost::default();
+    let make = |name: &str| {
+        format!(
+            r#"{{"target":{{"new_name":"{name}","in":"downloads"}},"content":"x","mode":"create"}}"#
+        )
+    };
+    let result = run(
+        &[&plan(&[
+            step("s1", "fs.write", &make("Notes.txt"), "false"),
+            step("s2", "fs.write", &make("notes.txt"), "false"),
+        ])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[1].items[0].verdict,
+        Verdict::Refused(Refusal::ConflictsWithStep(..))
+    ));
+}

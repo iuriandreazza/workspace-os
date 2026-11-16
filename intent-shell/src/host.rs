@@ -71,7 +71,9 @@ impl Host for UnixHost {
         use std::os::unix::fs::MetadataExt;
         match (fs::metadata(a), fs::metadata(b)) {
             (Ok(x), Ok(y)) => (x.dev(), x.ino()) == (y.dev(), y.ino()),
-            _ => a == b,
+            // Neither exists (yet): a case-insensitive volume would fold these,
+            // so differing only in case counts as the same.
+            _ => a == b || a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase(),
         }
     }
 
@@ -720,6 +722,7 @@ mod tests {
         assert!(host().same(&dir.join("real"), &dir.join("alias")));
         assert!(!host().same(&dir.join("real"), &dir.join("other")));
         assert!(host().same(&dir.join("missing"), &dir.join("missing")));
+        assert!(host().same(&dir.join("Notes.txt"), &dir.join("notes.txt")));
         fs::remove_dir_all(&dir).unwrap();
     }
 

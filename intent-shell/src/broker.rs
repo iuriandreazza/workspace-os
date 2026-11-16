@@ -54,6 +54,8 @@ pub enum Refusal {
     ConfigKeyNotAllowed(String),
     ProtectedPath(PathBuf),
     MoveIntoItself(PathBuf),
+    /// A move whose destination already holds something: it would be replaced.
+    DestinationTaken(PathBuf),
     /// An earlier action of the same plan already removes, moves or replaces this location.
     ConflictsWithStep(StepId, PathBuf),
     /// A place is a container: it can be read, never removed, moved or overwritten whole.
@@ -92,6 +94,11 @@ impl fmt::Display for Refusal {
                     quoted_path(path)
                 )
             }
+            Self::DestinationTaken(path) => write!(
+                f,
+                "{} already exists and a move would replace it",
+                quoted_path(path)
+            ),
             Self::ConflictsWithStep(step, path) => write!(
                 f,
                 "step {step} already removes, moves or replaces {}",
@@ -130,6 +137,10 @@ impl Refusal {
             Self::MoveIntoItself(path) => {
                 format!("{} cannot be moved onto or into itself", labels.of(path))
             }
+            Self::DestinationTaken(path) => format!(
+                "{} already exists and a move would replace it",
+                labels.of(path)
+            ),
             Self::ConflictsWithStep(step, path) => format!(
                 "step {step} already removes, moves or replaces {}",
                 labels.of(path)
@@ -270,9 +281,19 @@ pub fn review(plan: &Plan, authority: &Authority, host: &dyn Host, choices: &Cho
                         .into_iter()
                         .map(|action| {
                             let mut verdict = judge(&action, step.elevate, authority, host);
+                            if let Action::Move { to, .. } = &action
+                                && !matches!(verdict, Verdict::Refused(_))
+                                && host.exists(to)
+                            {
+                                verdict = Verdict::Refused(Refusal::DestinationTaken(to.clone()));
+                            }
                             if !matches!(verdict, Verdict::Refused(_)) {
                                 for path in changed_locations(&action) {
-                                    match claimed.get(path) {
+                                    let earlier = claimed
+                                        .iter()
+                                        .find(|(taken, _)| host.same(taken, path))
+                                        .map(|(_, step)| step);
+                                    match earlier {
                                         Some(earlier) if *earlier != step.id => {
                                             verdict = Verdict::Refused(Refusal::ConflictsWithStep(
                                                 earlier.clone(),
