@@ -327,6 +327,16 @@ on Apple silicon). No decision above changed.
   file buffer is allocated before the kernel's own range, which assumes a
   firmware that allocates top-down (the range failing is reported with the
   firmware's memory map).
+- **Limits found in the K2b-3 review, known and kept.** The page tables map
+  Device memory only below the same 512 GiB (or `TCR_EL1` range) as RAM, and
+  the bootloader does not check the UART's base against it: a PL011 above it
+  hangs the kernel's first console write. `build_memory_map` refuses a raw
+  firmware map of more than 2048 descriptors before merging neighbours (real
+  firmware has a few dozen). A failure after the kernel is loaded gives back the
+  kernel's range only; the file buffer, the device tree copy and the tables stay
+  allocated until the firmware exits, which matters only to a firmware that
+  boots the next entry in the same session. A device tree published but not
+  valid is reported as such; no firmware here provokes it, so no boot tests it.
 
 ## Findings of K2b-3
 

@@ -194,6 +194,8 @@ fn print_memory_map() {
 /// What the firmware publishes besides memory.
 struct Tables {
     device_tree: Option<(usize, usize)>,
+    /// The firmware published a device tree, usable or not.
+    device_tree_published: bool,
     rsdp: u64,
 }
 
@@ -215,7 +217,11 @@ fn find_tables() -> Tables {
             find(ConfigTableEntry::ACPI2_GUID).map(|a| a as u64),
             find(ConfigTableEntry::ACPI_GUID).map(|a| a as u64),
         );
-        Tables { device_tree, rsdp }
+        Tables {
+            device_tree,
+            device_tree_published: find(DEVICE_TREE_GUID).is_some(),
+            rsdp,
+        }
     })
 }
 
@@ -301,7 +307,9 @@ fn hand_over(plan: &elf::LoadPlan) -> Outcome<core::convert::Infallible> {
 
     let tables = find_tables();
     let Some((device_tree, device_tree_size)) = tables.device_tree else {
-        return Err(if tables.rsdp != 0 {
+        return Err(if tables.device_tree_published {
+            Failure::Message("the device tree the firmware published is not valid")
+        } else if tables.rsdp != 0 {
             Failure::AcpiOnly(tables.rsdp)
         } else {
             Failure::Message("the firmware publishes neither a device tree nor ACPI")
