@@ -52,10 +52,14 @@ impl From<devicetree::Error> for InitError {
 }
 
 fn take_storage() -> &'static mut [u64] {
+    // A plain load and store, not `swap`: that compiles to an exclusive
+    // load/store loop, which may never succeed on real cores while the MMU is
+    // off and memory is Device. Only the boot core runs, so nothing races.
     assert!(
-        !STORAGE_TAKEN.swap(true, Ordering::Relaxed),
+        !STORAGE_TAKEN.load(Ordering::Relaxed),
         "frame allocator storage taken twice"
     );
+    STORAGE_TAKEN.store(true, Ordering::Relaxed);
     // SAFETY: the flag above lets this run once, so this is the only reference
     // ever made to `FRAME_STORAGE`, and it lives for the rest of the boot.
     unsafe { &mut *core::ptr::addr_of_mut!(FRAME_STORAGE) }
