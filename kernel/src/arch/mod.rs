@@ -6,4 +6,4 @@ pub use aarch64::raise_compiler_trap;
 pub use aarch64::raise_unhandled_class;
 #[cfg(feature = "selftest-unhandled-vector")]
 pub use aarch64::raise_unhandled_vector;
-pub use aarch64::{boot_stack, current_el, halt, kernel_image, run_selftest};
+pub use aarch64::{boot_stack, current_el, halt, kernel_image, memory_attributes, run_selftest};

@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use physmem::{Builder, FRAME_SIZE, FrameAllocator, FreeError, storage_words};
 
 use crate::arch;
-use crate::board::Board;
+use crate::board::{Board, Entry};
 
 /// The allocator manages a window of this many frames (4 GiB), counted from the
 /// lowest RAM address. Its bitmaps live in the kernel's `.bss`, so they are
@@ -82,13 +82,13 @@ fn fixed_reservations(board: &Board) -> [(&'static str, Range<u64>); 3] {
 pub fn init(board: &Board) -> Result<FrameAllocator<'static>, InitError> {
     let mut lowest = u64::MAX;
     let mut ranges = 0;
-    board.fdt.for_each_memory_region(|region| {
+    board.for_each_memory_region(|region| {
         ranges += 1;
         if region.size > 0 {
             lowest = lowest.min(region.base);
         }
     })?;
-    board.fdt.for_each_reserved_region(|_| ranges += 1)?;
+    board.for_each_reserved_region(|_| ranges += 1)?;
     if ranges > MAX_RANGES {
         return Err(InitError::TooManyRanges);
     }
@@ -97,12 +97,8 @@ pub fn init(board: &Board) -> Result<FrameAllocator<'static>, InitError> {
     }
 
     let mut builder = Builder::new(lowest, take_storage());
-    board
-        .fdt
-        .for_each_memory_region(|region| builder.add_memory(region.base, region.size))?;
-    board
-        .fdt
-        .for_each_reserved_region(|region| builder.reserve(region.base, region.size))?;
+    board.for_each_memory_region(|region| builder.add_memory(region.base, region.size))?;
+    board.for_each_reserved_region(|region| builder.reserve(region.base, region.size))?;
     for (_, range) in fixed_reservations(board) {
         builder.reserve(range.start, range.end - range.start);
     }
@@ -124,10 +120,14 @@ pub fn report(frames: &FrameAllocator, board: &Board, out: &mut impl Write) {
     }
     let mut declared = 0;
     // A device tree that parsed for `init` parses again; a failure shows as zero.
-    let _ = board.fdt.for_each_reserved_region(|_| declared += 1);
+    let _ = board.for_each_reserved_region(|_| declared += 1);
+    let source = match board.entry {
+        Entry::Direct => "the device tree",
+        Entry::Bootloader { .. } => "the boot map and device tree",
+    };
     let _ = writeln!(
         out,
-        "workspace-os kernel: reserved by the device tree: {declared} regions"
+        "workspace-os kernel: reserved by {source}: {declared} regions"
     );
     if frames.dropped_bytes() > 0 {
         let _ = writeln!(
@@ -197,7 +197,7 @@ pub fn selftest(frames: &mut FrameAllocator, board: &Board, out: &mut impl Write
     for (_, range) in fixed_reservations(board) {
         check_reserved(range);
     }
-    let reserved_by_tree = board.fdt.for_each_reserved_region(|region| {
+    let reserved_by_tree = board.for_each_reserved_region(|region| {
         let start = region.base.max(window.start);
         let end = region.base.saturating_add(region.size);
         check_reserved(start..end.min(start.saturating_add(SAMPLED_FRAMES_PER_RANGE * FRAME_SIZE)));

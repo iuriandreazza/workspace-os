@@ -1,15 +1,33 @@
-// Entry point. QEMU `virt` jumps here with the MMU off, at EL1 by default, at
-// EL2 with `virtualization=on` and at EL3 with `secure=on`.
+// Entry point, with two conventions (ADR 0013):
+//
+// - QEMU `virt` loading the image directly: the MMU is off, the level is EL1 by
+//   default, EL2 with `virtualization=on` and EL3 with `secure=on`, x0 holds the
+//   device tree address or zero, and x1 is anything.
+// - The bootloader: x1 holds the entry magic "WSOSENTR" and x0 the address of
+//   the boot info. The processor is the boot processor, already at EL1 with
+//   the MMU and the caches on and the identity map installed, so none of the
+//   work the direct path does to get there is done: no parking by MPIDR, no
+//   drop from a higher level, and SCTLR_EL1 is left alone.
 .section .text.boot
 .global _start
 _start:
-    // The boot protocol passes the device tree address in x0; QEMU's ELF
-    // loader leaves it zero. Keep it in x19, which nothing below touches, and
-    // hand it to kernel_main. The code below only uses x0 to x2.
+    // x0 is the device tree address (direct) or the boot info address
+    // (bootloader); QEMU's ELF loader leaves it zero. Keep it in x19, which
+    // nothing below touches, and hand it to kernel_main. x21 records which
+    // convention was used. The code below only uses x0 to x2.
     mov  x19, x0
 
     // Interrupts stay masked until the kernel installs an exception table.
     msr  daifset, #0xf
+
+    // The entry magic is checked first, before any register is overwritten.
+    movz x0, #0x5753, lsl #48
+    movk x0, #0x4f53, lsl #32
+    movk x0, #0x454e, lsl #16
+    movk x0, #0x5452
+    cmp  x1, x0
+    cset x21, eq
+    cbnz x21, .Lcommon
 
     // Only the boot core runs the kernel: there is a single boot stack.
     // On QEMU `virt` the boot core is the one with affinity 0. This read has
@@ -86,6 +104,7 @@ _start:
     msr  sctlr_el1, x0
     isb
 
+.Lcommon:
     // From here on a fault ends in a kernel panic instead of a silent hang.
     adrp x0, exception_vectors
     add  x0, x0, :lo12:exception_vectors
@@ -108,6 +127,7 @@ _start:
     b    1b
 2:
     mov  x0, x19
+    mov  x1, x21
     bl   kernel_main
 .Lpark:
     wfe

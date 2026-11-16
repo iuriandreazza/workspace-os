@@ -20,10 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install QEMU
+      # qemu-efi-aarch64: the UEFI firmware the bootloader boot runs on.
+      - name: Install QEMU and UEFI firmware
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends qemu-system-arm
+          sudo apt-get install --yes --no-install-recommends qemu-system-arm qemu-efi-aarch64
 
       # Without arguments rustup installs what rust-toolchain.toml pins, and
       # fails the step if it cannot.

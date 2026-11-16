@@ -1,9 +1,9 @@
 [workspace]
-members = ["kernel", "devicetree", "physmem", "intent-shell"]
+members = ["kernel", "devicetree", "physmem", "bootinfo", "intent-shell", "bootloader"]
 # Host-side crates are members, but a bare `cargo run` or `cargo build` must
 # keep meaning the kernel: they build for the bare-metal target of
 # `.cargo/config.toml`, which std code cannot target.
-default-members = ["kernel", "devicetree", "physmem"]
+default-members = ["kernel", "devicetree", "physmem", "bootinfo"]
 resolver = "3"
 
 [workspace.lints.clippy]

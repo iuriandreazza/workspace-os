@@ -43,3 +43,24 @@ pub fn halt() -> ! {
         unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
     }
 }
+
+/// The memory attribute byte (as in `MAIR_EL1`) the current translation gives
+/// `address` for a privileged read, or `None` if the translation faults. With
+/// the MMU off it describes the default type of every access.
+pub fn memory_attributes(address: usize) -> Option<u8> {
+    let par: u64;
+    // SAFETY: `at` only asks the hardware to translate and puts the answer in
+    // `PAR_EL1`; it reads no memory at the address and cannot fault.
+    unsafe {
+        asm!(
+            "at s1e1r, {address}",
+            "isb",
+            "mrs {par}, par_el1",
+            address = in(reg) address,
+            par = out(reg) par,
+            options(nostack, preserves_flags)
+        );
+    }
+    // Bit 0 is F: the translation aborted.
+    (par & 1 == 0).then_some((par >> 56) as u8)
+}

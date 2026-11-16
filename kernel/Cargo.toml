@@ -8,6 +8,7 @@ license = "GPL-2.0-only"
 workspace = true
 
 [dependencies]
+bootinfo = { path = "../bootinfo" }
 devicetree = { path = "../devicetree" }
 physmem = { path = "../physmem" }
 

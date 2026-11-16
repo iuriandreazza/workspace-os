@@ -30,11 +30,14 @@ SECTIONS
         __bss_end = .;
     }
 
-    /* 64 KiB boot stack; AArch64 requires a 16-byte aligned stack pointer. */
-    . = ALIGN(16);
-    __stack_bottom = .;
-    . += 0x10000;
-    __stack_top = .;
+    /* 64 KiB boot stack; AArch64 requires a 16-byte aligned stack pointer.
+       Its own NOLOAD section, so that the segment's size in memory covers the
+       stack and the bootloader reserves it with the image (ADR 0013). */
+    .stack (NOLOAD) : ALIGN(16) {
+        __stack_bottom = .;
+        . += 0x10000;
+        __stack_top = .;
+    }
 
     /DISCARD/ : {
         *(.comment)

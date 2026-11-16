@@ -1,5 +1,5 @@
 ---
-title: "ADR 0012: Boot handoff structure between the bootloader and the kernel"
+title: "ADR 0013: Boot handoff structure between the bootloader and the kernel"
 type: adr
 status: accepted
 created: 2026-11-15
@@ -7,7 +7,7 @@ updated: 2026-11-15
 tags: [boot, bootloader, handoff, uefi, limine, aarch64, x86_64]
 ---
 
-# ADR 0012: Boot handoff structure between the bootloader and the kernel
+# ADR 0013: Boot handoff structure between the bootloader and the kernel
 
 ## Context
 
@@ -281,3 +281,38 @@ These need an experiment, and are the first job of the code part of K2b:
 
 The register choice and page-table rules for x86_64 are added here or in an ADR
 that amends this one.
+
+## Findings of K2b-2
+
+The questions under "What is not yet known" were answered by running the
+bootloader on both firmwares (QEMU EDK2 `edk2-stable202408`, VirtualBox 7.2.22
+on Apple silicon). No decision above changed.
+
+- **Tables.** QEMU `virt` with ACPI on (the default) publishes ACPI 2.0 and
+  SMBIOS 3 tables and **no device tree**; with `-machine virt,acpi=off` it
+  publishes the device tree. VirtualBox with ACPI on publishes ACPI only; with
+  `--acpi off` it publishes a device tree (8 KiB) that names a PL011 UART at
+  `0xffdde000`. Both are therefore run with ACPI off, as this ADR foresaw.
+- **UART.** VirtualBox Arm has a working PL011 when the virtual serial port is
+  enabled (`--uart1` with a file or pipe mode); the manual's statement that Arm
+  VMs have no serial port is outdated for 7.2.22. The kernel's banner reaches
+  the host through it.
+- **Processor state.** Both firmwares start the bootloader at EL1 with the MMU
+  and caches on, a 4 KiB granule and a `MAIR_EL1` with Device-nGnRnE at index 0
+  and Normal write-back at index 3. `-machine virtualization=on` starts it at
+  EL2, which the bootloader leaves itself (it programs EL1's translation
+  registers from EL2's and returns to the kernel with `eret`). The
+  bootloader keeps the firmware's `MAIR_EL1` and `TCR_EL1` and only installs a
+  new `TTBR0_EL1`, so it never changes the translation setup while it runs on it.
+- **Load address on VirtualBox.** RAM starts at `0x08000000` and the firmware
+  reserves `0x3c170000..0x44000000` on a 1024 MiB machine, which covers
+  `0x40200000`. The VM needs 2048 MiB (tested) or more; this is stricter than
+  the "about 900 MiB" this ADR estimated.
+- **Linker script.** The boot stack is now its own `NOLOAD` section, so the ELF
+  segment's size in memory includes it and the bootloader reserves image and
+  stack as one Kernel entry.
+- **Licences.** `uefi` 0.41, `uefi-raw`, `uefi-macros`, `bitflags`, `bit_field`,
+  `cfg-if`, `log`, `uguid`, `ptr_meta` and the build-time `syn`, `quote`,
+  `proc-macro2` and `unicode-ident` are MIT or MIT/Apache-2.0 (used under MIT).
+  `ucs2` 0.3.3 is MPL-2.0, which lists GPL-2.0 as a permitted secondary licence
+  for a combined work; its files stay under the MPL.
