@@ -31,8 +31,10 @@ could run** (every step not blocked, every item not refused) is one of:
 | `fs.write` with mode `append` | Adds to a file; does not remove what was there |
 
 A **hidden path** (any component starting with a dot: `.zshrc`, `.ssh/key`)
-always asks, even for the actions above, whether it is read, created or
-appended to. Startup files and credentials are hidden files, and appending a
+always asks, even for the actions above, whether it is listed, read, created
+or appended to. The host also refuses an unasked read of a plain name that is a
+link to a hidden location (`notes.txt` to `.ssh/id_rsa`); the person asks for it
+by its own name. Startup files and credentials are hidden files, and appending a
 line to one is persistent code execution or a leaked key, not a harmless add.
 
 The plan is confirmed, as today, when **any** such action is one of:
