@@ -3,7 +3,7 @@ title: "Roadmap"
 type: roadmap
 status: active
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-16
 tags: [roadmap, planning, kernel, slm, drivers]
 ---
 
@@ -42,6 +42,7 @@ listed), `later` (not designed yet).
 | P | Policy plane (purpose-trained models) | after K7 |
 | D | Drivers and packages | after K10 |
 | C | Compatibility with other systems | after K8 |
+| T | Tooling and the gate | now, one item at a time |
 
 K is sequential: each item builds on the previous one. S and R do not touch
 kernel files, so they can run in separate sessions at the same time as K.
@@ -106,11 +107,13 @@ runtime before it has userspace, memory management and a filesystem.
 | S3 | Shell prototype on the host: natural language to plan, deterministic capability broker that validates it against the user's permissions and the action's capability, never more than both allow (ADR 0007), dry-run and confirmation, a log of every model decision (ADR 0002) | A session can turn "list the largest files here" into a validated plan and run it. Report: `docs/s3-intent-shell-prototype.md` | done |
 | S3b | Terminal screen and path-free resources. ADR first, superseding the path-based parts of ADR 0011: the person never navigates the filesystem and does not see userspace or system space. The model names things by description or query, a deterministic resolver turns them into concrete resources before the broker, and the broker still checks real resources. The default view shows names; the real paths sit behind a details view that stays mandatory before any root confirmation (ADR 0007). Then the screen: header with user, model and log, a per-step table with the verdict and capability of each action, notes on incomplete results, a summary line, a separate panel for each root action | The same intents as S4 give the same validated actions with no path in the default view; a root confirmation still shows the exact action; the ADR is accepted. Report: `docs/s3b-path-free-shell.md` | done |
 | S3c | Conversational terminal interface with `ratatui`, in the style of a chat session: input line at the bottom, progress while the model generates, the plan as a growing block, confirmations and the choice of an ambiguous reference by selection, a scrollable history. ADR first: the library and its licence (ADR 0005), what stays text-only so the deterministic shell (S5) and the recovery mode (ADR 0007) work without it, and how the screens of ADR 0014 map onto it. Only the terminal adapter changes: `screen.rs`, the resolver and the broker stay as they are | The same plans, choices and root confirmations as S3b, driven through the new interface; the screen content is still tested as text; the ADR is accepted. Report: `docs/s3c-conversational-interface.md` | done |
+| S3d | Colour and header of the interface, and `/commands`. Colour: a small palette for verdicts (ok, held, refused, root), the tree marks and the reply, with a no-colour fallback for `NO_COLOR` and `--plain`. Header (the ratatui interface, plain text in `--plain`): the model's name (read from the server, not `host:port`), the machine name (ADR 0006), the kernel version, battery percentage when the host has one, CPU and memory usage as small bars refreshed every few seconds. `/command` input in the interface (for example `/help`, `/clear`, `/model`, `/tree`, and later `/soul` for S9 and S10), parsed by code and never sent to the model; unknown commands say so. ADR first: what the header reads on each host, refresh cost, and which `/commands` exist | Header and palette snapshot-tested with `TestBackend`; a `/command` never reaches the planner; no battery on a desktop shows no battery; colour off with `NO_COLOR` | later |
 | S4 | Evaluation set: intents with expected plans. Measure Bonsai 8B, and compare with at least one alternative that has native tool calling | Accuracy table in `docs/`; decision to keep or change the model | next |
 | S5 | Deterministic fallback shell: the same actions typed as commands, with no model loaded | Every action in the format is reachable without the model | next |
 | S6 | Bridge into the OS: the shell runs on the host and talks to the kernel over a virtual serial channel | A plan produced on the host is executed by a user program in the OS | blocked: S5, K10 |
 | S7 | Run inference inside the OS | To be designed | later |
 | S8 | SOUL format, presets and per-user personality (ADR 0006): what the single SOUL file holds, the four ready-made profiles, how a user's personality (tone, voice, language, level of detail, name) layers on the SOUL without contradicting it, and the shell loading both. The broker reads neither | The same evaluation intents produce the same validated actions under every preset and personality; a personality that contradicts the SOUL is rejected | blocked: S4 |
+| S8a | Voice of the answers (ADR 0021): after each outcome the model writes a short reply in the tone of the SOUL, which in this item is one of the four presets read from a file; the table, verdicts, tree and root panel stay deterministic text | A scripted pipeline gives identical actions, verdicts and decision log under all four presets, with the reply on and off; no model, an error or a timeout shows the output as it is today; a live test with a real reply | next |
 | S9 | Guided interview that builds a SOUL from the user's answers; preset path with no model loaded | A SOUL produced by the interview loads in the shell; the preset path works with the model off | blocked: S8 |
 | S10 | SOUL evolution: the AI proposes a change as an action in the plan format; it applies only after a user with root authority approves the full diff; history and undo | A proposed change is refused without approval and when approved by a user without root authority, applied with a root approval, and undone from the history | blocked: S8 |
 | S11 | Speech on the host: local speech synthesis and recognition. The spoken voice belongs to each user's personality (ADR 0006), so two users can hear different voices. Research the models and their licences first | A spoken request becomes a validated plan and the answer is spoken back, with no network; two users get two different voices | blocked: S3, S8 |
@@ -159,6 +162,12 @@ and left out of the workspace's `default-members` (S3,
 | C2 | Wider system call coverage, driven by a static BusyBox | blocked: C1, K13 |
 | C3 | Lightweight virtual machine as fallback | later |
 | C4 | Binary translation, to run programs built for the other architecture | blocked: K14 |
+
+## Track T: tooling and the gate
+
+| Item | Session | Gate addition | Status |
+|---|---|---|---|
+| T1 | Automatic licence check of the third-party crates (ADR 0005, ADR 0017) | `scripts/check-licences.py` with unit tests: a crate with a refused licence, no licence, or an MPL-2.0 crate or version not in the ADR 0017 table fails the gate | done |
 
 ## Model notes: Bonsai 8B
 

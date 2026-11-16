@@ -11,12 +11,13 @@ one pull request. When a session finishes an item, mark it done there.
 
 ```bash
 git config core.hooksPath .githooks   # once per clone: enables the git hooks
-./scripts/check.sh                    # format, lint, unit tests and boot smoke test: the full gate
+./scripts/check.sh                    # format, licences, lint, unit tests and boot smoke test: the full gate
 ./scripts/intent-shell.sh             # host-side intent shell (S3, S3b); see docs/s3b-path-free-shell.md
 cargo run                             # boot the kernel in QEMU (Ctrl-A then X to exit)
 ```
 
-`cargo` and `qemu-system-aarch64` must be on `PATH`.
+`cargo`, `qemu-system-aarch64` and `python3` (standard library only, for the
+licence check) must be on `PATH`.
 
 ## Checks
 

@@ -1,5 +1,5 @@
 ---
-title: "ADR 0017: Directories, navigation and the tree view of the intent shell"
+title: "ADR 0018: Directories, navigation and the tree view of the intent shell"
 type: adr
 status: accepted
 created: 2026-11-16
@@ -7,7 +7,7 @@ updated: 2026-11-16
 tags: [shell, resolver, navigation, tree, ux, schema]
 ---
 
-# ADR 0017: Directories, navigation and the tree view of the intent shell
+# ADR 0018: Directories, navigation and the tree view of the intent shell
 
 ## Context
 

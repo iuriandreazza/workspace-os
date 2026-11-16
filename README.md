@@ -25,6 +25,7 @@ Next milestone: the MMU, the base for isolated processes. The full plan is in [d
 - `rustup`. The Rust version, target and components are pinned in
   `rust-toolchain.toml` and installed automatically.
 - QEMU with `qemu-system-aarch64`, and AArch64 UEFI firmware for the bootloader boot of the gate (Homebrew's QEMU ships it; on Debian and Ubuntu install `qemu-efi-aarch64`)
+- `python3`, standard library only: the licence check and the disk image tool use it.
 
 ## Usage
 
@@ -32,7 +33,7 @@ Next milestone: the MMU, the base for isolated processes. The full plan is in [d
 git config core.hooksPath .githooks   # once per clone: enables the git hooks
 cargo build                           # build the kernel
 cargo run                             # boot it in QEMU (exit with Ctrl-A then X)
-./scripts/check.sh                    # format, lint, unit tests and boot smoke test
+./scripts/check.sh                    # format, licences, lint, unit tests and boot smoke test
 ./scripts/build-disk-image.sh         # bootable UEFI disk image; see docs/booting-the-image.md
 ./scripts/intent-shell.sh             # the intent shell, on the host (needs llama-server); --plain for the line adapter
 ```
