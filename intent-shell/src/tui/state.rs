@@ -287,12 +287,30 @@ impl State {
         Effect::Reply(reply)
     }
 
-    fn settled(&self) -> bool {
-        self.clock_ms.saturating_sub(self.asked_ms) >= DWELL_MS
+    /// Whether this key may be taken as an answer. Moving a selection or
+    /// asking for details is not an answer and needs no quiet gap.
+    fn may_answer(&mut self, key: &KeyEvent) -> bool {
+        if !deliberate(key) {
+            return false;
+        }
+        let answers = matches!(
+            key.code,
+            KeyCode::Char('y' | 'Y' | 'n' | 'N') | KeyCode::Enter | KeyCode::Esc
+        );
+        !answers || self.settled()
+    }
+
+    /// Whether the question has had a quiet gap since it was drawn or since
+    /// the last key. A held key keeps restarting the gap, so its auto-repeat
+    /// (reported as fresh presses) cannot answer once the window passes.
+    fn settled(&mut self) -> bool {
+        let quiet = self.clock_ms.saturating_sub(self.asked_ms) >= DWELL_MS;
+        self.asked_ms = self.clock_ms;
+        quiet
     }
 
     fn plan_key(&mut self, key: KeyEvent, details: &str) -> Effect {
-        if !deliberate(&key) || !self.settled() {
+        if !self.may_answer(&key) {
             return Effect::Nothing;
         }
         match key.code {
@@ -308,7 +326,7 @@ impl State {
     }
 
     fn root_key(&mut self, key: KeyEvent) -> Effect {
-        if !deliberate(&key) || !self.settled() {
+        if !self.may_answer(&key) {
             return Effect::Nothing;
         }
         match key.code {
@@ -330,7 +348,7 @@ impl State {
             };
             Effect::Nothing
         };
-        if !deliberate(&key) || !self.settled() {
+        if !self.may_answer(&key) {
             return Effect::Nothing;
         }
         match key.code {
@@ -440,6 +458,12 @@ mod tests {
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// A key pressed after a quiet gap, as a person pressing it deliberately would.
+    fn tap(state: &mut State, code: KeyCode) -> Effect {
+        state.clock_ms += DWELL_MS;
+        state.on_key(press(code))
     }
 
     fn type_text(state: &mut State, text: &str) {
@@ -577,11 +601,26 @@ mod tests {
             assert_eq!(state.on_key(press(KeyCode::Char('y'))), Effect::Nothing);
             assert!(state.is_asking());
         }
-        state.clock_ms = 5_000 + DWELL_MS;
+        state.clock_ms = 5_000 + DWELL_MS - 1 + DWELL_MS;
         assert_eq!(
             state.on_key(press(KeyCode::Char('y'))),
             Effect::Reply(Reply::Yes)
         );
+    }
+
+    #[test]
+    fn a_held_key_never_answers_however_long_it_is_held() {
+        let mut state = State::new(String::new());
+        state.set_size(80, 24);
+        state.on_event(Event::AskRoot {
+            panel: "exact".to_owned(),
+        });
+        // Auto-repeat: a fresh press every 30 ms for ten seconds.
+        for step in 0..333 {
+            state.clock_ms = step * 30;
+            assert_eq!(state.on_key(press(KeyCode::Char('y'))), Effect::Nothing);
+        }
+        assert!(state.is_asking());
     }
 
     #[test]
@@ -709,10 +748,10 @@ mod tests {
     fn a_root_action_is_confirmed_only_with_y_and_only_when_shown_whole() {
         let mut state = asking_root("fs.delete the exact real location");
         state.set_size(80, 24);
-        state.on_key(press(KeyCode::Enter));
+        tap(&mut state, KeyCode::Enter);
         assert!(state.is_asking());
         assert_eq!(
-            state.on_key(press(KeyCode::Char('y'))),
+            tap(&mut state, KeyCode::Char('y')),
             Effect::Reply(Reply::Yes)
         );
     }
@@ -725,10 +764,10 @@ mod tests {
             .join("\n");
         let mut state = asking_root(&panel);
         state.set_size(80, 10);
-        assert_eq!(state.on_key(press(KeyCode::Char('y'))), Effect::Nothing);
+        assert_eq!(tap(&mut state, KeyCode::Char('y')), Effect::Nothing);
         assert!(state.is_asking());
         assert_eq!(
-            state.on_key(press(KeyCode::Char('n'))),
+            tap(&mut state, KeyCode::Char('n')),
             Effect::Reply(Reply::No),
             "it can still be refused"
         );
@@ -748,18 +787,18 @@ mod tests {
     fn a_selection_stays_inside_its_list() {
         let mut state = asking_choice(3);
         for _ in 0..5 {
-            state.on_key(press(KeyCode::Down));
+            tap(&mut state, KeyCode::Down);
         }
         assert_eq!(
-            state.on_key(press(KeyCode::Enter)),
+            tap(&mut state, KeyCode::Enter),
             Effect::Reply(Reply::Choice(Some(2)))
         );
         let mut state = asking_choice(3);
         for _ in 0..5 {
-            state.on_key(press(KeyCode::Up));
+            tap(&mut state, KeyCode::Up);
         }
         assert_eq!(
-            state.on_key(press(KeyCode::Enter)),
+            tap(&mut state, KeyCode::Enter),
             Effect::Reply(Reply::Choice(Some(0)))
         );
     }
@@ -768,7 +807,7 @@ mod tests {
     fn a_choice_can_be_cancelled() {
         let mut state = asking_choice(2);
         assert_eq!(
-            state.on_key(press(KeyCode::Esc)),
+            tap(&mut state, KeyCode::Esc),
             Effect::Reply(Reply::Choice(None))
         );
     }

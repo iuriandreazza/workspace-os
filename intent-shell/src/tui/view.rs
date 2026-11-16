@@ -274,6 +274,7 @@ mod tests {
         let screen = render(&state, 40, 12);
         assert!(screen.iter().any(|l| l == "▸ 1. choice 1"), "{screen:#?}");
         for _ in 0..15 {
+            state.clock_ms += crate::tui::state::DWELL_MS;
             state.on_key(ratatui::crossterm::event::KeyEvent::from(
                 ratatui::crossterm::event::KeyCode::Down,
             ));

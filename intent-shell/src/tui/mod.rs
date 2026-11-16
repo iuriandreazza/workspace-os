@@ -194,6 +194,7 @@ fn event_loop(
         terminal.draw(|frame| view::draw(frame, state))?;
         if event::poll(TICK)? {
             let input = event::read()?;
+            state.clock_ms = started.elapsed().as_millis() as u64;
             // The size may have changed since the draw: an answer is judged
             // against the screen as it is now.
             let size = terminal.size()?;
@@ -228,6 +229,7 @@ fn event_loop(
         loop {
             match events.try_recv() {
                 Ok(event) => {
+                    state.clock_ms = started.elapsed().as_millis() as u64;
                     if state.on_event(event) {
                         // Draw the question first, then drop earlier keys.
                         terminal.draw(|frame| view::draw(frame, state))?;
@@ -305,16 +307,20 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
     {
         thread::sleep(Duration::from_millis(50));
     }
-    let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);
-    ratatui::restore();
+    // What the worker finished while it was waited for belongs in the history.
+    while let Ok(event) = events.try_recv() {
+        state.on_event(event);
+    }
 
-    // Written first: the screen may be gone (a closed terminal), and printing
-    // to it must not stop the transcript from being saved.
+    // Saved before the terminal is touched: on a closed terminal restoring it
+    // can fail, and that must not stop the transcript from being saved.
     let text = state.transcript();
     let written = transcript.map_or(Ok(()), |path| {
         write_transcript(path, &text)
             .map_err(|e| format!("cannot write the transcript {}: {e}", path.display()))
     });
+    let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);
+    let _ = ratatui::try_restore();
     let _ = write!(stdout(), "{text}");
     result.map_err(|e| format!("terminal error: {e}"))?;
     written
