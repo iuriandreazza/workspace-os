@@ -31,6 +31,9 @@ reference for how it is done.
   the kernel from the EFI system partition; collects the memory map and the
   firmware tables; leaves UEFI boot services; hands the kernel a boot
   information structure and jumps to it.
+- **Not limited to our kernel.** It also starts Linux and other systems
+  found on the machine. A small model detects them and decides how each is
+  loaded (ADR 0009); the loading itself is a fixed set of boot protocols.
 - **One handoff structure for both architectures**, defined in an ADR of its
   own before the code is written. The kernel reads memory layout and device
   information from it instead of assuming QEMU's.

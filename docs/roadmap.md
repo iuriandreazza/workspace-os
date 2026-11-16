@@ -33,7 +33,8 @@ listed), `later` (not designed yet).
 
 | Track | What | Can start |
 |---|---|---|
-| K | Kernel | now, one item at a time |
+| K | Kernel and bootloader | now, one item at a time |
+| B | Boot model | after K2c |
 | S | Intent shell with a local SLM | now, in parallel with K, on the host |
 | R | Research and articles | now, in parallel |
 | P | Policy plane (purpose-trained models) | after K7 |
@@ -52,6 +53,7 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K2 | Device tree: keep the pointer from the boot protocol or find the blob at the start of RAM, read memory size and the UART node, stop hard-coding them in `board.rs` | Boots with two different memory sizes and prints each | blocked: K1 |
 | K2b | Own UEFI bootloader, part 1 (ADR 0008). ADR first: the handoff structure between bootloader and kernel. Research first: what VirtualBox's ARM machine provides (firmware tables, serial device, memory layout), and how Limine does each step. Then a Rust UEFI application that loads the kernel from the EFI system partition, leaves boot services and jumps to it, plus a bootable disk image | The banner under QEMU with UEFI firmware, in the gate; the banner under VirtualBox on the ARM Mac, recorded by hand | blocked: K2 |
 | K2c | Own UEFI bootloader, part 2: the boot menu, with the normal entry and the recovery entry (ADR 0007) | Each menu entry reaches the kernel with a different boot mode, checked in the gate | blocked: K2b |
+| K2d | Loading other kernels, mechanism only (ADR 0008): Linux through its EFI entry with a command line and an initial ramdisk, and other systems by starting their own EFI loader. Entries written by hand for now | A Linux kernel started by our bootloader under QEMU prints its first lines | blocked: K2c |
 | K3 | Physical frame allocator fed by the device tree memory map | Allocate, free and reuse frames at boot; exhausting memory is reported, not a hang | blocked: K2 |
 | K4 | MMU: kernel page tables, higher-half mapping, write-xor-execute | A write to kernel code and a jump into data each end in a reported fault | blocked: K3 |
 | K5 | Kernel heap allocator | Boot-time allocation stress test | blocked: K4 |
@@ -72,6 +74,18 @@ The x86_64 port waits for K10 on purpose: porting earlier would make every
 item up to K10 cost two implementations. After K14 every kernel item is done
 on both architectures. On the ARM development machine x86_64 runs emulated,
 so its gate is slower.
+
+## Track B: boot model
+
+A small model in the bootloader that detects kernels and decides how to load
+them (ADR 0009). It builds on the bootloader items of track K.
+
+| Item | Session | Done when | Status |
+|---|---|---|---|
+| B1 | Research, then ADR: language model or purpose-trained classifier and its size; the inputs it reads and the typed decision it returns; how inference runs in the UEFI environment; licences | ADR accepted, with a measured estimate of inference time in UEFI | blocked: K2c |
+| B2 | Corpus and training, offline: disk layouts and kernel images from several systems, the training run, and an evaluation harness on the host | Accuracy on a held-out part of the corpus, recorded in `docs/` | blocked: B1 |
+| B3 | Inference in the bootloader: the model decides, decisions are stored with a fingerprint of the disk, the last successful decisions are the fallback, and the loader checks the format before jumping | With the model: Linux and our kernel are found on a disk with no hand-written entries. Without the model: our kernel still boots. A deliberately wrong decision ends in an error on the menu | blocked: B2, K2d |
+| B4 | Integrity of the model's weights at boot | Replaced weights are refused | blocked: B3 |
 
 ## Track S: intent shell with a local SLM
 
