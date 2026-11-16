@@ -77,6 +77,39 @@ pub enum Action {
     },
 }
 
+/// Whether any part of the path is hidden (starts with a dot).
+pub fn is_hidden(path: &Path) -> bool {
+    path.components()
+        .any(|part| part.as_os_str().as_bytes().first() == Some(&b'.'))
+}
+
+impl Action {
+    /// Whether the person is asked before this action runs (ADR 0016). Reading
+    /// and adding are not asked about; anything that changes, removes or
+    /// reaches beyond files is. There is no wildcard: a new action must be
+    /// classified before it compiles.
+    pub fn needs_confirmation(&self) -> bool {
+        match self {
+            Self::List { path } | Self::Stat { path } | Self::FindLargest { path, .. } => {
+                is_hidden(path)
+            }
+            // Startup files and credentials are dotfiles or live under one
+            // (`.zshrc`, `.ssh/`): listing, showing or adding to them is asked.
+            Self::Read { path } => is_hidden(path),
+            Self::Write { path, mode, .. } => match mode {
+                WriteMode::Create | WriteMode::Append => is_hidden(path),
+                WriteMode::Overwrite => true,
+            },
+            Self::Move { .. }
+            | Self::Delete { .. }
+            | Self::Run { .. }
+            | Self::UserManage { .. }
+            | Self::SystemConfigure { .. }
+            | Self::SoulProposeChange { .. } => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
     FsRead,
@@ -567,5 +600,51 @@ mod tests {
         for (action, text) in shown {
             assert_eq!(action.describe(), text);
         }
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::PathBuf;
+
+    use super::{Action, WriteMode};
+
+    fn read(path: impl Into<PathBuf>) -> Action {
+        Action::Read { path: path.into() }
+    }
+
+    #[test]
+    fn a_path_with_a_hidden_part_asks_wherever_the_dot_is() {
+        for path in ["/h/.zshrc", "/h/.d/f", "/h/a/../x", "/h/a/.x/b", "/.home/a"] {
+            assert!(read(path).needs_confirmation(), "{path}");
+        }
+        let odd = PathBuf::from(OsStr::from_bytes(b"/h/.\xff/f"));
+        assert!(read(odd).needs_confirmation());
+        for path in ["/h/a", "/h/a.b/c", "/h/a/./b"] {
+            assert!(!read(path).needs_confirmation(), "{path}");
+        }
+    }
+
+    #[test]
+    fn listing_and_adding_under_a_hidden_path_ask_too() {
+        let path = PathBuf::from("/h/.ssh");
+        assert!(Action::List { path: path.clone() }.needs_confirmation());
+        assert!(Action::Stat { path: path.clone() }.needs_confirmation());
+        assert!(
+            Action::FindLargest {
+                path: path.clone(),
+                count: 1
+            }
+            .needs_confirmation()
+        );
+        let write = |mode| Action::Write {
+            path: path.clone(),
+            content: String::new(),
+            mode,
+        };
+        assert!(write(WriteMode::Create).needs_confirmation());
+        assert!(write(WriteMode::Append).needs_confirmation());
     }
 }
