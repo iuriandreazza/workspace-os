@@ -347,6 +347,13 @@ fn resolve_step(
             }
         }
     }
+    // "The N largest" is one ranking: per-folder rankings would return more than N.
+    if matches!(step.spec, Spec::FindLargest { .. }) && sources.len() > 1 {
+        return Err(Refusal::CannotExpand(
+            "the place lives in several folders, and the largest files of each would not be the largest overall"
+                .to_owned(),
+        ));
+    }
     Ok(Resolved {
         actions: step.spec.instantiate(&sources, dest.as_ref()),
         notes,

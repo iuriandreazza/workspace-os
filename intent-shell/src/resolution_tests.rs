@@ -773,3 +773,23 @@ fn a_place_under_another_spelling_is_still_a_place() {
         "{verdict:?}"
     );
 }
+
+#[test]
+fn the_largest_files_of_a_place_in_two_folders_are_not_ranked_per_folder() {
+    let mut host = FakeHost::with_files(&[("/v/a", 5), ("/m/b", 9)]);
+    host.places.insert(
+        Place::Videos,
+        vec![PathBuf::from("/v"), PathBuf::from("/m")],
+    );
+    let args = r#"{"target":{"place":"videos"},"count":1}"#;
+    let result = run(
+        &[&plan(&[step("s1", "fs.find_largest", args, "false")])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[0].blocked,
+        Some(Refusal::CannotExpand(_))
+    ));
+    assert!(host.executed.borrow().is_empty());
+}
