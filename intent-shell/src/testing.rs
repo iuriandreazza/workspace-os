@@ -220,6 +220,7 @@ impl Host for FakeHost {
     fn exists(&self, path: &Path) -> bool {
         self.files.contains_key(path)
             || self.links.iter().any(|(from, _)| from == path)
+            || self.aliases.iter().any(|(a, b)| a == path || b == path)
             || Host::is_dir(self, path)
     }
 

@@ -1123,3 +1123,38 @@ fn the_candidates_are_numbered_in_the_order_the_rows_show_them() {
     // The second row down is Beta, and picking it chooses Beta's file.
     assert_eq!(exact(&run), r#"fs.read path="/home/ana/Beta/r.pdf""#);
 }
+
+#[test]
+fn writing_through_a_link_is_judged_and_shown_where_the_data_lands() {
+    let host = home()
+        .link("/home/ana/notes.txt", "/home/ana/.ssh/authorized_keys")
+        .dir("/home/ana/.ssh");
+    let args = r#"{"target":{"path":"notes.txt"},"content":"x","mode":"append"}"#;
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.write", args),
+    );
+    assert_eq!(
+        exact(&run),
+        r#"fs.write path="/home/ana/.ssh/authorized_keys" mode=Append content="x""#
+    );
+    assert!(
+        reviewed(&run.outcome).steps[0].items[0]
+            .action
+            .needs_confirmation()
+    );
+}
+
+#[test]
+fn a_folder_cannot_be_moved_into_itself_written_in_another_case() {
+    let host = FakeHost::with_files(&[("/x/Docs/f", 1)])
+        .dir("/x/Docs")
+        .alias("/x/docs", "/x/Docs");
+    let args = r#"{"from":{"path":"/x/docs"},"to":{"path":"/x/Docs/sub"}}"#;
+    let run = ask(&host, &mut session_in("/x"), &one_step("fs.move", args));
+    assert!(matches!(
+        reviewed(&run.outcome).steps[0].items[0].verdict,
+        Verdict::Refused(Refusal::MoveIntoItself(_))
+    ));
+}

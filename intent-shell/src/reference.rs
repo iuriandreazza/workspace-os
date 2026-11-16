@@ -272,9 +272,9 @@ impl Spec {
     }
 
     /// Whether a path in the primary position that ends in a link means what
-    /// the link leads to or the link itself. Looking at something and entering
-    /// it mean the target, so ADR 0016's hidden-path rule judges where the
-    /// link leads; removing, moving or writing name the link.
+    /// the link leads to or the link itself. Looking at, entering or writing to
+    /// something mean the target, so ADR 0016's hidden-path rule judges where
+    /// the link leads; removing and moving name the link.
     pub fn follows_last_link(&self) -> bool {
         matches!(
             self,
@@ -283,6 +283,7 @@ impl Spec {
                 | Self::Read { .. }
                 | Self::FindLargest { .. }
                 | Self::Cd { .. }
+                | Self::Write { .. }
         )
     }
 

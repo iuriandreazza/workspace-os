@@ -531,8 +531,9 @@ pub(crate) fn judge(
     if let Some(path) = removed_or_replaced.filter(|p| is_place_root(host, p)) {
         return Verdict::Refused(Refusal::PlaceRoot(path.clone()));
     }
+    // `same` also sees a folder written in another case on a volume that folds it.
     if let Action::Move { from, to } = action
-        && to.starts_with(from)
+        && to.ancestors().any(|ancestor| host.same(from, ancestor))
     {
         return Verdict::Refused(Refusal::MoveIntoItself(from.clone()));
     }

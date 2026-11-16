@@ -70,6 +70,7 @@ impl UnixHost {
     }
 
     fn list_capped(&self, path: &Path, cap: usize) -> Result<Output, String> {
+        refuse_hidden_link(path)?;
         let mut children: Vec<PathBuf> = fs::read_dir(path)
             .map_err(|e| io_error(path, e))?
             .filter_map(|entry| entry.ok().map(|e| e.path()))
@@ -275,10 +276,11 @@ fn stat(path: &Path) -> Result<Output, String> {
     })
 }
 
-fn read(path: &Path, limit: u64) -> Result<Output, String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    // A plain name can be a link to a hidden file (`notes.txt` to `.ssh/id_rsa`),
-    // and a read of a plain name is not asked about (ADR 0016).
+/// A plain name can be a link to a hidden place (`notes.txt` to `.ssh/id_rsa`),
+/// and looking at a plain name is not asked about (ADR 0016). A path that came
+/// from a listing or a search was never followed, so the host refuses what the
+/// broker could not see.
+fn refuse_hidden_link(path: &Path) -> Result<(), String> {
     if !is_hidden(path)
         && let Ok(real) = fs::canonicalize(path)
         && is_hidden(&real)
@@ -288,6 +290,12 @@ fn read(path: &Path, limit: u64) -> Result<Output, String> {
             quoted_name(path)
         ));
     }
+    Ok(())
+}
+
+fn read(path: &Path, limit: u64) -> Result<Output, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    refuse_hidden_link(path)?;
     // Opening a named pipe or a device can block forever, so the open does not
     // wait, and what was opened (not what the name was a moment ago) must be a
     // regular file.
@@ -328,6 +336,7 @@ fn read(path: &Path, limit: u64) -> Result<Output, String> {
 }
 
 fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, String> {
+    refuse_hidden_link(root)?;
     use std::os::unix::fs::MetadataExt;
     let mut files: Vec<(u64, PathBuf)> = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -1059,6 +1068,34 @@ mod tests {
         let has = |p: PathBuf| output.tree.iter().any(|e| e.path == p);
         assert!(has(dir.join("a-big")) && has(dir.join("z-last")));
         assert_eq!(output.notes.len(), 1, "{:?}", output.notes);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_a_hidden_folder_is_not_listed_or_searched_by_its_plain_name() {
+        let dir = temp_dir("hidden-link-list");
+        fs::create_dir_all(dir.join(".ssh")).unwrap();
+        fs::write(dir.join(".ssh/id_rsa"), "secret").unwrap();
+        std::os::unix::fs::symlink(dir.join(".ssh"), dir.join("lnk")).unwrap();
+        for action in [
+            Action::List {
+                path: dir.join("lnk"),
+            },
+            Action::FindLargest {
+                path: dir.join("lnk"),
+                count: 3,
+            },
+        ] {
+            let error = host().execute(&action).unwrap_err();
+            assert!(error.contains("hidden location"), "{error}");
+        }
+        assert!(
+            host()
+                .execute(&Action::List {
+                    path: dir.join(".ssh")
+                })
+                .is_ok()
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }
