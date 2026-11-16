@@ -12,9 +12,14 @@ use core::panic::PanicInfo;
 
 /// `handoff_address` is the device tree address (or zero) after a direct load
 /// and the boot info address after the bootloader; `entered_by_bootloader` is
-/// 1 when the boot code saw the entry magic, 0 otherwise.
+/// 1 when the boot code saw the entry magic, 0 otherwise. `extra_entry_registers`
+/// is `x2 | x3` as they were at entry, which the bootloader sets to zero.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_main(handoff_address: usize, entered_by_bootloader: usize) -> ! {
+pub extern "C" fn kernel_main(
+    handoff_address: usize,
+    entered_by_bootloader: usize,
+    extra_entry_registers: usize,
+) -> ! {
     memory_image::assert_initialised();
 
     let board = if entered_by_bootloader == 1 {
@@ -51,10 +56,17 @@ pub extern "C" fn kernel_main(handoff_address: usize, entered_by_bootloader: usi
             version_minor,
             boot_mode,
             map_entries,
+            boot_cpu,
+            rsdp,
+            efi_system_table,
         } => {
             let _ = writeln!(
                 console,
                 "workspace-os kernel: entry: bootloader, boot info {version_major}.{version_minor}, mode {boot_mode}, {map_entries} memory map entries"
+            );
+            let _ = writeln!(
+                console,
+                "workspace-os kernel: handoff: boot cpu {boot_cpu:#x}, rsdp {rsdp:#x}, efi system table {efi_system_table:#x}, x2|x3 {extra_entry_registers}"
             );
         }
     }

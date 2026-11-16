@@ -339,6 +339,13 @@ check_uefi_boot() {
     if grep -qF "entry: direct load" "$serial_log"; then
         fail "kernel reports a direct load after a boot through the bootloader"
     fi
+    # The processor identity, the tables and the registers the ADR fixes to zero:
+    # the boot processor of QEMU `virt` is 0, ACPI is off, the system table is set.
+    expect_once "workspace-os kernel: handoff: boot cpu 0x0, rsdp 0x0, efi system table 0x" "handoff fields"
+    if grep -qF "efi system table 0x0," "$serial_log"; then
+        fail "boot info carries no EFI system table"
+    fi
+    expect_once ", x2|x3 0" "x2 and x3 at entry"
     expect_once "workspace-os kernel: reserved kernel image $image_range" "kernel image reservation"
     expect_once "workspace-os kernel: reserved boot stack $stack_range" "boot stack reservation"
 

@@ -31,6 +31,9 @@ pub enum Entry {
         version_minor: u16,
         boot_mode: u32,
         map_entries: usize,
+        boot_cpu: u64,
+        rsdp: u64,
+        efi_system_table: u64,
     },
 }
 
@@ -223,6 +226,9 @@ pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, bool)> {
             version_minor: info.version_minor,
             boot_mode: info.boot_mode,
             map_entries: map.len(),
+            boot_cpu: info.boot_cpu,
+            rsdp: info.rsdp,
+            efi_system_table: info.efi_system_table,
         },
         fdt,
         map: Some(map),

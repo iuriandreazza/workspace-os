@@ -334,7 +334,9 @@ impl BootInfo {
             return Err(Error::BadMemoryMap(MapError::EntrySize));
         }
         let address = self.memory_map as usize;
-        if bytes > 0 && (address == 0 || !address.is_multiple_of(8)) {
+        if bytes > 0
+            && (address == 0 || !address.is_multiple_of(8) || address.checked_add(bytes).is_none())
+        {
             return Err(Error::BadMemoryMap(MapError::BadAddress));
         }
         let entries = if bytes == 0 {

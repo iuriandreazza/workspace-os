@@ -16,6 +16,8 @@ _start:
     // nothing below touches, and hand it to kernel_main. x21 records which
     // convention was used. The code below only uses x0 to x2.
     mov  x19, x0
+    // x2 and x3 must be zero on the bootloader path; kernel_main reports them.
+    orr  x22, x2, x3
 
     // Interrupts stay masked until the kernel installs an exception table.
     msr  daifset, #0xf
@@ -128,6 +130,7 @@ _start:
 2:
     mov  x0, x19
     mov  x1, x21
+    mov  x2, x22
     bl   kernel_main
 .Lpark:
     wfe

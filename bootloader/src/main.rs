@@ -36,7 +36,7 @@ const PL011_COMPATIBLE: &str = "arm,pl011";
 const MAX_DEVICE_TREE: usize = 2 << 20;
 /// Room for the memory map the kernel receives. The firmware's has some
 /// dozens of entries.
-const MAP_CAPACITY: usize = 1024;
+const MAP_CAPACITY: usize = 4096;
 /// Tables on top of the bound for the preliminary map: allocating the buffers
 /// and leaving boot services can split a few entries after the bound was taken.
 const EXTRA_TABLES: usize = 64;
