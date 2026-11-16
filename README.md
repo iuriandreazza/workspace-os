@@ -12,7 +12,7 @@ the serial console. Secondary cores are parked and any exception ends in a
 kernel panic. Nothing else exists yet.
 
 Next milestone: real exception handling and the MMU, the base for isolated
-processes.
+processes. The full plan is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Requirements
 
@@ -60,6 +60,10 @@ passing.
 - [ADR 0003: Model-assisted driver conversion and package registry](docs/adr/0003-driver-conversion-and-package-registry.md)
 - [ADR 0004: aarch64 as the first target architecture](docs/adr/0004-aarch64-first.md)
 - [ADR 0005: GPL-2.0 licence](docs/adr/0005-gpl2-licence.md)
+- [ADR 0006: System persona, the SOUL and the voice, defined at installation](docs/adr/0006-system-persona-soul-and-voice.md)
+- [ADR 0007: Linux-style user permissions over kernel capabilities](docs/adr/0007-linux-style-user-permissions.md)
+- [ADR 0008: Own UEFI bootloader, written with Limine as the reference](docs/adr/0008-own-uefi-bootloader.md)
+- [ADR 0009: A small model in the bootloader detects and decides how to load kernels](docs/adr/0009-boot-model-detects-kernels.md)
 
 ## Licence
 

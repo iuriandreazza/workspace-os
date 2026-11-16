@@ -4,6 +4,9 @@ A Rust microkernel with models as the control plane. Read `README.md` for the
 overview and `docs/adr/` for the decisions already taken. Do not reopen a
 decision recorded in an ADR; propose a new ADR that supersedes it.
 
+Work is planned in `docs/roadmap.md`: one item is one session, one branch and
+one pull request. When a session finishes an item, mark it done there.
+
 ## Commands
 
 ```bash
