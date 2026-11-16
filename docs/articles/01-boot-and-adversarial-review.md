@@ -31,7 +31,7 @@ tags: [article, kernel, boot, aarch64, review, testing]
 >    *re-run* (5.1, 5.2, 8) were done by the assistant that drafted this text,
 >    on one machine (QEMU 10.0.13, Debian). Repeat them, or change the wording,
 >    before publishing under your name. The raw outputs are in the session notes
->    folder, `r2-evidence/`.
+>    folder, `/home/iuri/.config/Claude/side-session-notes/local_051869b5-9abd-4874-aa14-0ddae46e9875/r2-evidence/`.
 > 5. **Hardware-only findings** (6.3) are reasoning that was accepted without a
 >    hardware run. I did not open the Arm Architecture Reference Manual for
 >    them. Say so, or open it and cite it.
@@ -85,10 +85,11 @@ practice, and I did not survey the literature on it.
 **Scope.** This article covers the kernel and bootloader pull requests: #2
 (first boot), #3 (gate and review of the first boot), #7 (K1, exceptions), #9
 (K2, device tree), #13 (K3, frame allocator) and #15 (K2b-2, UEFI bootloader).
-The intent-shell pull requests (#14, #16, #17) were reviewed under the same
-rule, and the documentation-only pull requests are exempt from it; they are out
-of scope here, so the counts below are not the count of every review in the
-repository.
+The intent-shell pull requests (#14, #16, #17) and the licence-check pull
+request (#23) also record local adversarial rounds in their descriptions; I did
+not analyse them, and they are out of scope. The documentation-only pull
+requests are exempt from the rule. The counts below are therefore not the count
+of every review in the repository.
 
 ## 2. The system under test
 
@@ -189,7 +190,7 @@ reported by the author; I re-ran the ones marked as re-run below.
 
 Counts are as the descriptions state them. The description of #7 says round 2
 had four findings but lists five items (four fixed, one rebutted); I report it
-as written. The review of #3 therefore also covered the K0 kernel, and the
+as written. The review of #3 also covered the K0 kernel, and the
 review of #7 covered code that had reached `main` without a clean round.
 
 ## 5. The 63 lines under review
@@ -635,8 +636,9 @@ Two of these lines trace to findings above: the device tree reservation (5.1,
 K3 round 1) and the breakpoint that is taken and resumed (6.1). The allocation
 lines are K3's own boot self-test.
 
-Through the UEFI bootloader (`-machine virt,acpi=off -m 256M -bios
-/usr/share/AAVMF/AAVMF_CODE.fd`, disk image from
+Through the UEFI bootloader (`qemu-system-aarch64 -machine virt,acpi=off
+-cpu cortex-a72 -m 256M -nographic -bios /usr/share/AAVMF/AAVMF_CODE.fd -drive
+file=target/workspace-os.img,format=raw,if=virtio`, disk image from
 `scripts/build-disk-image.sh`; the boot-info section and the first memory map
 lines are elided here):
 
@@ -664,16 +666,16 @@ lines are elided here):
   kernel  ok    resumed after breakpoint
 ```
 
-[Author: the full 77-line output is saved in the session notes folder next to
-this draft's hand-over note; decide whether to quote it whole. It includes the
+[Author: the full 77-line output is saved in `/home/iuri/.config/Claude/side-session-notes/local_051869b5-9abd-4874-aa14-0ddae46e9875/r2-evidence/`; decide whether to quote it whole. It includes the
 bootloader's ASCII-art banner.]
 
 On the same machine and commit, `scripts/boot-smoke-test.sh` printed 17 `PASS`
 lines and no `FAIL`: `elf`, `raw`, `mem-64`, `mem-512`, `smp`, `el2`, `el3`,
 `el3-el2`, `memreserve`, `uefi`, `uefi-768`, `uefi-el2`, `uefi-el2-high`,
-`uefi-acpi-only`, `unhandled-class`, `unhandled-vector`, `compiler-trap`. I ran
-that script alone, not `check.sh`; clippy, host tests and the licence check were
-not re-run for this article.
+`uefi-acpi-only`, `unhandled-class`, `unhandled-vector`, `compiler-trap`. The
+pre-commit hook then ran the whole of `check.sh` on the commit that carries
+this draft (`main` plus this documentation): format, the licence check (91
+crates), clippy, the host unit tests and the same 17 boots all passed.
 
 All of it ran on QEMU (TCG) with the firmware shipped with Debian. The VirtualBox
 runs in pull request #15 are the author's, recorded by hand; I did not repeat
@@ -723,7 +725,7 @@ right calls is for the reader; the reasons are in the pull requests.
   paths for bad boot info and the bootloader's missing-file path are untested.
 - **Everything ran on QEMU, plus two VirtualBox runs by the author.** Nothing in
   the gate says the boot path works on real hardware, and the exclusive-access
-  and `IPS` findings are reasoning that no hardware run has confirmed.
+  finding and the untested cache, TLB and break-before-make items are reasoning that no hardware run has confirmed; the `IPS` hang was observed on QEMU.
 - **I cannot tell what review missed.** By construction, the findings I know
   about are the ones that were found. A round that ends in "no confirmed
   finding" is the termination rule, not evidence of correctness. Section 6.4 is
@@ -802,14 +804,14 @@ for this article; see the appendix.
 | 15 | Round 1 finding 6, "Linker comment was false: QEMU dropped the device tree"; `info roms` check noted in the test plan | `gh pr view 3` |
 | 16 | K0's smoke test asserted only that the banner appeared and exited with `PASS` | `git show b58b67f:scripts/boot-smoke-test.sh` |
 | 17 | **Re-run:** the K0 smoke test printed `PASS: boot banner found on serial console` with the `.bss` loop skipped, with `panic!` after the banner and with `udf #0` after the banner | Appendix |
-| 18 | **Re-run:** gate on `main` at `50d808e`: `.bss` loop skipped fails `raw`; `udf #0` after the breakpoint log line fails `elf` with "kernel panicked after the boot banner"; parking branch replaced by `nop` fails `smp` | Appendix; output in the scratch directory of the session, not committed |
+| 18 | **Re-run:** gate on `main` at `50d808e`: `.bss` loop skipped fails `raw`; `udf #0` after the breakpoint log line fails `elf` with "kernel panicked after the boot banner"; parking branch replaced by `nop` fails `smp` | Appendix; output in `/home/iuri/.config/Claude/side-session-notes/local_051869b5-9abd-4874-aa14-0ddae46e9875/r2-evidence/` (not committed) |
 | 19 | QEMU's ELF loader zeroes `.bss`; raw boot over `0xff` garbage; `smp` boot with `secure=on` | `scripts/boot-smoke-test.sh` header and `check_boot raw/smp`; `git show 7bb6141 -- scripts/boot-smoke-test.sh` |
 | 20 | Memory-image probes and assertion messages | `kernel/src/memory_image.rs` |
 | 21 | The first fix called the `.bss` hole a "known gap"; the raw boot came in the next commit | `git show d621ae8 -- scripts/boot-smoke-test.sh`; `git show 7bb6141 -- scripts/boot-smoke-test.sh` |
 | 22 | Round 1 item 3 (panic after banner passed), round 2 item 1 (exception loop passed); vector table and `unhandled_exception_entry` (version in `7bb6141`; current code uses `x4` and `x0` holds the entry index) | `gh pr view 3`; `git show 7bb6141:kernel/src/arch/aarch64/exceptions.s`; `exceptions.s` on `main` |
 | 23 | Mutations caught: panic after banner, undefined instruction after banner, `.bss` loop that does not clear, secondary cores not parked | "Test plan" in `gh pr view 3` |
 | 24 | Round 1 item 7 (cores not parked), round 2 item 6 (parking never exercised), round 2 item 7 (MPIDR affinity, not changed); the `_start` park snippet at `d621ae8`; the console `SAFETY` comment relies on parking | `gh pr view 3`; `git show d621ae8:kernel/src/arch/aarch64/boot.s`; `git show d621ae8 -- kernel/src/board.rs` |
-| 25 | No observation of garbled serial output is recorded | Absence: searched the repository and PRs 2, 3, 7 (nothing found); author to confirm |
+| 25 | No observation of garbled serial output is recorded | Absence: `rg -i 'interleav|garbl'` over the repository (one unrelated hit in `docs/roadmap.md`) and over the bodies of PRs 2, 3, 7, 9, 13 and 15 (nothing); author to confirm |
 | 26 | Round 2 item 8: `memory_image.rs` comment false about `.data` | `gh pr view 3` |
 | 27 | K1 self-test mutations x19 and `SPSR` missed on first run, fixed by scrubbing live state; full mutation list | `gh pr view 7` ("Mutation tests"); `git show 77518d3`; scrub code in `exceptions.s` |
 | 28 | `brk #0x1` emitted by the compiler for `abort` and `unreachable`; resume restricted to `#0x800`; gate for the compiler trap | `exceptions.rs` (`RESUMABLE_BREAKPOINT`); `git show ac3f01b`; `git show df80a56` |
