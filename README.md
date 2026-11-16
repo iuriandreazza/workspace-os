@@ -62,6 +62,7 @@ passing.
 - [ADR 0005: GPL-2.0 licence](docs/adr/0005-gpl2-licence.md)
 - [ADR 0006: System persona, the SOUL and the voice, defined at installation](docs/adr/0006-system-persona-soul-and-voice.md)
 - [ADR 0007: Linux-style user permissions over kernel capabilities](docs/adr/0007-linux-style-user-permissions.md)
+- [ADR 0008: Own UEFI bootloader, written with Limine as the reference](docs/adr/0008-own-uefi-bootloader.md)
 
 ## Licence
 

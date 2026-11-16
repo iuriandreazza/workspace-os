@@ -38,7 +38,7 @@ The system runs in virtual machines, QEMU and VirtualBox, in two steps:
 1. **aarch64 on the ARM development Mac**, under QEMU and VirtualBox.
    VirtualBox on Apple Silicon only runs ARM guests, so this needs no port.
    It does need a UEFI boot path, which is how VirtualBox starts a guest
-   (roadmap item K2b).
+   (ADR 0008, roadmap item K2b).
 2. **x86_64 on a PC**, under VirtualBox and QEMU, after the x86_64 port
    (roadmap items K14 and K15).
 
