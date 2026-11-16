@@ -466,6 +466,44 @@ mod tests {
     }
 
     #[test]
+    fn with_no_model_a_line_is_a_command_and_the_planner_is_never_asked() {
+        use crate::pipeline_tests::files;
+        use crate::testing::{MemoryLog, user};
+
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        let (reply_tx, replies) = channel();
+        request_tx
+            .send("fs list --in downloads".to_owned())
+            .unwrap();
+        request_tx.send("delete the big files".to_owned()).unwrap();
+        drop((request_tx, reply_tx));
+        let mut log = MemoryLog::default();
+        serve(
+            &Authority::full(user(false)),
+            &files(),
+            None,
+            &mut log,
+            requests,
+            events_tx,
+            replies,
+        );
+        let seen: Vec<Event> = events.try_iter().collect();
+        assert!(!seen.iter().any(|e| matches!(e, Event::Busy(_))));
+        let outcomes: Vec<&String> = seen
+            .iter()
+            .filter_map(|e| match e {
+                Event::Outcome(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes[0].contains("-> done"), "{}", outcomes[0]);
+        assert!(outcomes[1].contains("Not a command"), "{}", outcomes[1]);
+        assert!(log.events.iter().all(|e| e["event"] != "model_output"));
+    }
+
+    #[test]
     fn the_transcript_is_private_to_the_user() {
         let dir =
             std::env::temp_dir().join(format!("intent-shell-transcript-{}", std::process::id()));

@@ -21,7 +21,13 @@ references in one action are written (`fs.move`), how steps refer to each other
 and to ordering, quoting, `process.run` arguments, defaults, how the mode is
 entered, and what the person sees where the screen says "The model says".
 
-This ADR extends ADR 0011 and ADR 0014 and reopens nothing in them. It targets
+This ADR extends ADR 0011 and ADR 0014. It supersedes, for the deterministic
+shell only, two sentences of ADR 0011: "a script is a list of lines that parse
+into a plan" (a plan is one line, steps separated by `;`, because the
+interface has a single-line input and a line adapter has no way to say "more
+follows") and "`$s1`-style references" (`--from-step s1`, because `$` invites
+the expansion this shell must not have). The `--path` of ADR 0011 was already
+superseded by ADR 0014. Nothing else in either ADR is reopened. It targets
 the plan format as it is in the code (version 2). ADR 0018 moves the format to
 version 3 (paths, a current directory, `session.cd`) in an item of its own; the
 last section says how this syntax grows with it.
@@ -57,7 +63,7 @@ parse is refused at once with the reason, and nothing runs.
 `intent-shell --no-model` starts the shell with no model: it does not read a
 model address, never opens a connection, and treats every line as a command. It
 works with the line adapter and with the conversational interface (ADR 0015);
-the header says `model  none (commands only)`. Recovery mode starts it this way,
+the header says `model  "none (commands only)"`. Recovery mode starts it this way,
 from a build without the interface (`--no-default-features`). There is no
 automatic switch from a model that is down: ADR 0011 already says the shell
 reports it could not make a plan and points here; the person restarts with
@@ -163,7 +169,7 @@ the same documents, so the mechanical table stays the only definition.
 | Several steps | `;` inside one line | A script of one step per line: needs a line adapter with state ("more to come") and cannot work in the single-line input of the interface. Many independent requests are already many lines |
 | References between steps | `--from-step s1` | `$s1`: ADR 0011 hints at it, but `$` invites the expansion this shell must not have |
 | Elevation | Explicit `--elevate`, decided by the broker | Prompting for root on refusal: it would promote a refused step, which ADR 0011 forbids |
-| Defaults | `--kind any`, `--mode create` only | None: safer to read but unusable. Both defaults are the weakest choice (`create` refuses to overwrite) and a wrong match is an ambiguity the person resolves |
+| Defaults | `--kind any`, `--mode create` only | None: safer to read but unusable. `create` is the weakest mode (it refuses to overwrite). `any` is the widest kind, not the narrowest, so `fs delete --name backup --in home` may match a file and a folder: the match is shown by name, an ambiguity is the person's choice, and the plan is confirmed before a delete runs. ADR 0014's example writes `--kind file` explicitly when that is meant |
 
 ## Consequences
 
@@ -179,6 +185,11 @@ the same documents, so the mechanical table stays the only definition.
   mode (`--no-model`).
 
 ## Open questions
+
+- `soul propose_change` is a command, because every action of the format is
+  reachable (S5). In recovery mode no SOUL is loaded (ADR 0007), so it only
+  records a pending proposal, which is all ADR 0011 lets the action do; applying
+  one needs a root confirmation of the full diff and belongs to S10.
 
 - Whether recovery mode (K13) starts this shell as a user program of the OS
   or the host binary stays a separate tool; this ADR fixes the grammar only.

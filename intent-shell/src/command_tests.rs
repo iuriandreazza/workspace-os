@@ -264,29 +264,47 @@ fn what_cannot_be_read_as_a_command_is_refused_with_the_reason_and_runs_nothing(
 #[test]
 fn the_format_refuses_what_the_model_would_be_refused() {
     // Each of these parses as words and is refused by the same check as the model's text.
-    for line in [
-        "fs delete --in downloads",
-        "fs read --in downloads",
-        "fs write --name a --in home --content x --mode wipe",
-        "fs write --in home --content x",
-        "fs find_largest --in home --count 0",
-        "fs find_largest --in home --count 101",
-        "fs find_largest --from-step s1 --count 1",
-        "fs move --name a --in home --to-name b --to-in home --from-step s1",
-        "fs stat --from-step s1",
-        "fs stat --from-step s2; fs stat --name a --in home",
-        "fs stat --from-step s1; fs stat --from-step s1",
-        "process run --program 'rm -rf' -- x",
-        "process run --program Rm",
-        "user manage --operation add --user bob --group staff",
-        "user manage --operation add_to_group --user bob",
-        "user manage --operation add --user BOB",
-        "system configure --key 'Bad Key' --value x",
-        "fs list --in everywhere --after s1",
-        "fs list --in home --after s9",
-        "fs list --in home --after s1",
+    for (line, reason) in [
+        ("fs delete --in downloads", "does not accept"),
+        ("fs read --in downloads", "does not accept"),
+        (
+            "fs write --name a --in home --content x --mode wipe",
+            "wipe",
+        ),
+        ("fs write --in home --content x", "does not accept"),
+        ("fs find_largest --in home --count 0", "1 to 100"),
+        ("fs find_largest --in home --count 101", "1 to 100"),
+        (
+            "fs find_largest --from-step s1 --count 1",
+            "does not accept",
+        ),
+        (
+            "fs move --name a --in home --to-name b --to-in home --from-step s1",
+            "stands alone",
+        ),
+        ("fs stat --from-step s1", "itself"),
+        (
+            "fs stat --from-step s2; fs stat --name a --in home",
+            "does not produce paths",
+        ),
+        (
+            "fs stat --from-step s1; fs stat --from-step s1",
+            "depends on itself",
+        ),
+        ("process run --program 'rm -rf' -- x", "invalid form"),
+        ("process run --program Rm", "invalid form"),
+        (
+            "user manage --operation add --user bob --group staff",
+            "group",
+        ),
+        ("user manage --operation add_to_group --user bob", "group"),
+        ("user manage --operation add --user BOB", "invalid form"),
+        ("system configure --key 'Bad Key' --value x", "invalid form"),
+        ("fs list --in everywhere --after s1", "depends on itself"),
+        ("fs list --in home --after s9", "unknown step"),
     ] {
-        refused(line);
+        let why = refused(line);
+        assert!(why.contains(reason), "{line:?}: {why}");
     }
     let sixteen = vec!["fs list --in home"; 16].join("; ");
     plan_of(&sixteen);
@@ -810,22 +828,41 @@ fn the_screen_says_who_typed_the_plan() {
 
 #[test]
 fn a_typed_command_never_reaches_the_model() {
-    // `NeverAsked` panics when called: every typed scenario above would fail.
+    // `NeverAsked` panics when called, so reaching it fails the test.
     let host = files();
-    let _ = typed(
+    let listed = typed(
         "fs list --in downloads",
         &host,
         false,
         Answers::yes(),
         MemoryLog::default(),
     );
-    let _ = typed(
+    assert!(matches!(listed.outcome, Outcome::Executed { .. }));
+    let garbage = typed(
         "this is not a command",
         &host,
         false,
         Answers::yes(),
         MemoryLog::default(),
     );
+    assert!(matches!(garbage.outcome, Outcome::BadCommand(_)));
+}
+
+#[test]
+fn an_escaped_character_is_a_value_never_a_flag() {
+    let content = |text: &str| {
+        let line = format!("fs write --new-name n --in home --content {text}");
+        let Ok(Parsed::Plan(json)) = command::parse(&line) else {
+            panic!("{line}")
+        };
+        let value: Value = serde_json::from_str(&json).unwrap();
+        value["steps"][0]["args"]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(content("\\--x"), "--x");
+    assert!(refused("fs delete --name a --in home \\--elevate").contains("unexpected"));
 }
 
 #[test]
@@ -837,4 +874,40 @@ fn the_only_defaults_are_the_weakest_choices() {
     // Nothing else is assumed: root is never requested unless the flag is there.
     assert!(plan.steps.iter().all(|s| !s.elevate));
     assert!(plan_of("fs delete --name a --in home --elevate").steps[0].elevate);
+}
+
+#[test]
+fn a_mistyped_word_names_its_flag() {
+    for (line, flag) in [
+        ("fs list --in HOME", "--in"),
+        ("fs list --in dwnloads", "--in"),
+        ("fs list --in home\u{a0}--elevate", "--in"),
+        ("fs move --name a --in home --to-in nowhere", "--to-in"),
+        ("fs read --name a --in home --kind dir", "--kind"),
+    ] {
+        let why = refused(line);
+        assert!(
+            why.contains(flag) && why.contains("is not one of"),
+            "{line:?}: {why}"
+        );
+    }
+    assert!(refused("fs list --in HOME").contains("downloads"));
+}
+
+#[test]
+fn what_is_refused_cannot_forge_the_screen() {
+    let host = files();
+    for line in [
+        "fs read --name 'a\u{1b}[2J' --in home\u{1b}]0;x\u{7}",
+        "\u{202e}fs list --in home",
+        "fs list --\u{1b}[31mred",
+    ] {
+        let result = typed(line, &host, false, Answers::yes(), MemoryLog::default());
+        let text = result.outcome.render();
+        assert!(matches!(result.outcome, Outcome::BadCommand(_)), "{line:?}");
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{202e}'),
+            "{text:?}"
+        );
+    }
 }

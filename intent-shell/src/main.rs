@@ -26,7 +26,7 @@ struct Options {
     transcript: Option<PathBuf>,
 }
 
-fn parse_options(home: &str) -> Result<Options, String> {
+fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         model: Some("127.0.0.1:8089".to_owned()),
         log: PathBuf::from(home).join(".local/state/workspace-os/intent-shell/decisions.jsonl"),
@@ -34,7 +34,7 @@ fn parse_options(home: &str) -> Result<Options, String> {
         plain: false,
         transcript: None,
     };
-    let mut args = std::env::args().skip(1);
+    let mut args = args;
     let (mut chose_model, mut chose_none) = (false, false);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -83,7 +83,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
-    let options = parse_options(&home)?;
+    let options = parse_options(&home, std::env::args().skip(1))?;
     let log = JsonlLog::open(&options.log).map_err(|e| {
         format!(
             "cannot open the decision log {}: {e}",
@@ -118,7 +118,24 @@ fn run() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::can_draw_on;
+    use super::{can_draw_on, parse_options};
+
+    fn options(args: &[&str]) -> Result<super::Options, String> {
+        parse_options("/home/x", args.iter().map(|a| (*a).to_owned()))
+    }
+
+    #[test]
+    fn no_model_means_no_model_address_and_cannot_be_mixed_with_one() {
+        assert!(options(&[]).unwrap().model.is_some());
+        assert_eq!(options(&["--no-model"]).unwrap().model, None);
+        assert_eq!(
+            options(&["--model", "h:1"]).unwrap().model.as_deref(),
+            Some("h:1")
+        );
+        assert!(options(&["--model", "h:1", "--no-model"]).is_err());
+        assert!(options(&["--no-model", "--model", "h:1"]).is_err());
+        assert!(options(&["--no-model", "--bogus"]).is_err());
+    }
 
     #[test]
     fn the_interface_needs_a_real_terminal_on_both_ends_and_a_capable_term() {

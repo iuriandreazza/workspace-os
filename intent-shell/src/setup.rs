@@ -36,10 +36,7 @@ impl Setup {
         screen::header(&Header {
             user: &self.authority.user.name,
             administrator: self.authority.user.administrator,
-            model: self
-                .planner
-                .as_ref()
-                .map_or("none (commands only)", |p| &p.address),
+            model: model_label(self.planner.as_ref()),
             log: &self.log_name,
         })
     }
@@ -50,5 +47,31 @@ pub fn planner_of(model: Option<&LlamaPlanner>) -> &dyn Planner {
     match model {
         Some(model) => model,
         None => &NO_MODEL,
+    }
+}
+
+/// What the header calls the model: its address, or that there is none.
+pub fn model_label(model: Option<&LlamaPlanner>) -> &str {
+    model.map_or("none (commands only)", |model| &model.address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_header_says_when_there_is_no_model() {
+        assert_eq!(model_label(None), "none (commands only)");
+        let model = LlamaPlanner {
+            address: "127.0.0.1:8089".to_owned(),
+        };
+        assert_eq!(model_label(Some(&model)), "127.0.0.1:8089");
+        let header = screen::header(&Header {
+            user: "ana",
+            administrator: false,
+            model: model_label(None),
+            log: "d.jsonl",
+        });
+        assert!(header.contains("none (commands only)"), "{header}");
     }
 }

@@ -19,7 +19,7 @@ decision log.
 ## Run it
 
 ```bash
-./scripts/intent-shell.sh --no-model                    # on a terminal: the interface, header says "none (commands only)"
+./scripts/intent-shell.sh --no-model                    # on a terminal: the interface, header says `"none (commands only)"`
 ./scripts/intent-shell.sh --no-model --plain            # the line adapter; also what runs with no terminal
 ./scripts/intent-shell.sh --no-model --administrator    # may confirm root actions
 cargo run --target "$(rustc -vV | sed -n 's/^host: //p')" -p intent-shell --no-default-features -- --no-model   # no interface linked (recovery mode, ADR 0007)
@@ -45,7 +45,7 @@ The flags are the arguments of the schema with `_` written as `-`. References
 are `--in P` (a place), `--name N --in P [--kind ...]`, `--new-name N --in P`
 and `--from-step sN`. `--after sN` orders steps. Nothing is expanded (no `~`,
 globs or `$`), and a path cannot be written (ADR 0014). The two defaults are
-`--kind any` and `--mode create`. The full grammar is in ADR 0022.
+`--kind any` (the widest kind: a name that matches a file and a folder is the person's choice) and `--mode create`. The full grammar is in ADR 0022.
 
 ## What shares code with the model path
 

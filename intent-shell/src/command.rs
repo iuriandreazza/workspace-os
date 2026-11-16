@@ -12,6 +12,7 @@ use std::fmt;
 use serde_json::{Map, Value, json};
 
 use crate::plan::{MAX_STEPS, VERSION};
+use crate::reference::{Kind, Place};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandError(String);
@@ -262,7 +263,8 @@ fn tokenize(line: &str) -> Result<Vec<Token>, CommandError> {
                 let escaped = chars
                     .next()
                     .ok_or_else(|| CommandError::new("the line ends with a backslash"))?;
-                push(&mut current, escaped, false);
+                // A backslash makes the character literal, so `\--x` is a value, not a flag.
+                push(&mut current, escaped, true);
             }
             '\'' => {
                 open(&mut current);
@@ -503,6 +505,12 @@ fn reference(
     let kind = take("kind");
     let from_step = take("from-step");
     let flag = |f: &str| format!("--{prefix}{f}");
+    if let Some(place) = &place {
+        check_word::<Place>(name, &flag("in"), place, &place_words())?;
+    }
+    if let Some(kind) = &kind {
+        check_word::<Kind>(name, &flag("kind"), kind, "file, folder, any")?;
+    }
     let needs_place =
         |what: &str| CommandError::new(format!("{name}: {what} needs {}", flag("in")));
     match (from_step, new_item, item, place, kind) {
@@ -558,6 +566,27 @@ fn reference(
     }
 }
 
+/// A word the format reads as an enum, checked here only to name the flag in
+/// the error: serde's own message for a reference names neither.
+fn check_word<T: serde::de::DeserializeOwned>(
+    name: &str,
+    flag: &str,
+    value: &str,
+    expected: &str,
+) -> Result<(), CommandError> {
+    serde_json::from_value::<T>(Value::String(value.to_owned()))
+        .map(drop)
+        .map_err(|_| {
+            CommandError::new(format!("{name}: {flag} {value:?} is not one of {expected}"))
+        })
+}
+
+fn place_words() -> String {
+    Place::ALL
+        .map(|place| format!("{place:?}").to_lowercase())
+        .join(", ")
+}
+
 /// What `help` prints, built from the same table the parser reads.
 fn help() -> String {
     let mut out = String::from("Commands (one line, steps separated by `;`):\n");
@@ -584,12 +613,13 @@ fn help() -> String {
         out.push_str(&line);
         out.push('\n');
     }
-    out.push_str(
+    out.push_str(&format!(
         "REFERENCE is --in PLACE, --name NAME --in PLACE [--kind file|folder|any],\n\
          --new-name NAME --in PLACE, or --from-step sN (what step sN found).\n\
-         Places: home downloads documents desktop pictures music videos everywhere.\n\
+         Places: {places}.\n\
          Steps are s1, s2, ... by position; --after sN makes a step wait for sN.\n\
          Quote with '...' or \"...\"; nothing is expanded. A line holds up to 16 steps.\n",
-    );
+        places = place_words()
+    ));
     out
 }
