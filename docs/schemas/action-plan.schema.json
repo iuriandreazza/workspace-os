@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/iuriandreazza/workspace-os/docs/schemas/action-plan.schema.json",
   "title": "Action plan, version 1",
-  "description": "What the intent shell model may emit (ADR 0010). Either a plan or a clarifying question. Structural rules only; ids, dependencies and references are checked by code (see the ADR).",
+  "description": "What the intent shell model may emit (ADR 0011). Either a plan or a clarifying question. Structural rules only; ids, dependencies and references are checked by code (see the ADR).",
   "oneOf": [
     { "$ref": "#/$defs/plan" },
     { "$ref": "#/$defs/clarify" }

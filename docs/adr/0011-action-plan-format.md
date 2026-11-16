@@ -1,5 +1,5 @@
 ---
-title: "ADR 0010: Action plan format of the intent shell"
+title: "ADR 0011: Action plan format of the intent shell"
 type: adr
 status: accepted
 created: 2026-11-15
@@ -7,7 +7,7 @@ updated: 2026-11-15
 tags: [slm, shell, plan, schema, capabilities, root, soul]
 ---
 
-# ADR 0010: Action plan format of the intent shell
+# ADR 0011: Action plan format of the intent shell
 
 ## Context
 

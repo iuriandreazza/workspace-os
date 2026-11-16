@@ -1,4 +1,4 @@
-"""Check the action plan schema against its examples (ADR 0010).
+"""Check the action plan schema against its examples (ADR 0011).
 
 Run: uv run --with jsonschema python docs/schemas/validate.py
 
