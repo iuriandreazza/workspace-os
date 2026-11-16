@@ -25,6 +25,8 @@ pub extern "C" fn kernel_main() -> ! {
 
     #[cfg(feature = "selftest-unhandled-class")]
     arch::raise_unhandled_class();
+    #[cfg(feature = "selftest-compiler-trap")]
+    arch::raise_compiler_trap();
     #[cfg(feature = "selftest-unhandled-vector")]
     arch::raise_unhandled_vector();
 

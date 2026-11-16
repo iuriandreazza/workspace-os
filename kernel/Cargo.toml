@@ -12,6 +12,7 @@ workspace = true
 [features]
 selftest-unhandled-class = []
 selftest-unhandled-vector = []
+selftest-compiler-trap = []
 
 [[bin]]
 name = "kernel"

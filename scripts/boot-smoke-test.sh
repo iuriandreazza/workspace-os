@@ -14,11 +14,13 @@
 #   el3  started at EL3, which the boot code must leave for EL1
 #   el3-el2  started at EL3 with EL2 present: the boot code goes through EL2
 #
-# Two more boots use kernels built to raise an exception nothing handles, and
-# must end in a kernel panic that names it:
+# Three more boots use kernels built to raise an exception nothing resumes
+# from, and must end in a kernel panic that names it:
 #
 #   unhandled-class   a synchronous exception of a class with no handler
 #   unhandled-vector  an exception on a vector entry that is not handled
+#   compiler-trap     `brk #0x1`, which the compiler emits for `abort`, must
+#                     not be resumed like the kernel's own breakpoint
 set -euo pipefail
 
 readonly EXPECTED_BANNER="workspace-os kernel: booted on aarch64 in EL1"
@@ -176,8 +178,10 @@ head -c "$bss_size" /dev/zero | LC_ALL=C tr '\0' '\377' > "$garbage"
 
 class_elf="$work_dir/unhandled-class.elf"
 vector_elf="$work_dir/unhandled-vector.elf"
+trap_elf="$work_dir/compiler-trap.elf"
 build_with_feature selftest-unhandled-class "$class_elf"
 build_with_feature selftest-unhandled-vector "$vector_elf"
+build_with_feature selftest-compiler-trap "$trap_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
 
 check_boot elf -kernel "$KERNEL_ELF"
@@ -190,3 +194,4 @@ check_boot el3 -machine secure=on -kernel "$KERNEL_ELF"
 check_boot el3-el2 -machine secure=on,virtualization=on -kernel "$KERNEL_ELF"
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
+check_panic compiler-trap "$trap_elf" "BRK (AArch64)"

@@ -233,3 +233,11 @@ pub fn raise_unhandled_vector() {
     // SAFETY: the exception ends in a kernel panic, which is what the test checks.
     unsafe { asm!("msr spsel, #0", "brk #0") };
 }
+
+/// `brk #0x1` is what the compiler emits for `abort` and `unreachable`: it must
+/// stay fatal.
+#[cfg(feature = "selftest-compiler-trap")]
+pub fn raise_compiler_trap() {
+    // SAFETY: the exception ends in a kernel panic, which is what the test checks.
+    unsafe { asm!("brk #0x1") };
+}

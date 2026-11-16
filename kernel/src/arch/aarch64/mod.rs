@@ -5,6 +5,8 @@ global_asm!(include_str!("exceptions.s"));
 
 mod exceptions;
 
+#[cfg(feature = "selftest-compiler-trap")]
+pub use exceptions::raise_compiler_trap;
 #[cfg(feature = "selftest-unhandled-class")]
 pub use exceptions::raise_unhandled_class;
 #[cfg(feature = "selftest-unhandled-vector")]
