@@ -142,7 +142,7 @@ fakes for all four.
 
 ## Tests and the gate
 
-`./scripts/check.sh` now also runs clippy and 80 tests for `intent-shell`,
+`./scripts/check.sh` now also runs clippy and 88 tests for `intent-shell`,
 none needing the model. They include one test per refusal class (no
 capability, beyond the user's permissions, root without confirmation, a
 non-administrator elevating, malformed output, rule violations) and the 27
@@ -207,6 +207,10 @@ see first, which is the point of the broker; the quality is S4's problem.
   because `access(2)` failing is all the check sees. Misleading, not unsafe.
 - `.` and `..` are resolved by name before a path is checked, shown or used,
   and the filesystem root is never allowed as the target of a removal or write.
+- `..` is resolved by name, not through symlinks: `link/../x` means the
+  parent of `link` as written, which may differ from what a shell would pick.
+  The path shown is the path used, so it is not a way around a check.
+- `fs.read` says so in a NOTE when it cut the file at its 64 KiB cap.
 - A path is shown byte-exact: a byte that is not UTF-8 appears as `\xNN`, so
   two different file names never show as the same action.
 - A search that could not look everywhere (unreadable directories, or the

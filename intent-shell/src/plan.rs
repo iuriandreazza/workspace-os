@@ -723,6 +723,27 @@ mod tests {
         };
         assert!(parse(&run(&"a".repeat(1024))).is_ok());
         assert!(parse(&run(&"a".repeat(1025))).is_err());
+        let many = |n: usize| {
+            let items = vec![r#""a""#; n].join(",");
+            format!(
+                r#"{{"kind":"plan","version":1,"summary":"x","steps":[{{"id":"s1","action":"process.run","args":{{"program":"ls","argv":[{items}]}},"depends_on":[],"elevate":false}}]}}"#
+            )
+        };
+        assert!(parse(&many(32)).is_ok());
+        assert!(parse(&many(33)).is_err());
+    }
+
+    #[test]
+    fn a_proposed_soul_text_is_bounded() {
+        let soul = |n: usize| {
+            format!(
+                r#"{{"kind":"plan","version":1,"summary":"x","steps":[{{"id":"s1","action":"soul.propose_change","args":{{"rationale":"r","new_text":"{}"}},"depends_on":[]}}]}}"#,
+                "t".repeat(n)
+            )
+        };
+        assert!(parse(&soul(16384)).is_ok());
+        assert!(parse(&soul(16385)).is_err());
+        assert!(parse(&soul(0)).is_err());
     }
 
     #[test]

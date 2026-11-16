@@ -428,4 +428,90 @@ mod tests {
         assert_eq!(printable("a\nb\u{1b}", true), "a\nb\\u001b");
         assert_eq!(printable("a\nb", false), "a\\u000ab");
     }
+
+    #[test]
+    fn every_action_needs_its_own_capability_and_root_rule() {
+        let p = || PathBuf::from("/x");
+        let table = [
+            (
+                Action::List { path: p() },
+                Capability::FsRead,
+                RootRule::OnRequest,
+            ),
+            (
+                Action::Stat { path: p() },
+                Capability::FsRead,
+                RootRule::OnRequest,
+            ),
+            (
+                Action::Read { path: p() },
+                Capability::FsRead,
+                RootRule::OnRequest,
+            ),
+            (
+                Action::FindLargest {
+                    path: p(),
+                    count: 1,
+                },
+                Capability::FsRead,
+                RootRule::OnRequest,
+            ),
+            (
+                Action::Write {
+                    path: p(),
+                    content: String::new(),
+                    mode: WriteMode::Create,
+                },
+                Capability::FsWrite,
+                RootRule::OnRequest,
+            ),
+            (
+                Action::Move { from: p(), to: p() },
+                Capability::FsWrite,
+                RootRule::OnRequest,
+            ),
+            (
+                Action::Delete { path: p() },
+                Capability::FsDelete,
+                RootRule::OnRequest,
+            ),
+            (
+                Action::Run {
+                    program: "ls".into(),
+                    argv: vec![],
+                },
+                Capability::ProcessExec,
+                RootRule::OnRequest,
+            ),
+            (
+                Action::UserManage {
+                    operation: UserOperation::Add,
+                    user: "u".into(),
+                    group: None,
+                },
+                Capability::UserAdmin,
+                RootRule::Always,
+            ),
+            (
+                Action::SystemConfigure {
+                    key: "k".into(),
+                    value: "v".into(),
+                },
+                Capability::SystemConfig,
+                RootRule::Always,
+            ),
+            (
+                Action::SoulProposeChange {
+                    rationale: "r".into(),
+                    new_text: "t".into(),
+                },
+                Capability::SoulPropose,
+                RootRule::Never,
+            ),
+        ];
+        for (action, capability, rule) in table {
+            assert_eq!(action.capability(), capability, "{}", action.name());
+            assert_eq!(action.root_rule(), rule, "{}", action.name());
+        }
+    }
 }

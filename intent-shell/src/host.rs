@@ -81,11 +81,11 @@ impl Host for UnixHost {
 
     fn allows(&self, access: Access, path: &Path) -> bool {
         match access {
+            // The root has no directory above it to remove it from, whoever asks.
+            Access::Write | Access::Delete if path.parent().is_none() => false,
             Access::Read if path.is_dir() => permitted(path, libc::R_OK | libc::X_OK),
             Access::Read => permitted(path, libc::R_OK),
             Access::Write if path.exists() => permitted(path, libc::W_OK),
-            // The root has no directory above it to remove it from.
-            Access::Write | Access::Delete if path.parent().is_none() => false,
             Access::Write | Access::Delete => permitted(parent_of(path), libc::W_OK | libc::X_OK),
         }
     }
@@ -166,9 +166,15 @@ fn read(path: &Path, limit: u64) -> Result<Output, String> {
         return Err(format!("{} is not a regular file", quoted_path(path)));
     }
     let mut bytes = Vec::new();
+    // One byte more than the limit tells a file that fits from one that was cut.
     fs::File::open(path)
-        .and_then(|file| file.take(limit).read_to_end(&mut bytes))
+        .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
         .map_err(|e| io_error(path, e))?;
+    let mut notes = Vec::new();
+    if bytes.len() as u64 > limit {
+        bytes.truncate(limit as usize);
+        notes.push(format!("only the first {limit} bytes were read"));
+    }
     // File content is data for the terminal, not for the terminal to obey.
     let text = String::from_utf8_lossy(&bytes)
         .chars()
@@ -182,7 +188,7 @@ fn read(path: &Path, limit: u64) -> Result<Output, String> {
         .collect();
     Ok(Output {
         text,
-        paths: Vec::new(),
+        notes,
         ..Output::default()
     })
 }
@@ -419,5 +425,67 @@ mod tests {
         }
         fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    }
+
+    fn is_root() -> bool {
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[test]
+    fn a_search_stops_at_its_entry_limit_and_says_so() {
+        let dir = temp_dir("walklimit");
+        for i in 0..5 {
+            fs::write(dir.join(format!("f{i}")), "x").unwrap();
+        }
+        let output = find_largest(&dir, 1, 3).unwrap();
+        assert_eq!(output.notes.len(), 1, "{output:?}");
+        assert!(find_largest(&dir, 1, 5).unwrap().notes.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_read_stops_at_its_byte_limit_and_says_so() {
+        let dir = temp_dir("readlimit");
+        fs::write(dir.join("f"), "x".repeat(100)).unwrap();
+        let output = read(&dir.join("f"), 10).unwrap();
+        assert_eq!(output.text.len(), 10);
+        assert_eq!(output.notes.len(), 1);
+        assert!(read(&dir.join("f"), 100).unwrap().notes.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn removing_a_file_needs_the_execute_bit_of_its_directory() {
+        let dir = temp_dir("xparent");
+        let file = dir.join("f");
+        fs::write(&file, "x").unwrap();
+        set_mode(&dir, 0o600);
+        if !is_root() {
+            assert!(!host(&dir).allows(Access::Delete, &file));
+            assert!(!host(&dir).allows(Access::Write, &dir.join("new")));
+        }
+        set_mode(&dir, 0o700);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reading_a_directory_needs_the_execute_bit_too() {
+        let dir = temp_dir("xbit");
+        set_mode(&dir, 0o600);
+        if !is_root() {
+            assert!(!host(&dir).allows(Access::Read, &dir));
+        }
+        set_mode(&dir, 0o700);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_root_is_never_a_target_even_for_root() {
+        assert!(!host(Path::new("/work")).allows(Access::Write, Path::new("/")));
     }
 }

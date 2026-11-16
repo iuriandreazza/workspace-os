@@ -44,9 +44,12 @@ fn ask(question: &str) -> bool {
     print!("{question} [y/N] ");
     let _ = io::stdout().flush();
     let mut answer = String::new();
-    io::stdin()
-        .read_line(&mut answer)
-        .is_ok_and(|n| n > 0 && matches!(answer.trim(), "y" | "Y" | "yes"))
+    io::stdin().read_line(&mut answer).is_ok() && is_yes(&answer)
+}
+
+/// Only an explicit yes counts: an empty line, end of input or anything else is no.
+fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim(), "y" | "Y" | "yes")
 }
 
 impl Confirm for TerminalConfirm {
@@ -123,5 +126,20 @@ fn run() -> Result<(), String> {
             log: &mut log,
         };
         println!("{}", shell.handle(request).render());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_yes;
+
+    #[test]
+    fn only_an_explicit_yes_confirms() {
+        for yes in ["y\n", "Y", "yes\n"] {
+            assert!(is_yes(yes), "{yes:?}");
+        }
+        for no in ["", "\n", "n\n", "yep", "ye", " \n"] {
+            assert!(!is_yes(no), "{no:?}");
+        }
     }
 }
