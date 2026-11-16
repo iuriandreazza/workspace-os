@@ -31,6 +31,39 @@ device tree; the kernel can read only the device tree (ADR 0010), so the
 bootloader stops with "the firmware offers ACPI only". The expected serial
 output is in `docs/adr/0013-boot-handoff-structure.md`, "Findings of K2b-2".
 
+## The boot menu
+
+The bootloader stops on a text menu before it loads anything (ADR 0007,
+ADR 0008). It is plain text on the firmware console, which is the serial line
+as well as the screen:
+
+```
+  boot  info  boot menu: arrows and Enter, or the number of an entry
+        > 1  Normal
+          2  Recovery
+  boot  info  autoboot in 3 s, starting Normal
+```
+
+- **Normal** starts the kernel with `boot_mode` 0, **Recovery** with 1 (ADR
+  0013). The kernel reports the mode it received in its `entry: bootloader`
+  line, for example `mode 1 (recovery)`. What recovery does once it runs is
+  K13's work; today the same kernel starts with the other mode.
+- **Up** and **Down** move the selection and **Enter** starts it. A digit starts
+  the entry with that number at once.
+- Any key stops the countdown, so the menu then waits for a person. With no
+  key, Normal starts after three seconds, so an unattended machine boots.
+- The menu only appends lines to the console. The graphical menu (K2e) draws
+  next to it and does not replace it, because the gate reads this one.
+
+The list of entries is data (`bootinfo::menu::BUILT_IN`), and the menu logic
+(`bootinfo/src/menu.rs`) does not know what an entry means, so a list made by
+the boot model (ADR 0009) takes its place without changing the menu.
+
+To type on the console of a QEMU run, use `-nographic` as below: the terminal
+you start QEMU in is the serial console. `./scripts/check.sh` types on the
+serial line through a socket instead, once the menu has been drawn, and starts
+each entry in turn.
+
 ## QEMU on a Mac with Apple silicon
 
 QEMU and its UEFI firmware come from Homebrew:
@@ -46,11 +79,11 @@ qemu-system-aarch64 -machine virt,acpi=off -cpu cortex-a72 -m 512M \
   -drive file=target/workspace-os.img,format=raw,if=virtio
 ```
 
-The firmware prints its own lines first. The bootloader draws a banner and
-logs lines that start with `boot` and a tag (`ok`, `info`, `>>`, `fail`), then
-a summary box; the kernel draws its own box and logs lines that start with
+The firmware prints its own lines first. The bootloader draws a banner, the
+boot menu and then logs lines that start with `boot` and a tag (`ok`, `info`,
+`>>`, `fail`), then a summary box; the kernel draws its own box and logs lines that start with
 `kernel` and the same kind of tag. The kernel's `entry: bootloader, boot info
-1.0` line shows how it was entered, and `booted on aarch64 in EL1` is the
+1.0, mode 0 (normal)` line shows how it was entered and which entry was chosen, and `booted on aarch64 in EL1` is the
 banner. Leave QEMU with Ctrl-A then X.
 
 Add `-accel hvf -cpu host` to run with the hypervisor instead of emulation.

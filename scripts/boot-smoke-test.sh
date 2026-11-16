@@ -41,7 +41,8 @@
 # and the kernel must say it was entered that way and report a coherent
 # memory map. The firmware is found at the usual places, or in UEFI_FIRMWARE.
 #
-#   uefi      256 MiB, the default
+#   uefi      256 MiB, the default; nobody presses a key, so the menu's
+#             countdown must start the default entry, Normal (boot mode 0)
 #   uefi-768  768 MiB: the kernel sizes memory from the bootloader's map, so
 #             the amount it reports follows
 #   uefi-acpi-only  ACPI left on: no device tree is published, so the
@@ -51,6 +52,17 @@
 #             translation registers
 #   uefi-el2  the firmware runs the bootloader at EL2, which the bootloader
 #             must leave for EL1 itself before the kernel starts
+#
+# The boot menu is read and driven over the serial console (ADR 0007, K2c):
+# the log is the console's output, and a script sends keys to its input once
+# the menu has been drawn. Each entry must reach the kernel with its own boot
+# mode (ADR 0013), and the kernel must report the same mode it was given:
+#
+#   uefi-recovery         the key `2` starts Recovery (boot mode 1)
+#   uefi-recovery-arrows  the Down arrow selects Recovery and stops the
+#                         countdown: the kernel must not start by itself while
+#                         the menu waits, then Enter starts it (boot mode 1)
+#   uefi-768, uefi-el2, uefi-el2-high  Enter and `1` start Normal (boot mode 0)
 #
 # Three more boots use kernels built to raise an exception nothing resumes
 # from, and must end in a kernel panic that names it:
@@ -79,6 +91,7 @@ readonly MAX_RESERVED_FRAMES=1024
 BOOT_TIMEOUT_SECONDS=10
 readonly UEFI_BOOT_TIMEOUT_SECONDS=90
 readonly SETTLE_SECONDS=1
+
 # Fixed target directory: with CARGO_TARGET_DIR set, cargo would build
 # elsewhere and the test would boot a stale binary from here.
 readonly TARGET_DIR="target"
@@ -96,6 +109,14 @@ plain_log() {
 }
 
 cd "$(dirname "$0")/.."
+# The menu's countdown, read from where the bootloader defines it, so that the
+# test cannot disagree with it.
+AUTOBOOT_SECONDS="$(sed -n 's/^pub const AUTOBOOT_SECONDS: u32 = \([0-9][0-9]*\);$/\1/p' bootinfo/src/menu.rs)"
+readonly AUTOBOOT_SECONDS
+[[ -n "$AUTOBOOT_SECONDS" ]] || { echo "boot smoke test: AUTOBOOT_SECONDS not found in bootinfo/src/menu.rs" >&2; exit 1; }
+# Written by the bootloader after it drew the menu and dropped any key the
+# firmware buffered, so a key typed after this line is read by the menu.
+readonly MENU_READY="autoboot in $AUTOBOOT_SECONDS s, starting Normal"
 cargo build --quiet --target-dir "$TARGET_DIR"
 
 work_dir="$(mktemp -d)"
@@ -169,14 +190,30 @@ expect_once() {
     fi
 }
 
+# console_socket: where the serial console takes keys, for the boots that drive
+# the boot menu. A socket short enough for the platform's limit (about 100
+# bytes) is why it lives in the work directory, under a short name.
+console_socket() {
+    echo "$work_dir/$1.sock"
+}
+
+# start_qemu NAME [--keys] QEMU_ARGS...: the serial console is written to the
+# log; with `--keys` it also reads from `console_socket NAME`, and the output
+# still lands in the log even while nobody is connected.
 start_qemu() {
     boot_name="$1"
     shift
     serial_log="$work_dir/$boot_name.log"
     : > "$serial_log"
+    local serial=(-serial "file:$serial_log")
+    if [[ "${1:-}" == "--keys" ]]; then
+        shift
+        serial=(-chardev "socket,id=console,path=$(console_socket "$boot_name"),server=on,wait=off,logfile=$serial_log"
+            -serial chardev:console)
+    fi
 
     # QEMU's own messages are kept aside and only shown when the boot fails.
-    qemu-system-aarch64 "${QEMU_MACHINE[@]}" -serial "file:$serial_log" "$@" \
+    qemu-system-aarch64 "${QEMU_MACHINE[@]}" "${serial[@]}" "$@" \
         2> "$work_dir/$boot_name.qemu" &
     qemu_pid=$!
 }
@@ -319,15 +356,74 @@ find_uefi_firmware() {
     exit 1
 }
 
-# check_uefi_boot NAME MEMORY_MIB BOOTLOADER_EL [QEMU_ARGS...]: boots the disk image through the UEFI
-# firmware and the bootloader. The firmware publishes a device tree only with
+# send_key NAME BYTES: types BYTES on the serial console of the running boot.
+# A client connects for each call: the console stays up between them.
+send_key() {
+    python3 -I -c '
+import socket, sys
+console = socket.socket(socket.AF_UNIX)
+console.connect(sys.argv[1])
+console.sendall(sys.argv[2].encode("latin-1"))
+' "$(console_socket "$1")" "$2" || fail "could not type on the serial console"
+}
+
+# drive_menu NAME KEYS: waits for the menu, then types KEYS, a comma-separated
+# list of `enter`, `down`, `up`, a single character, or `hold`: wait longer than
+# the countdown and check that nothing started by itself.
+drive_menu() {
+    local key keys
+    wait_for_line "$MENU_READY"
+    IFS=, read -ra keys <<< "$2"
+    for key in "${keys[@]}"; do
+        case "$key" in
+            enter) send_key "$1" $'\r' ;;
+            down) send_key "$1" $'\033[B' ;;
+            up) send_key "$1" $'\033[A' ;;
+            hold)
+                sleep $((AUTOBOOT_SECONDS + 2))
+                if grep -qF "booted on aarch64" "$serial_log" || grep -qF "  starting " "$serial_log"; then
+                    fail "the boot continued by itself while the menu waited for a key"
+                fi
+                ;;
+            ?) send_key "$1" "$key" ;;
+            *) fail "unknown key '$key' in the menu script" ;;
+        esac
+    done
+}
+
+# expect_menu_entries: the menu on the console lists every entry, numbered.
+expect_menu_entries() {
+    local entry
+    for entry in "1  Normal" "2  Recovery"; do
+        if ! plain_log | grep -qF -- "$entry"; then
+            fail "the boot menu does not list '$entry'"
+        fi
+    done
+}
+
+# check_uefi_boot NAME MEMORY_MIB BOOTLOADER_EL MODE KEYS [QEMU_ARGS...]: boots
+# the disk image through the UEFI firmware and the bootloader. MODE is the
+# entry that must be started, `normal` or `recovery`; KEYS is what is typed on
+# the menu (see `drive_menu`), empty when nobody answers and the countdown
+# starts the default entry. The firmware publishes a device tree only with
 # ACPI off (ADR 0013, "What is not yet known"), hence `acpi=off`.
 check_uefi_boot() {
     local mib="$2" bootloader_el="$3" counts total reserved free copy_start copy_end
+    local mode_name="$4" keys="$5" mode_number label other_label reason
+    case "$mode_name" in
+        normal) mode_number=0 label=Normal other_label=Recovery ;;
+        recovery) mode_number=1 label=Recovery other_label=Normal ;;
+        *) fail "unknown boot mode '$mode_name' in the test" ;;
+    esac
+    reason="chosen on the keyboard"
+    [[ -n "$keys" ]] || reason="chosen by the timeout"
     BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
-    start_qemu "$1" -machine virt,acpi=off -m "${mib}M" -bios "$uefi_firmware" \
-        -drive "file=$disk_image,format=raw,if=virtio" "${@:4}"
+    start_qemu "$1" --keys -machine virt,acpi=off -m "${mib}M" -bios "$uefi_firmware" \
+        -drive "file=$disk_image,format=raw,if=virtio" "${@:6}"
 
+    if [[ -n "$keys" ]]; then
+        drive_menu "$1" "$keys"
+    fi
     wait_for_banner
     wait_for_line "$RESUME_MARKER"
     sleep "$SETTLE_SECONDS"
@@ -347,9 +443,17 @@ check_uefi_boot() {
     expect_once "$BREAKPOINT_REPORT" "breakpoint report"
     expect_once "$RESUME_MARKER" "resume after the breakpoint"
     # The origin of the entry is visible on the serial console.
-    expect_once "entry: bootloader, boot info 1.0, mode 0," "entry through the bootloader"
+    expect_once "entry: bootloader, boot info 1.0, mode $mode_number ($mode_name)," "entry through the bootloader"
     if grep -qF "entry: direct load" "$serial_log"; then
         fail "kernel reports a direct load after a boot through the bootloader"
+    fi
+    # The menu offered both entries, the one asked for was started and the
+    # other was not: the boot mode the kernel reports is the entry's, not a
+    # constant. The kernel's line above is the other half of this check.
+    expect_menu_entries
+    expect_once "starting $label (boot mode $mode_number, $mode_name), $reason" "the bootloader's choice of the $label entry"
+    if grep -qF "starting $other_label (boot mode" "$serial_log"; then
+        fail "the bootloader started the $other_label entry as well"
     fi
     # The processor identity, the tables and the registers the ADR fixes to zero:
     # the boot processor of QEMU `virt` is 0, ACPI is off, the system table is set.
@@ -553,10 +657,12 @@ extra_reserved_ranges=0
 uefi_firmware="$(find_uefi_firmware)"
 disk_image="$work_dir/disk.img"
 ./scripts/build-disk-image.sh "$disk_image" > /dev/null
-check_uefi_boot uefi 256 1
-check_uefi_boot uefi-768 768 1
-check_uefi_boot uefi-el2 256 2 -machine virtualization=on
-check_uefi_boot uefi-el2-high 3584 2 -machine virtualization=on
+check_uefi_boot uefi 256 1 normal ""
+check_uefi_boot uefi-768 768 1 normal enter
+check_uefi_boot uefi-el2 256 2 normal 1 -machine virtualization=on
+check_uefi_boot uefi-el2-high 3584 2 normal enter -machine virtualization=on
+check_uefi_boot uefi-recovery 256 1 recovery 2
+check_uefi_boot uefi-recovery-arrows 256 1 recovery down,hold,enter
 check_uefi_refusal uefi-acpi-only
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
