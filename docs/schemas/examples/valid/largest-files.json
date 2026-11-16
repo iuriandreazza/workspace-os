@@ -1,2 +1,2 @@
-{"kind":"plan","version":1,"summary":"Show the five largest files in /var/log","steps":[
- {"id":"s1","action":"fs.find_largest","args":{"path":"/var/log","count":5},"depends_on":[],"elevate":false}]}
+{"kind":"plan","version":2,"summary":"Show the five largest files anywhere","steps":[
+ {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"everywhere"},"count":5},"depends_on":[],"elevate":false}]}

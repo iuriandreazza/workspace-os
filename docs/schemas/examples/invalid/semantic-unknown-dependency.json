@@ -1,2 +1,2 @@
-{"kind":"plan","version":1,"summary":"Depends on nothing real","steps":[
- {"id":"s1","action":"fs.list","args":{"path":"."},"depends_on":["s7"],"elevate":false}]}
+{"kind":"plan","version":2,"summary":"Depends on nothing real","steps":[
+ {"id":"s1","action":"fs.list","args":{"target":{"place":"home"}},"depends_on":["s7"],"elevate":false}]}

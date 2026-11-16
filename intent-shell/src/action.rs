@@ -29,7 +29,8 @@ impl UserOperation {
     }
 }
 
-/// One concrete action: every path is a real path, no step reference is left.
+/// One concrete action: every location is a real one, nothing is left to resolve.
+/// Built only from a `Spec` by the resolver and the broker (ADR 0014).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     List {
@@ -233,7 +234,13 @@ fn escape_unsafe(c: char) -> String {
             | '\u{F0000}'..='\u{10FFFF}'
     );
     if c.is_control() || formatting || blank {
-        format!("\\u{:04x}", c as u32)
+        // Beyond the BMP the digits vary in number, so they are delimited:
+        // otherwise U+F0000 and U+F000 followed by "0" would print alike.
+        if (c as u32) > 0xFFFF {
+            format!("\\u{{{:x}}}", c as u32)
+        } else {
+            format!("\\u{:04x}", c as u32)
+        }
     } else {
         c.to_string()
     }
@@ -285,10 +292,6 @@ impl Action {
         self.capability() == Capability::FsRead
     }
 
-    pub fn produces_paths(&self) -> bool {
-        matches!(self, Self::List { .. } | Self::FindLargest { .. })
-    }
-
     /// What the user's own permissions must allow, path by path.
     pub fn accesses(&self) -> Vec<(Access, &Path)> {
         match self {
@@ -303,43 +306,6 @@ impl Action {
             | Self::SystemConfigure { .. }
             | Self::SoulProposeChange { .. } => Vec::new(),
         }
-    }
-
-    /// The same action with every path passed through `f`.
-    pub fn map_paths(&self, f: &dyn Fn(&Path) -> PathBuf) -> Action {
-        let mut action = self.clone();
-        match &mut action {
-            Self::List { path }
-            | Self::Stat { path }
-            | Self::Read { path }
-            | Self::FindLargest { path, .. }
-            | Self::Write { path, .. }
-            | Self::Delete { path } => *path = f(path),
-            Self::Move { from, to } => {
-                *from = f(from);
-                *to = f(to);
-            }
-            Self::Run { .. }
-            | Self::UserManage { .. }
-            | Self::SystemConfigure { .. }
-            | Self::SoulProposeChange { .. } => {}
-        }
-        action
-    }
-
-    /// The path a `from_step` reference replaces: the only reference position
-    /// in each action that accepts one.
-    pub fn with_referenced_path(&self, referenced: PathBuf) -> Action {
-        let mut action = self.clone();
-        match &mut action {
-            Self::List { path }
-            | Self::Stat { path }
-            | Self::Read { path }
-            | Self::Delete { path } => *path = referenced,
-            Self::Move { from, .. } => *from = referenced,
-            _ => {}
-        }
-        action
     }
 
     /// The exact action as it will run. Strings are JSON-quoted so a control
@@ -423,6 +389,31 @@ mod tests {
         assert_ne!(quoted_path(one), quoted_path(other));
         assert_eq!(quoted_path(one), "\"/x/a\\xff\"");
         assert_eq!(quoted_path(Path::new("/x/ação")), "\"/x/ação\"");
+    }
+
+    #[test]
+    fn every_invisible_character_of_the_list_is_escaped() {
+        let listed: Vec<char> = [
+            0xAD, 0x34F, 0x61C, 0x180E, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2028, 0x2029,
+            0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2060, 0x2061, 0x2064, 0x2066, 0x2067, 0x2068,
+            0x2069, 0x206F, 0xFEFF, 0xFFF9, 0xFFFB, 0xE0001, 0xE007F, 0x600, 0x605, 0x6DD, 0x70F,
+            0x115F, 0x1160, 0x2800, 0x3164, 0xFE00, 0xFE0F, 0xFFA0, 0xFFFC, 0x17B4, 0x17B5,
+            0x1D173, 0x1D17A, 0x13430, 0x1BCA0, 0x110BD,
+        ]
+        .into_iter()
+        .filter_map(char::from_u32)
+        .collect();
+        for c in listed {
+            assert!(quoted(&format!("a{c}b")).is_ascii(), "U+{:04X}", c as u32);
+        }
+    }
+
+    #[test]
+    fn code_points_beyond_the_bmp_never_print_like_a_bmp_one_followed_by_a_digit() {
+        let long = quoted("\u{f0000}");
+        let short = quoted("\u{f000}0");
+        assert_ne!(long, short);
+        assert_eq!(long, "\"\\u{f0000}\"");
     }
 
     #[test]
@@ -576,29 +567,5 @@ mod tests {
         for (action, text) in shown {
             assert_eq!(action.describe(), text);
         }
-    }
-
-    #[test]
-    fn a_reference_fills_the_source_of_a_move_and_the_target_of_the_rest() {
-        let moved = Action::Move {
-            from: PathBuf::new(),
-            to: PathBuf::from("/dest"),
-        }
-        .with_referenced_path(PathBuf::from("/src"));
-        assert_eq!(
-            moved,
-            Action::Move {
-                from: PathBuf::from("/src"),
-                to: PathBuf::from("/dest")
-            }
-        );
-        let mapped = moved.map_paths(&|p| p.join("x"));
-        assert_eq!(
-            mapped,
-            Action::Move {
-                from: PathBuf::from("/src/x"),
-                to: PathBuf::from("/dest/x")
-            }
-        );
     }
 }

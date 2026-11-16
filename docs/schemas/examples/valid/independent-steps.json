@@ -1,3 +1,3 @@
-{"kind":"plan","version":1,"summary":"Move a report and write a note","steps":[
- {"id":"s1","action":"fs.move","args":{"from":"report.txt","to":"archive/report.txt"},"depends_on":[],"elevate":false},
- {"id":"s2","action":"fs.write","args":{"path":"notes.txt","content":"Report archived.","mode":"append"},"depends_on":[],"elevate":false}]}
+{"kind":"plan","version":2,"summary":"Move a report to the archive and write a note","steps":[
+ {"id":"s1","action":"fs.move","args":{"from":{"name":"report.txt","in":"documents","kind":"file"},"to":{"name":"archive","in":"documents","kind":"folder"}},"depends_on":[],"elevate":false},
+ {"id":"s2","action":"fs.write","args":{"target":{"new_name":"notes.txt","in":"documents"},"content":"Report archived.","mode":"create"},"depends_on":[],"elevate":false}]}

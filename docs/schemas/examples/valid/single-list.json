@@ -1,2 +1,2 @@
-{"kind":"plan","version":1,"summary":"List the current directory","steps":[
- {"id":"s1","action":"fs.list","args":{"path":"."},"depends_on":[],"elevate":false}]}
+{"kind":"plan","version":2,"summary":"List what is in Downloads","steps":[
+ {"id":"s1","action":"fs.list","args":{"target":{"place":"downloads"}},"depends_on":[],"elevate":false}]}

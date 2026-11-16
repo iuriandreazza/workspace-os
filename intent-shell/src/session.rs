@@ -7,10 +7,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::action::{Access, Action, printable, quoted};
+use crate::action::{Access, Action, printable, quoted, quoted_path};
 use crate::broker::{Authority, Review, ReviewedAction, ReviewedStep, Verdict, review};
+use crate::label::Labels;
 use crate::plan::{Document, StepId, parse_checked};
-use crate::ports::{Confirm, DecisionLog, Host, Output, Planner, Retry};
+use crate::ports::{Confirm, DecisionLog, Host, Output, Planner, Retry, Search};
+use crate::reference::Place;
+use crate::resolve::Choices;
+use crate::screen::{self, View};
 
 /// Attempts at a valid document: the first, and one retry with the error (ADR 0011).
 const MAX_ATTEMPTS: usize = 2;
@@ -50,11 +54,13 @@ pub enum Outcome {
     Executed {
         review: Review,
         steps: Vec<ExecutedStep>,
+        labels: Labels,
     },
     /// The log could not be written, so the shell stopped before the next action.
     LogFailed {
         reason: String,
         steps: Vec<ExecutedStep>,
+        labels: Labels,
     },
 }
 
@@ -72,6 +78,7 @@ impl Shell<'_> {
             .unwrap_or_else(|reason| Outcome::LogFailed {
                 reason,
                 steps: Vec::new(),
+                labels: Labels::default(),
             })
     }
 
@@ -97,16 +104,9 @@ impl Shell<'_> {
         // Before the broker may read anything to expand a reference, the plan
         // is on record, and each read is logged just before it runs.
         self.record(json!({"event": "plan_accepted", "summary": plan.summary, "steps": plan.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>()}))?;
-        let reviewed = {
-            let log = RefCell::new(&mut *self.log);
-            review(
-                &plan,
-                self.authority,
-                &LoggedReads {
-                    inner: self.host,
-                    log: &log,
-                },
-            )
+        let reviewed = match self.review_with_choices(&plan)? {
+            Ok(reviewed) => reviewed,
+            Err(declined) => return Ok(declined),
         };
         self.record(json!({"event": "review", "review": review_json(&reviewed)}))?;
 
@@ -119,19 +119,84 @@ impl Shell<'_> {
         if !anything_runs {
             return Ok(Outcome::AllRefused(reviewed));
         }
-        let confirmed = self.confirm.plan(&reviewed.render());
+        let confirmed = self.confirm.plan(
+            &screen::plan_screen(&reviewed, View::Friendly),
+            &screen::plan_screen(&reviewed, View::Details),
+        );
         self.record(json!({"event": "plan_confirmation", "confirmed": confirmed}))?;
         if !confirmed {
             return Ok(Outcome::Declined(reviewed));
         }
         let (steps, logged) = self.execute(&reviewed);
+        let labels = self.labels_for(&reviewed, &steps);
         Ok(match logged {
             Ok(()) => Outcome::Executed {
                 review: reviewed,
                 steps,
+                labels,
             },
-            Err(reason) => Outcome::LogFailed { reason, steps },
+            Err(reason) => Outcome::LogFailed {
+                reason,
+                steps,
+                labels,
+            },
         })
+    }
+
+    /// Review the plan, asking the person about every reference that matched
+    /// several things until none is left. The pick is the person's, is logged,
+    /// never goes back to the model, and its resource is judged by the broker
+    /// like any other. The inner `Err` is the outcome when the person cancels.
+    fn review_with_choices(
+        &mut self,
+        plan: &crate::plan::Plan,
+    ) -> Result<Result<Review, Outcome>, String> {
+        let mut choices = Choices::default();
+        loop {
+            let reviewed = {
+                let log = RefCell::new(&mut *self.log);
+                review(
+                    plan,
+                    self.authority,
+                    &LoggedReads {
+                        inner: self.host,
+                        log: &log,
+                    },
+                    &choices,
+                )
+            };
+            let Some(ambiguity) = reviewed.first_ambiguity().cloned() else {
+                return Ok(Ok(reviewed));
+            };
+            let (question, options) = screen::question(&ambiguity, &reviewed.labels);
+            let picked = self.confirm.choose(&question, &options);
+            let chosen = picked.and_then(|i| ambiguity.candidates.get(i).cloned());
+            self.record(json!({
+                "event": "choice", "step": ambiguity.step.as_str(), "what": ambiguity.what,
+                "candidates": ambiguity.candidates.iter().map(|p| quoted_path(p)).collect::<Vec<_>>(),
+                "chosen": chosen.as_deref().map(quoted_path),
+            }))?;
+            match chosen {
+                Some(location) => choices.pick(ambiguity.step, ambiguity.slot, location),
+                None => return Ok(Err(Outcome::Declined(reviewed))),
+            }
+        }
+    }
+
+    /// Friendly names for everything the report mentions, results included.
+    fn labels_for(&self, reviewed: &Review, steps: &[ExecutedStep]) -> Labels {
+        let mut paths: Vec<&Path> = reviewed
+            .steps
+            .iter()
+            .flat_map(|s| &s.items)
+            .flat_map(|i| i.action.accesses().into_iter().map(|(_, p)| p))
+            .collect();
+        for item in steps.iter().flat_map(|s| &s.items) {
+            if let ItemResult::Done(output) = &item.result {
+                paths.extend(output.paths().map(PathBuf::as_path));
+            }
+        }
+        Labels::build(self.host, paths)
     }
 
     /// Ask the model until a document passes the schema and semantic rules, or give up.
@@ -177,7 +242,7 @@ impl Shell<'_> {
         let mut executed = Vec::new();
         let mut succeeded: HashSet<&StepId> = HashSet::new();
         for step in &reviewed.steps {
-            let (record, outcome) = self.run_step(step, &succeeded);
+            let (record, outcome) = self.run_step(step, &succeeded, &reviewed.labels);
             executed.push(record);
             match outcome {
                 Ok(true) => {
@@ -195,6 +260,7 @@ impl Shell<'_> {
         &mut self,
         step: &ReviewedStep,
         succeeded: &HashSet<&StepId>,
+        labels: &Labels,
     ) -> (ExecutedStep, Result<bool, String>) {
         let mut record = ExecutedStep {
             id: step.id.clone(),
@@ -205,7 +271,7 @@ impl Shell<'_> {
             &step.blocked,
             step.depends_on.iter().find(|d| !succeeded.contains(d)),
         ) {
-            (Some(why), _) => Some(why.to_string()),
+            (Some(why), _) => Some(why.friendly(labels)),
             (None, Some(dependency)) => Some(format!("step {dependency} did not complete")),
             (None, None) => None,
         };
@@ -215,7 +281,7 @@ impl Shell<'_> {
         }
         let mut complete = true;
         for item in &step.items {
-            match self.run_item(&step.id, item, &mut record) {
+            match self.run_item(&step.id, item, labels, &mut record) {
                 Ok(done) => complete &= done,
                 Err(reason) => return (record, Err(reason)),
             }
@@ -228,12 +294,13 @@ impl Shell<'_> {
         &mut self,
         step: &StepId,
         item: &ReviewedAction,
+        labels: &Labels,
         record: &mut ExecutedStep,
     ) -> Result<bool, String> {
         let rendering = item.action.describe();
         let result = match &item.verdict {
-            Verdict::Refused(why) => ItemResult::NotRun(why.to_string()),
-            Verdict::NeedsRoot if !self.confirm_root(step, &rendering)? => {
+            Verdict::Refused(why) => ItemResult::NotRun(why.friendly(labels)),
+            Verdict::NeedsRoot if !self.confirm_root(step, &item.action, labels)? => {
                 ItemResult::NotRun("root confirmation was not given".to_owned())
             }
             Verdict::Allowed | Verdict::NeedsRoot => {
@@ -269,9 +336,16 @@ impl Shell<'_> {
         Ok(done)
     }
 
-    fn confirm_root(&mut self, step: &StepId, rendering: &str) -> Result<bool, String> {
+    fn confirm_root(
+        &mut self,
+        step: &StepId,
+        action: &Action,
+        labels: &Labels,
+    ) -> Result<bool, String> {
         let who = self.authority.user.clone();
-        let confirmed = self.confirm.root_action(rendering, &who);
+        let rendering = action.describe();
+        let panel = screen::root_panel(&who.name, step, action, labels);
+        let confirmed = self.confirm.root_action(&panel, &who);
         self.record(json!({"event": "root_confirmation", "step": step.as_str(), "action": rendering, "confirmed_by": who.name, "confirmed": confirmed}))?;
         Ok(confirmed)
     }
@@ -285,8 +359,24 @@ struct LoggedReads<'a, 'b, 'c> {
 }
 
 impl Host for LoggedReads<'_, '_, '_> {
-    fn resolve(&self, path: &Path) -> PathBuf {
-        self.inner.resolve(path)
+    fn place_roots(&self, place: Place) -> Vec<PathBuf> {
+        self.inner.place_roots(place)
+    }
+
+    fn same(&self, a: &Path, b: &Path) -> bool {
+        self.inner.same(a, b)
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.inner.exists(path)
+    }
+
+    fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String> {
+        self.log
+            .borrow_mut()
+            .record(json!({"event": "search", "needle": needle, "in": roots.iter().map(|p| quoted_path(p)).collect::<Vec<_>>()}))
+            .map_err(|e| format!("the decision log cannot be written: {e}"))?;
+        self.inner.search(roots, needle)
     }
 
     fn allows(&self, access: Access, path: &Path) -> bool {
@@ -342,24 +432,31 @@ impl Outcome {
                 format!("The model asks: {}\nNothing ran.", quoted(question))
             }
             Self::NoPlan(why) => format!(
-                "Could not make a plan: {why}\nNothing ran. Use the deterministic shell instead."
+                "Could not make a plan: {}\nNothing ran. Use the deterministic shell instead.",
+                // The reason quotes the model's text: on one line, so it cannot forge a report line.
+                printable(why, false)
             ),
-            Self::AllRefused(review) => {
-                format!("{}No step can run. Nothing ran.", review.render())
-            }
+            Self::AllRefused(review) => format!(
+                "{}\n  No step can run. Nothing ran.",
+                screen::plan_screen(review, View::Friendly)
+            ),
             Self::Declined(_) => "Not confirmed. Nothing ran.".to_owned(),
-            Self::Executed { steps, .. } => render_steps(steps),
-            Self::LogFailed { reason, steps } => {
+            Self::Executed { steps, labels, .. } => render_steps(steps, labels),
+            Self::LogFailed {
+                reason,
+                steps,
+                labels,
+            } => {
                 format!(
                     "{}The decision log cannot be written ({reason}); stopped before the next action.",
-                    render_steps(steps)
+                    render_steps(steps, labels)
                 )
             }
         }
     }
 }
 
-fn render_steps(steps: &[ExecutedStep]) -> String {
+fn render_steps(steps: &[ExecutedStep], labels: &Labels) -> String {
     let mut out = String::new();
     for step in steps {
         if let Some(why) = &step.not_run {
@@ -374,14 +471,21 @@ fn render_steps(steps: &[ExecutedStep]) -> String {
             out.push_str(&format!(
                 "{} {} -> {label}\n",
                 step.id,
-                item.action.describe()
+                screen::say(&item.action, labels)
             ));
             if let ItemResult::Done(output) = &item.result {
                 for note in &output.notes {
                     out.push_str(&format!("{} NOTE: {note}\n", step.id));
                 }
+                // Indented, so output cannot pass for a line of the report.
+                for found in &output.found {
+                    let size = found
+                        .size
+                        .map(|s| format!("  {s} bytes"))
+                        .unwrap_or_default();
+                    out.push_str(&format!("    {}{size}\n", labels.of(&found.path)));
+                }
             }
-            // Indented, so output cannot pass for a line of the report.
             for line in text.lines() {
                 out.push_str(&format!("    {line}\n"));
             }

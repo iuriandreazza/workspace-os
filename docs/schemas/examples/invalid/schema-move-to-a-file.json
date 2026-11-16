@@ -1,0 +1,2 @@
+{"kind":"plan","version":2,"summary":"Move into a file, not a folder","steps":[
+ {"id":"s1","action":"fs.move","args":{"from":{"name":"a","in":"home","kind":"file"},"to":{"name":"b","in":"home","kind":"file"}},"depends_on":[],"elevate":false}]}

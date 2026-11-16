@@ -1,4 +1,4 @@
-"""Check the action plan schema against its examples (ADR 0011).
+"""Check the action plan schema against its examples (ADR 0011, ADR 0014).
 
 Run: uv run --with jsonschema python docs/schemas/validate.py
 
@@ -34,12 +34,16 @@ def semantic_errors(doc):
             elif dep not in by_id:
                 errors.append(f"{s['id']} depends on unknown step {dep}")
         for value in s["args"].values():
-            if isinstance(value, dict):
+            if isinstance(value, dict) and "from_step" in value:
                 source = value["from_step"]
                 if source not in s["depends_on"]:
                     errors.append(f"{s['id']} uses {source} without depending on it")
                 elif source in by_id and by_id[source]["action"] not in PATH_PRODUCERS:
                     errors.append(f"{source} does not produce paths")
+            if isinstance(value, dict):
+                name = value.get("name", value.get("new_name"))
+                if name is not None and (name in (".", "..") or "/" in name or "\0" in name or len(name.encode()) > 255):
+                    errors.append(f"{s['id']}: {name!r} is not a single file name")
         if s["action"] == "user.manage":
             has_group = s["args"]["group"] is not None
             if has_group != (s["args"]["operation"] in GROUP_OPERATIONS):

@@ -1,2 +1,2 @@
-{"kind":"plan","version":1,"summary":"List a folder","steps":[
- {"id":"s1","action":"fs.list","args":{"path":"."},"elevate":false}]}
+{"kind":"plan","version":2,"summary":"List a folder","steps":[
+ {"id":"s1","action":"fs.list","args":{"target":{"place":"home"}},"elevate":false}]}

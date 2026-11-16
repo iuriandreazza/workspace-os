@@ -1,0 +1,2 @@
+{"kind":"plan","version":2,"summary":"List a place that is not one","steps":[
+ {"id":"s1","action":"fs.list","args":{"target":{"place":"/etc"}},"depends_on":[],"elevate":false}]}

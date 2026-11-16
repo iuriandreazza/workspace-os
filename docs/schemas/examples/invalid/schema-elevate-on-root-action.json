@@ -1,2 +1,2 @@
-{"kind":"plan","version":1,"summary":"Remove a user","steps":[
+{"kind":"plan","version":2,"summary":"Remove a user","steps":[
  {"id":"s1","action":"user.manage","args":{"operation":"remove","user":"ana","group":null},"depends_on":[],"elevate":true}]}
