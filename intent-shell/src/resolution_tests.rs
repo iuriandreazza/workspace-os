@@ -905,3 +905,21 @@ fn creating_a_file_over_an_existing_one_is_refused_but_overwriting_is_not() {
         Verdict::Allowed
     );
 }
+
+#[test]
+fn a_step_cannot_act_on_what_an_earlier_step_moved_away() {
+    let host = files();
+    let args = r#"{"from":{"name":"a","in":"downloads","kind":"file"},"to":{"new_name":"z","in":"downloads"}}"#;
+    let result = run(
+        &[&plan(&[
+            step("s1", "fs.move", args, "false"),
+            step("s2", "fs.delete", &named("a"), "false"),
+        ])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[1].items[0].verdict,
+        Verdict::Refused(Refusal::ConflictsWithStep(..))
+    ));
+}
