@@ -141,7 +141,8 @@ unless it says so: `--after s1` (repeatable, at most 15) adds a dependency, and
 `--from-step s1` adds the dependency on `s1` itself, which the format requires.
 Steps are independent otherwise (ADR 0011). The document's `summary`, which the
 format requires, is the list of the typed action names, never user text, so
-it cannot exceed its bound.
+it cannot exceed its bound; a list longer than the bound (sixteen long names) is
+cut with `...`.
 
 ### 4. What the person sees and the log
 

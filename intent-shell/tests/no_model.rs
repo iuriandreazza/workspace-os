@@ -103,3 +103,12 @@ fn a_model_and_no_model_cannot_be_asked_for_together() {
         .unwrap();
     assert!(!status.status.success());
 }
+
+#[test]
+fn help_prints_one_command_per_line_and_runs_nothing() {
+    let (out, log) = run("help\n", &[]);
+    assert!(out.contains("\n  fs list "), "{out}");
+    assert!(out.contains("\n  user manage "), "{out}");
+    assert!(out.lines().count() > 12, "{out}");
+    assert!(!log.contains("execute"), "{log}");
+}

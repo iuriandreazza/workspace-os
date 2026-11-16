@@ -1212,3 +1212,21 @@ fn a_number_is_digits_and_a_dotted_name_gets_a_hint() {
     plan_of("fs find_largest --in home --count 007");
     assert!(refused("fs.list --in downloads").contains("write `fs list`"));
 }
+
+#[test]
+fn a_line_the_format_refuses_is_logged_with_its_document_and_the_reason() {
+    let result = typed(
+        "fs find_largest --in home --count 0",
+        &files(),
+        false,
+        Answers::yes(),
+        MemoryLog::default(),
+    );
+    let event = &result.log.events[0];
+    assert_eq!(event["accepted"], false);
+    assert!(event["error"].as_str().unwrap().contains("1 to 100"));
+    let json = event["plan"]
+        .as_str()
+        .expect("the document is in the record");
+    assert!(json.contains("\"count\":0"), "{json}");
+}

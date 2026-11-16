@@ -125,7 +125,8 @@ Mutation check, by hand (each change applied, the suite run, the source restored
 ## Limits and follow-ups
 
 - The interface drops characters it would escape (`printable`), so a name with a
-  no-break space, a tab or a variation selector cannot be typed or pasted there,
+  no-break space or a variation selector cannot be typed or pasted there (a tab
+  or a newline can, as `"\t"` and `"\n"`),
   and a paste is edited without a warning. That is the S3c rule for every line,
   here as for a request to a model, and not new; the line adapter takes them. A
   `\u{..}` escape in the grammar, or a paste that refuses what it would alter, is a
