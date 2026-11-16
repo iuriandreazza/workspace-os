@@ -11,12 +11,16 @@ pub mod host;
 pub mod label;
 pub mod log;
 pub mod model;
+pub mod plain;
 pub mod plan;
 pub mod ports;
 pub mod reference;
 pub mod resolve;
 pub mod screen;
 pub mod session;
+
+#[cfg(feature = "tui")]
+pub mod tui;
 
 #[cfg(test)]
 mod testing;

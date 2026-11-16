@@ -32,7 +32,7 @@ git config core.hooksPath .githooks   # once per clone: enables the git hooks
 cargo build                           # build the kernel
 cargo run                             # boot it in QEMU (exit with Ctrl-A then X)
 ./scripts/check.sh                    # format, lint, unit tests and boot smoke test
-./scripts/intent-shell.sh             # the intent shell prototype, on the host (needs llama-server)
+./scripts/intent-shell.sh             # the intent shell, on the host (needs llama-server); --plain for the line adapter
 ```
 
 ## Checks

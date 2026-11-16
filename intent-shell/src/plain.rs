@@ -1,0 +1,171 @@
+//! The line-by-line terminal adapter: no screen control, no dependency, no
+//! terminal required. It is what scripts, transcripts, the deterministic shell
+//! and the recovery mode use (ADR 0015); the conversational interface in `tui`
+//! is the same shell with a different adapter.
+
+use std::io::{self, IsTerminal, Write};
+
+use crate::broker::Authority;
+use crate::host::UnixHost;
+use crate::log::JsonlLog;
+use crate::model::LlamaPlanner;
+use crate::ports::{Confirm, User};
+use crate::screen::{self, Header};
+use crate::session::Shell;
+
+/// What both adapters need to run one session.
+pub struct Setup {
+    pub authority: Authority,
+    pub host: UnixHost,
+    pub planner: LlamaPlanner,
+    pub log: JsonlLog,
+    /// The decision log's file name, for the header (its directory is in the details).
+    pub log_name: String,
+}
+
+impl Setup {
+    pub fn header(&self) -> String {
+        screen::header(&Header {
+            user: &self.authority.user.name,
+            administrator: self.authority.user.administrator,
+            model: &self.planner.address,
+            log: &self.log_name,
+        })
+    }
+}
+
+struct TerminalConfirm;
+
+fn read_line() -> Option<String> {
+    let _ = io::stdout().flush();
+    let mut line = String::new();
+    match io::stdin().read_line(&mut line) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => {
+            // A terminal shows what is typed; a script's answers would not
+            // appear anywhere, and a transcript has to show them.
+            if !io::stdin().is_terminal() {
+                print!("{line}");
+            }
+            Some(line)
+        }
+    }
+}
+
+/// Only an explicit yes counts: an empty line, end of input or anything else is no.
+fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim(), "y" | "Y" | "yes")
+}
+
+fn is_details(answer: &str) -> bool {
+    matches!(answer.trim(), "d" | "D" | "details")
+}
+
+/// The one-based number the person typed, as an index into `count` options.
+fn parse_choice(answer: &str, count: usize) -> Option<usize> {
+    let number: usize = answer.trim().parse().ok()?;
+    (1..=count).contains(&number).then(|| number - 1)
+}
+
+impl Confirm for TerminalConfirm {
+    fn plan(&mut self, screen: &str, details: &str) -> bool {
+        println!("{screen}");
+        loop {
+            print!("  [y] run the steps marked ok   [d] details   [n] cancel > ");
+            let Some(answer) = read_line() else {
+                return false;
+            };
+            if is_details(&answer) {
+                println!("{details}");
+            } else {
+                return is_yes(&answer);
+            }
+        }
+    }
+
+    fn root_action(&mut self, panel: &str, _who: &User) -> bool {
+        println!("{panel}");
+        print!("  [y] confirm this exact action   [n] refuse > ");
+        read_line().is_some_and(|answer| is_yes(&answer))
+    }
+
+    fn choose(&mut self, question: &str, options: &[String]) -> Option<usize> {
+        println!("\n  {question}");
+        for (index, option) in options.iter().enumerate() {
+            println!("   {}. {option}", index + 1);
+        }
+        loop {
+            print!("  number, or Enter to cancel > ");
+            let answer = read_line()?;
+            if answer.trim().is_empty() {
+                return None;
+            }
+            match parse_choice(&answer, options.len()) {
+                Some(index) => return Some(index),
+                None => println!("  not one of the options"),
+            }
+        }
+    }
+}
+
+pub fn run(mut setup: Setup) -> Result<(), String> {
+    let mut confirm = TerminalConfirm;
+    println!("{}", setup.header());
+    loop {
+        print!("intent> ");
+        let _ = io::stdout().flush();
+        let mut request = String::new();
+        if io::stdin()
+            .read_line(&mut request)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
+            return Ok(());
+        }
+        let request = request.trim();
+        if request.is_empty() {
+            continue;
+        }
+        let mut shell = Shell {
+            authority: &setup.authority,
+            host: &setup.host,
+            planner: &setup.planner,
+            confirm: &mut confirm,
+            log: &mut setup.log,
+        };
+        println!("{}", shell.handle(request).render());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_details, is_yes, parse_choice};
+
+    #[test]
+    fn details_are_asked_for_with_d() {
+        for yes in ["d", "D\n", "details"] {
+            assert!(is_details(yes), "{yes:?}");
+        }
+        for no in ["", "y", "dd", "n"] {
+            assert!(!is_details(no), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn a_choice_is_a_number_inside_the_list() {
+        assert_eq!(parse_choice("2\n", 3), Some(1));
+        for bad in ["", "0", "4", "x", "-1", " "] {
+            assert_eq!(parse_choice(bad, 3), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_an_explicit_yes_confirms() {
+        for yes in ["y\n", "Y", "yes\n"] {
+            assert!(is_yes(yes), "{yes:?}");
+        }
+        for no in ["", "\n", "n\n", "yep", "ye", " \n"] {
+            assert!(!is_yes(no), "{no:?}");
+        }
+    }
+}
