@@ -208,7 +208,8 @@ Source: [Jev (AI model)](https://en.wikipedia.org/wiki/Jev_(AI_model)).
 ## Open items outside the sessions
 
 - Legal review of the licence boundary for converted drivers and model
-  weights (ADR 0005).
+  weights (ADR 0005), and of the reading of MPL-2.0 that lets `ucs2` be linked
+  into the bootloader (ADR 0017).
 - Disk encryption is optional at installation (ADR 0007). It has no roadmap
   item yet: it needs a block device driver and the installer first.
 - Physical hardware: not a target yet; the system runs in QEMU and
