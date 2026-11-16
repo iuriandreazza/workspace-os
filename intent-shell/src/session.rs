@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 
 use crate::action::{Access, Action, printable, quoted, quoted_path};
 use crate::broker::{Authority, Review, ReviewedAction, ReviewedStep, Verdict, review};
+use crate::command::{self, Parsed};
 use crate::label::Labels;
-use crate::plan::{Document, StepId, parse_checked};
+use crate::plan::{Document, Origin, Plan, StepId, parse_checked};
 use crate::ports::{Confirm, DecisionLog, Host, Output, Planner, Retry, Search};
 use crate::reference::Place;
 use crate::resolve::Choices;
@@ -47,6 +48,10 @@ pub enum Outcome {
     Clarify(String),
     /// No valid document after the attempts, or the model was unreachable. Nothing ran.
     NoPlan(String),
+    /// A typed command the shell could not turn into a plan. Nothing ran.
+    BadCommand(String),
+    /// The text of `help` in the deterministic shell. Nothing ran.
+    Help(String),
     /// Nothing in the plan passed the broker. Nothing ran.
     AllRefused(Review),
     /// The person said no. Nothing ran.
@@ -70,6 +75,15 @@ pub enum Outcome {
     },
 }
 
+/// How the lines of a session are read (ADR 0022).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entry {
+    /// Natural language, for the model.
+    Request,
+    /// The deterministic shell: no model, commands only.
+    Command,
+}
+
 pub struct Shell<'a> {
     pub authority: &'a Authority,
     pub host: &'a dyn Host,
@@ -80,13 +94,22 @@ pub struct Shell<'a> {
 
 impl Shell<'_> {
     pub fn handle(&mut self, request: &str) -> Outcome {
-        self.run(request)
-            .unwrap_or_else(|reason| Outcome::LogFailed {
-                reason,
-                plan: None,
-                steps: Vec::new(),
-                labels: Labels::default(),
-            })
+        self.run(request).unwrap_or_else(log_failed)
+    }
+
+    /// Read the line as the session's entry says: a request to the model or a command.
+    pub fn handle_as(&mut self, entry: Entry, line: &str) -> Outcome {
+        match entry {
+            Entry::Request => self.handle(line),
+            Entry::Command => self.handle_command(line),
+        }
+    }
+
+    /// The deterministic shell: the line is a command, not a request, and the
+    /// planner is never asked (ADR 0022). From the plan document on it is the
+    /// same pipeline as `handle`.
+    pub fn handle_command(&mut self, line: &str) -> Outcome {
+        self.run_command(line).unwrap_or_else(log_failed)
     }
 
     fn record(&mut self, event: Value) -> Result<(), String> {
@@ -101,17 +124,57 @@ impl Shell<'_> {
             Ok(document) => document,
             Err(failure) => return Ok(failure),
         };
-        let plan = match document {
+        match document {
             Document::Clarify(question) => {
                 self.record(json!({"event": "clarify", "question": question}))?;
-                return Ok(Outcome::Clarify(question));
+                Ok(Outcome::Clarify(question))
             }
-            Document::Plan(plan) => plan,
+            Document::Plan(plan) => self.carry_out(&plan),
+        }
+    }
+
+    /// Turn the line into a plan document, record it, and carry it out. A line
+    /// that is not a command is refused here and runs nothing.
+    fn run_command(&mut self, line: &str) -> Result<Outcome, String> {
+        let user = self.authority.user.name.clone();
+        let json = match command::parse(line) {
+            Ok(Parsed::Help(text)) => {
+                self.record(json!({"event": "command", "user": user, "line": line, "help": true}))?;
+                return Ok(Outcome::Help(text));
+            }
+            Ok(Parsed::Plan(json)) => json,
+            Err(error) => {
+                self.record(json!({"event": "command", "user": user, "line": line, "accepted": false, "error": error.to_string()}))?;
+                return Ok(Outcome::BadCommand(error.to_string()));
+            }
         };
+        // The same structure and rules as the model's output, nothing more lenient.
+        let checked: Result<Plan, String> = parse_checked(&json)
+            .map_err(|e| e.to_string())
+            .and_then(|document| match document {
+                Document::Plan(plan) => Ok(plan),
+                Document::Clarify(_) => Err("a command makes a plan".to_owned()),
+            });
+        match checked {
+            Ok(mut plan) => {
+                self.record(json!({"event": "command", "user": user, "line": line, "accepted": true, "plan": json}))?;
+                plan.origin = Origin::Typed;
+                self.carry_out(&plan)
+            }
+            Err(error) => {
+                self.record(json!({"event": "command", "user": user, "line": line, "accepted": false, "plan": json, "error": error}))?;
+                Ok(Outcome::BadCommand(error))
+            }
+        }
+    }
+
+    /// An accepted plan, from either entry: resolution, the broker, the
+    /// question when ADR 0016 asks, execution, and the log of all of it.
+    fn carry_out(&mut self, plan: &Plan) -> Result<Outcome, String> {
         // Before the broker may read anything to expand a reference, the plan
         // is on record, and each read is logged just before it runs.
         self.record(json!({"event": "plan_accepted", "summary": plan.summary, "steps": plan.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>()}))?;
-        let reviewed = match self.review_with_choices(&plan)? {
+        let reviewed = match self.review_with_choices(plan)? {
             Ok(reviewed) => reviewed,
             Err(declined) => return Ok(declined),
         };
@@ -163,10 +226,7 @@ impl Shell<'_> {
     /// several things until none is left. The pick is the person's, is logged,
     /// never goes back to the model, and its resource is judged by the broker
     /// like any other. The inner `Err` is the outcome when the person cancels.
-    fn review_with_choices(
-        &mut self,
-        plan: &crate::plan::Plan,
-    ) -> Result<Result<Review, Outcome>, String> {
+    fn review_with_choices(&mut self, plan: &Plan) -> Result<Result<Review, Outcome>, String> {
         let mut choices = Choices::default();
         loop {
             let reviewed = {
@@ -367,6 +427,15 @@ impl Shell<'_> {
     }
 }
 
+fn log_failed(reason: String) -> Outcome {
+    Outcome::LogFailed {
+        reason,
+        plan: None,
+        steps: Vec::new(),
+        labels: Labels::default(),
+    }
+}
+
 /// The host as the broker sees it while expanding references: every read it
 /// runs is logged first, and refused when the log cannot be written.
 struct LoggedReads<'a, 'b, 'c> {
@@ -463,10 +532,15 @@ impl Outcome {
                 format!("The model asks: {}\nNothing ran.", quoted(question))
             }
             Self::NoPlan(why) => format!(
-                "Could not make a plan: {}\nNothing ran. Use the deterministic shell instead.",
+                "Could not make a plan: {}\nNothing ran. Restart with --no-model to type commands instead.",
                 // The reason quotes the model's text: on one line, so it cannot forge a report line.
                 printable(why, false)
             ),
+            Self::BadCommand(why) => format!(
+                "Not a command: {}\nNothing ran. Type help for the commands.",
+                printable(why, false)
+            ),
+            Self::Help(text) => text.clone(),
             Self::AllRefused(review) => format!(
                 "{}\n  No step can run. Nothing ran.",
                 screen::plan_screen(review, View::Friendly)

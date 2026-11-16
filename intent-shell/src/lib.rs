@@ -7,6 +7,7 @@
 
 pub mod action;
 pub mod broker;
+pub mod command;
 pub mod host;
 pub mod label;
 pub mod log;
@@ -25,6 +26,9 @@ pub mod tui;
 
 #[cfg(test)]
 mod testing;
+
+#[cfg(test)]
+mod command_tests;
 
 #[cfg(test)]
 mod pipeline_tests;

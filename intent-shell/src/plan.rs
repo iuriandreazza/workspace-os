@@ -74,10 +74,19 @@ pub struct Step {
     pub spec: Spec,
 }
 
+/// Who wrote the plan. Only the screen reads it, to say who proposed it; the
+/// broker judges a typed plan exactly as a model's (ADR 0022).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Model,
+    Typed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub summary: String,
     pub steps: Vec<Step>,
+    pub origin: Origin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +179,7 @@ pub fn parse(text: &str) -> Result<Document, PlanError> {
             Ok(Document::Plan(Plan {
                 summary: raw.summary,
                 steps,
+                origin: Origin::Model,
             }))
         }
         Some("clarify") => {

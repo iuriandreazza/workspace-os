@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::action::{Access, Action, Capability, RootRule, WriteMode, quoted_path};
 use crate::label::Labels;
-use crate::plan::{Plan, Step, StepId};
+use crate::plan::{Origin, Plan, Step, StepId};
 use crate::ports::{Host, Output, User};
 use crate::reference::{Destination, Slot, Spec, Target};
 use crate::resolve::{Ambiguity, Choices, ResolveError, destination, is_place_root, locate};
@@ -208,6 +208,7 @@ impl ReviewedStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
     pub summary: String,
+    pub origin: Origin,
     /// In execution order.
     pub steps: Vec<ReviewedStep>,
     /// Friendly names for every location the review mentions.
@@ -340,6 +341,7 @@ pub fn review(plan: &Plan, authority: &Authority, host: &dyn Host, choices: &Cho
     }
     let mut review = Review {
         summary: plan.summary.clone(),
+        origin: plan.origin,
         steps,
         labels: Labels::default(),
     };

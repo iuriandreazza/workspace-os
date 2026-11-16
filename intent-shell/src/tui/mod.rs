@@ -25,8 +25,9 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 
 use crate::broker::Authority;
+use crate::model::NoModel;
 use crate::ports::{Confirm, DecisionLog, Host, Planner, Retry, User};
-use crate::session::Shell;
+use crate::session::{Entry, Shell};
 use crate::setup::Setup;
 use state::{Effect, Event, Mode, Reply, State};
 
@@ -98,14 +99,19 @@ impl Planner for ProgressPlanner<'_> {
 fn serve(
     authority: &Authority,
     host: &dyn Host,
-    planner: &dyn Planner,
+    model: Option<&dyn Planner>,
     log: &mut dyn DecisionLog,
     requests: Receiver<String>,
     events: Sender<Event>,
     replies: Receiver<Reply>,
 ) {
+    let entry = if model.is_some() {
+        Entry::Request
+    } else {
+        Entry::Command
+    };
     let planner = ProgressPlanner {
-        inner: planner,
+        inner: model.unwrap_or(&NoModel),
         events: events.clone(),
     };
     let mut confirm = ChannelConfirm {
@@ -120,7 +126,7 @@ fn serve(
             confirm: &mut confirm,
             log,
         }
-        .handle(&request)
+        .handle_as(entry, &request)
         .render();
         if events.send(Event::Outcome(outcome)).is_err() {
             return;
@@ -142,7 +148,13 @@ fn worker(
         ..
     } = setup;
     serve(
-        &authority, &host, &planner, &mut log, requests, events, replies,
+        &authority,
+        &host,
+        planner.as_ref().map(|p| p as &dyn Planner),
+        &mut log,
+        requests,
+        events,
+        replies,
     );
 }
 
@@ -272,6 +284,9 @@ fn write_transcript(path: &Path, text: &str) -> std::io::Result<()> {
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
     let mut state = State::new(setup.header());
+    if setup.entry() == Entry::Command {
+        state = state.without_model();
+    }
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
@@ -429,7 +444,7 @@ mod tests {
         serve(
             &Authority::full(user(false)),
             &files(),
-            &ScriptedPlanner::new(&[DELETE_LARGEST]),
+            Some(&ScriptedPlanner::new(&[DELETE_LARGEST])),
             &mut log,
             requests,
             events_tx,

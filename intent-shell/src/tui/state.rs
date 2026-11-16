@@ -113,6 +113,9 @@ pub struct State {
     pub quit_warned_ms: u64,
     /// When the current question was put to the person.
     pub asked_ms: u64,
+    /// What the shell is doing after a line is sent. With no model it never
+    /// waits for one, and leaving then waits for the step like any other.
+    submit_label: &'static str,
 }
 
 /// A key press meant as an answer: a fresh press (not a repeat or a release)
@@ -146,7 +149,14 @@ impl State {
             asked_ms: 0,
             forced_quit: false,
             quit_warned_ms: 0,
+            submit_label: "asking the model",
         }
+    }
+
+    /// The shell has no model: a line is a command and nothing waits for one.
+    pub fn without_model(mut self) -> Self {
+        self.submit_label = "working";
+        self
     }
 
     pub fn set_size(&mut self, width: u16, height: u16) {
@@ -290,7 +300,7 @@ impl State {
                 self.scroll = 0;
                 self.forced_quit = false;
                 self.blocks.push(Block::Request(request.clone()));
-                self.busy("asking the model");
+                self.busy(self.submit_label);
                 return Effect::Submit(request);
             }
             _ => {}

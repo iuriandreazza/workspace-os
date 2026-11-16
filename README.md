@@ -35,7 +35,7 @@ cargo build                           # build the kernel
 cargo run                             # boot it in QEMU (exit with Ctrl-A then X)
 ./scripts/check.sh                    # format, licences, lint, unit tests and boot smoke test
 ./scripts/build-disk-image.sh         # bootable UEFI disk image; see docs/booting-the-image.md
-./scripts/intent-shell.sh             # the intent shell, on the host (needs llama-server); --plain for the line adapter
+./scripts/intent-shell.sh             # the intent shell, on the host (needs llama-server); --plain for the line adapter; --no-model types commands with no model (S5)
 ```
 
 ## Checks

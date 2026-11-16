@@ -15,10 +15,11 @@ use intent_shell::plain;
 use intent_shell::ports::User;
 use intent_shell::setup::Setup;
 
-const USAGE: &str = "usage: intent-shell [--model HOST:PORT] [--log FILE] [--administrator] [--plain] [--transcript FILE]";
+const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE]";
 
 struct Options {
-    model: String,
+    /// `None` is the deterministic shell: no model, lines are commands (ADR 0022).
+    model: Option<String>,
     log: PathBuf,
     administrator: bool,
     plain: bool,
@@ -27,22 +28,35 @@ struct Options {
 
 fn parse_options(home: &str) -> Result<Options, String> {
     let mut options = Options {
-        model: "127.0.0.1:8089".to_owned(),
+        model: Some("127.0.0.1:8089".to_owned()),
         log: PathBuf::from(home).join(".local/state/workspace-os/intent-shell/decisions.jsonl"),
         administrator: false,
         plain: false,
         transcript: None,
     };
     let mut args = std::env::args().skip(1);
+    let (mut chose_model, mut chose_none) = (false, false);
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--model" => options.model = args.next().ok_or(USAGE)?,
+            "--model" => {
+                options.model = Some(args.next().ok_or(USAGE)?);
+                chose_model = true;
+            }
+            "--no-model" => {
+                options.model = None;
+                chose_none = true;
+            }
             "--log" => options.log = PathBuf::from(args.next().ok_or(USAGE)?),
             "--administrator" => options.administrator = true,
             "--plain" => options.plain = true,
             "--transcript" => options.transcript = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             _ => return Err(USAGE.to_owned()),
         }
+    }
+    if chose_model && chose_none {
+        return Err(format!(
+            "--model and --no-model exclude each other\n{USAGE}"
+        ));
     }
     Ok(options)
 }
@@ -82,9 +96,7 @@ fn run() -> Result<(), String> {
             administrator: options.administrator,
         }),
         host: UnixHost::from_environment(),
-        planner: LlamaPlanner {
-            address: options.model.clone(),
-        },
+        planner: options.model.map(|address| LlamaPlanner { address }),
         log,
         log_name: options
             .log

@@ -7,8 +7,8 @@ use std::io::{self, IsTerminal, Write};
 
 use crate::action::printable;
 use crate::ports::{Confirm, User};
-use crate::session::Shell;
-use crate::setup::Setup;
+use crate::session::{Entry, Shell};
+use crate::setup::{Setup, planner_of};
 
 struct TerminalConfirm;
 
@@ -92,7 +92,14 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
     let mut confirm = TerminalConfirm;
     println!("{}", setup.header());
     loop {
-        print!("intent> ");
+        print!(
+            "{}",
+            if setup.entry() == Entry::Command {
+                "command> "
+            } else {
+                "intent> "
+            }
+        );
         let _ = io::stdout().flush();
         let mut request = String::new();
         match io::stdin().read_line(&mut request) {
@@ -109,14 +116,15 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
         if request.is_empty() {
             continue;
         }
+        let entry = setup.entry();
         let mut shell = Shell {
             authority: &setup.authority,
             host: &setup.host,
-            planner: &setup.planner,
+            planner: planner_of(setup.planner.as_ref()),
             confirm: &mut confirm,
             log: &mut setup.log,
         };
-        println!("{}", shell.handle(request).render());
+        println!("{}", shell.handle_as(entry, request).render());
     }
 }
 
