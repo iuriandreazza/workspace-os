@@ -7,12 +7,14 @@ core.
 
 ## Status
 
-First milestone: the kernel boots on aarch64 under QEMU and prints a banner on
-the serial console. Secondary cores are parked and any exception ends in a
-kernel panic. Nothing else exists yet.
+The kernel boots on aarch64 under QEMU, enters EL1 whether it is started at
+EL1, EL2 or EL3, and prints a banner on the serial console. Secondary cores are
+parked. A synchronous exception taken in the kernel saves the processor
+context, is decoded from `ESR_EL1` and, for a breakpoint, returns to the
+interrupted code. Any other exception ends in a kernel panic that describes it.
 
-Next milestone: real exception handling and the MMU, the base for isolated
-processes. The full plan is in [docs/roadmap.md](docs/roadmap.md).
+Next milestone: device tree, memory allocation and the MMU, the base for
+isolated processes. The full plan is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Requirements
 
