@@ -4,13 +4,13 @@ import sys
 import unittest
 from pathlib import Path
 
+sys.dont_write_bytecode = True  # set before the import, so the gate leaves no .pyc beside the script
+
 spec = importlib.util.spec_from_file_location(
     "check_licences", Path(__file__).with_name("check-licences.py")
 )
 lic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lic)
-
-sys.dont_write_bytecode = True  # the gate must not leave untracked files
 
 MPL = {("ucs2", "0.3.3")}
 
@@ -90,6 +90,29 @@ class TreeAgainstMetadata(unittest.TestCase):
         packages = [{"name": "a", "version": "1.0.0"}]
         self.assertEqual(lic.unknown_to_metadata(packages, {("a", "1.0.0")}), [])
         self.assertEqual(lic.unknown_to_metadata(packages, {("b", "2.0.0")}), [("b", "2.0.0")])
+
+
+class Tree(unittest.TestCase):
+    def test_parses_crates_and_ignores_feature_and_duplicate_markers(self):
+        text = (
+            "kernel v0.1.0 (/work/kernel)\n"
+            "serde_derive v1.0.229 (proc-macro)\n"
+            "wasi v0.11.1+wasi-snapshot-preview1\n"
+            "foo v0.1.0 (https://github.com/x/foo?rev=1#abc)\n"
+            "serde v1.0.229 (*)\n"
+            "serde feature \"derive\"\n"
+            "\n"
+        )
+        self.assertEqual(
+            lic.parse_tree(text),
+            {
+                ("kernel", "0.1.0"), ("serde_derive", "1.0.229"),
+                ("wasi", "0.11.1+wasi-snapshot-preview1"), ("foo", "0.1.0"), ("serde", "1.0.229"),
+            },
+        )
+
+    def test_unexpected_output_gives_an_empty_set(self):
+        self.assertEqual(lic.parse_tree("garbage\n"), set())
 
 
 class Violations(unittest.TestCase):

@@ -194,12 +194,16 @@ def run(*command):
     return result.stdout
 
 
+def parse_tree(tree):
+    """(name, version) pairs from `cargo tree --prefix none -f {p}` output."""
+    return {m.groups() for m in re.finditer(r"^(\S+) v(\S+)", tree, re.MULTILINE)}
+
+
 def built_packages():
-    tree = run(
+    return parse_tree(run(
         "cargo", "tree", "--locked", "--workspace", "--all-features", "--target", "all",
         "-e", "all", "--prefix", "none", "-f", "{p}",
-    )
-    return {m.groups() for m in re.finditer(r"^(\S+) v(\S+)", tree, re.MULTILINE)}
+    ))
 
 
 def main():
