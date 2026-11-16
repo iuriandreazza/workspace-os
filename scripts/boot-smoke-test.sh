@@ -117,6 +117,22 @@ wait_for_banner() {
     fail "boot banner not found within ${BOOT_TIMEOUT_SECONDS}s"
 }
 
+# wait_for_line TEXT: the self-tests after the banner take longer on a slow
+# host or a big memory, so wait for the last frame line instead of a fixed time.
+wait_for_line() {
+    for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
+        if grep -qF "$1" "$serial_log"; then
+            return 0
+        fi
+        if grep -qF "$PANIC_MARKER" "$serial_log"; then
+            fail "kernel panicked before '$1'"
+        fi
+        qemu_is_running || fail "QEMU exited before '$1'"
+        sleep 0.1
+    done
+    fail "'$1' not found within ${BOOT_TIMEOUT_SECONDS}s"
+}
+
 # expect_once TEXT WHAT: the serial log holds TEXT exactly once.
 expect_once() {
     local count
@@ -213,6 +229,7 @@ check_boot() {
     start_qemu "$@"
 
     wait_for_banner
+    wait_for_line "$RESUME_MARKER"
 
     # A kernel that panics, resets or exits right after the banner is still broken.
     sleep "$SETTLE_SECONDS"
