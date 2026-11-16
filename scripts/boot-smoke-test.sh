@@ -160,6 +160,19 @@ check_frames() {
         || fail "$reserved frames reserved, expected between 1 and $MAX_RESERVED_FRAMES"
     [[ "$free" -gt 0 ]] || fail "no free frames"
 
+    # The device tree blob must be reserved too, and the reserved count must
+    # cover the kernel (image and stack) and the blob, whichever way it is built.
+    local blob blob_start blob_end kernel_frames blob_frames
+    blob="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
+    [[ "$(echo "$blob" | wc -l)" -eq 1 && -n "$blob" ]] || fail "device tree reservation not reported exactly once"
+    read -r blob_start blob_end <<< "$blob"
+    [[ "$blob_start" -ge "$RAM_BASE" && "$blob_end" -gt "$blob_start" && "$blob_end" -le $((RAM_BASE + mib * 1024 * 1024)) ]] \
+        || fail "device tree reservation $blob_start..$blob_end is not inside RAM"
+    kernel_frames=$(( (image_end_address + FRAME_SIZE - 1) / FRAME_SIZE - image_start_address / FRAME_SIZE ))
+    blob_frames=$(( (blob_end + FRAME_SIZE - 1) / FRAME_SIZE - blob_start / FRAME_SIZE ))
+    [[ "$reserved" -ge $((kernel_frames + blob_frames)) ]] \
+        || fail "$reserved frames reserved, the kernel and the device tree need $((kernel_frames + blob_frames))"
+
     expect_once "workspace-os kernel: frames: exhausted after $free allocations, next request refused" \
         "exhaustion report"
     expect_once "workspace-os kernel: frames: returned $free, $free free again" "return of every frame"
@@ -234,8 +247,10 @@ symbol_address() {
 }
 
 entry="$(symbol_address _start)"
+image_start_address=$(( $(symbol_address __image_start) ))
+image_end_address=$(( $(symbol_address __stack_top) ))
 hex() { printf '0x%x' "$((0x$1))"; }
-image_range="$(hex "${entry#0x}")..$(hex "$(symbol_address __stack_bottom | sed 's/^0x//')")"
+image_range="$(hex "$(symbol_address __image_start | sed 's/^0x//')")..$(hex "$(symbol_address __stack_bottom | sed 's/^0x//')")"
 stack_range="$(hex "$(symbol_address __stack_bottom | sed 's/^0x//')")..$(hex "$(symbol_address __stack_top | sed 's/^0x//')")"
 bss_start="$(symbol_address __bss_start)"
 bss_end="$(symbol_address __bss_end)"
