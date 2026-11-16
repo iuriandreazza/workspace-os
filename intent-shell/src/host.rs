@@ -53,20 +53,18 @@ impl Host for UnixHost {
         let Some(home) = self.home.as_ref().filter(|h| h.is_absolute()) else {
             return Vec::new();
         };
-        let folder = match place {
+        let folders: Vec<PathBuf> = match place {
             // On this host the person's files are the home directory.
-            Place::Home | Place::Everywhere => Some(home.clone()),
-            Place::Downloads => Some(home.join("Downloads")),
-            Place::Documents => Some(home.join("Documents")),
-            Place::Desktop => Some(home.join("Desktop")),
-            Place::Pictures => Some(home.join("Pictures")),
-            Place::Music => Some(home.join("Music")),
-            // macOS calls it Movies.
-            Place::Videos => [home.join("Videos"), home.join("Movies")]
-                .into_iter()
-                .find(|p| p.is_dir()),
+            Place::Home | Place::Everywhere => vec![home.clone()],
+            Place::Downloads => vec![home.join("Downloads")],
+            Place::Documents => vec![home.join("Documents")],
+            Place::Desktop => vec![home.join("Desktop")],
+            Place::Pictures => vec![home.join("Pictures")],
+            Place::Music => vec![home.join("Music")],
+            // macOS calls it Movies. Both count, so neither can be removed whole.
+            Place::Videos => vec![home.join("Videos"), home.join("Movies")],
         };
-        folder.into_iter().filter(|p| p.is_dir()).collect()
+        folders.into_iter().filter(|p| p.is_dir()).collect()
     }
 
     fn same(&self, a: &Path, b: &Path) -> bool {
@@ -172,14 +170,22 @@ fn stat(path: &Path) -> Result<Output, String> {
 }
 
 fn read(path: &Path, limit: u64) -> Result<Output, String> {
-    // Opening a named pipe or a device can block forever, so only regular files.
-    if !fs::metadata(path).map_err(|e| io_error(path, e))?.is_file() {
+    use std::os::unix::fs::OpenOptionsExt;
+    // Opening a named pipe or a device can block forever, so the open does not
+    // wait, and what was opened (not what the name was a moment ago) must be a
+    // regular file.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| io_error(path, e))?;
+    if !file.metadata().map_err(|e| io_error(path, e))?.is_file() {
         return Err(format!("{} is not a regular file", quoted_name(path)));
     }
     let mut bytes = Vec::new();
     // One byte more than the limit tells a file that fits from one that was cut.
-    fs::File::open(path)
-        .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| io_error(path, e))?;
     let mut notes = Vec::new();
     if bytes.len() as u64 > limit {
@@ -759,6 +765,11 @@ mod tests {
         assert_eq!(
             UnixHost::new(Some(home.clone())).place_roots(Place::Videos),
             vec![home.join("Movies")]
+        );
+        fs::create_dir(home.join("Videos")).unwrap();
+        assert_eq!(
+            UnixHost::new(Some(home.clone())).place_roots(Place::Videos),
+            vec![home.join("Videos"), home.join("Movies")]
         );
         fs::remove_dir_all(&home).unwrap();
     }

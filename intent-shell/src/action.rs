@@ -392,6 +392,23 @@ mod tests {
     }
 
     #[test]
+    fn every_invisible_character_of_the_list_is_escaped() {
+        let listed: Vec<char> = [
+            0xAD, 0x34F, 0x61C, 0x180E, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2028, 0x2029,
+            0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2060, 0x2061, 0x2064, 0x2066, 0x2067, 0x2068,
+            0x2069, 0x206F, 0xFEFF, 0xFFF9, 0xFFFB, 0xE0001, 0xE007F, 0x600, 0x605, 0x6DD, 0x70F,
+            0x115F, 0x1160, 0x2800, 0x3164, 0xFE00, 0xFE0F, 0xFFA0, 0xFFFC, 0x17B4, 0x17B5,
+            0x1D173, 0x1D17A, 0x13430, 0x1BCA0, 0x110BD,
+        ]
+        .into_iter()
+        .filter_map(char::from_u32)
+        .collect();
+        for c in listed {
+            assert!(quoted(&format!("a{c}b")).is_ascii(), "U+{:04X}", c as u32);
+        }
+    }
+
+    #[test]
     fn code_points_beyond_the_bmp_never_print_like_a_bmp_one_followed_by_a_digit() {
         let long = quoted("\u{f0000}");
         let short = quoted("\u{f000}0");
