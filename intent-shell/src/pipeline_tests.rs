@@ -694,3 +694,143 @@ fn an_incomplete_search_says_so_where_the_person_confirms_and_where_results_are_
             .contains("NOTE: 2 directories could not be read")
     );
 }
+
+fn move_plan(from: &str) -> String {
+    plan(&[step(
+        "s1",
+        "fs.move",
+        &format!(r#"{{"from":"{from}","to":"/work/dest"}}"#),
+        "false",
+    )])
+}
+
+#[test]
+fn a_move_needs_both_the_right_to_remove_the_source_and_to_write_the_destination() {
+    for forbidden in [(Access::Delete, "/work/a"), (Access::Write, "/work/dest")] {
+        let host = files().forbid(forbidden.0, forbidden.1);
+        let result = run(&[&move_plan("/work/a")], &host, false);
+        assert!(
+            matches!(result.outcome, Outcome::AllRefused(_)),
+            "{forbidden:?}"
+        );
+    }
+    let host = files();
+    assert!(matches!(
+        run(&[&move_plan("/work/a")], &host, false).outcome,
+        Outcome::Executed { .. }
+    ));
+}
+
+#[test]
+fn a_move_from_a_reference_needs_exactly_one_path() {
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.find_largest","args":{"path":"/work","count":2},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.move","args":{"from":{"from_step":"s1"},"to":"/work/dest"},"depends_on":["s1"],"elevate":false}]}"#;
+    let result = run(&[text], &files(), false);
+    assert!(matches!(
+        reviewed(&result.outcome).steps[1].blocked,
+        Some(Refusal::CannotExpand(_))
+    ));
+}
+
+#[test]
+fn a_step_whose_dependency_failed_at_run_time_does_not_run() {
+    // The read passes the broker, then fails when it runs.
+    let host = files().failing("/work/gone");
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.list","args":{"path":"/work/gone"},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.stat","args":{"path":"/work/a"},"depends_on":["s1"],"elevate":false},
+      {"id":"s3","action":"fs.stat","args":{"path":"/work/b"},"depends_on":[],"elevate":false}]}"#;
+    let result = run(&[text], &host, false);
+    let Outcome::Executed { steps, .. } = &result.outcome else {
+        panic!("{:?}", result.outcome)
+    };
+    assert!(steps[1].not_run.is_some());
+    assert!(!host.executed.borrow().iter().any(|a| a.contains("/work/a")));
+    assert!(host.executed.borrow().iter().any(|a| a.contains("/work/b")));
+}
+
+#[test]
+fn a_step_whose_dependency_was_not_confirmed_as_root_does_not_run() {
+    let host = files();
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.delete","args":{"path":"/work/a"},"depends_on":[],"elevate":true},
+      {"id":"s2","action":"fs.stat","args":{"path":"/work/b"},"depends_on":["s1"],"elevate":false}]}"#;
+    let answers = Answers {
+        root: false,
+        ..Answers::yes()
+    };
+    let (result, _) = run_with(
+        &[text],
+        &host,
+        &Authority::full(user(true)),
+        answers,
+        MemoryLog::default(),
+    );
+    assert!(matches!(result.outcome, Outcome::Executed { .. }));
+    assert!(host.executed.borrow().is_empty());
+}
+
+#[test]
+fn a_blocked_step_never_runs_its_items_even_when_other_steps_do() {
+    let host = files().failing("/work");
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.find_largest","args":{"path":"/work","count":2},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.delete","args":{"path":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false},
+      {"id":"s3","action":"fs.stat","args":{"path":"/work/a"},"depends_on":[],"elevate":false}]}"#;
+    let result = run(&[text], &host, false);
+    // s1 was read once before confirmation and failed; nothing runs it again.
+    let finds = host
+        .executed
+        .borrow()
+        .iter()
+        .filter(|a| a.starts_with("fs.find_largest"))
+        .count();
+    assert_eq!(finds, 1);
+    assert!(
+        host.executed
+            .borrow()
+            .iter()
+            .any(|a| a.starts_with("fs.stat"))
+    );
+    assert!(matches!(result.outcome, Outcome::Executed { .. }));
+}
+
+#[test]
+fn a_read_is_not_run_before_the_step_it_depends_on_has_run() {
+    let host = files();
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.delete","args":{"path":"/work/a"},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.find_largest","args":{"path":"/work","count":1},"depends_on":["s1"],"elevate":false},
+      {"id":"s3","action":"fs.delete","args":{"path":{"from_step":"s2"}},"depends_on":["s2"],"elevate":false}]}"#;
+    let result = run(&[text], &host, false);
+    assert!(matches!(
+        reviewed(&result.outcome).steps[2].blocked,
+        Some(Refusal::CannotExpand(_))
+    ));
+    // Before confirmation nothing was read; after it, s1 ran and then s2.
+    let order = host.executed.borrow().clone();
+    assert_eq!(order[0], r#"fs.delete path="/work/a""#);
+}
+
+#[test]
+fn a_read_reused_at_execution_is_logged_as_such_and_long_results_are_cut() {
+    let result = run(&[DELETE_LARGEST], &files(), false);
+    assert_eq!(events(&result, "use_pre_run").len(), 1);
+    assert_eq!(events(&result, "execute").len(), 2);
+}
+
+#[test]
+fn a_long_result_is_cut_in_the_log_but_not_in_what_the_person_sees() {
+    let text = plan(&[step("s1", "fs.read", r#"{"path":"/work/a"}"#, "false")]);
+    let result = run(&[&text], &files(), false);
+    assert_eq!(
+        events(&result, "result")[0]["detail"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        2000
+    );
+    assert!(result.outcome.render().contains(&"x".repeat(5000)));
+}

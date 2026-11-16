@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::action::{Access, Action, Capability, RootRule, printable, quoted};
+use crate::action::{Access, Action, Capability, RootRule, printable, quoted, quoted_path};
 use crate::plan::{Plan, StepId};
 use crate::ports::{Host, Output, User};
 
@@ -59,7 +59,7 @@ impl fmt::Display for Refusal {
                 write!(
                     f,
                     "your permissions do not allow {access} on {}",
-                    quoted(&path.to_string_lossy())
+                    quoted_path(path)
                 )
             }
             Self::NotAdministrator => {

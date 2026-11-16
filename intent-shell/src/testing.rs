@@ -97,6 +97,10 @@ impl Host for FakeHost {
                     ..Output::default()
                 })
             }
+            Action::Read { .. } => Ok(Output {
+                text: "x".repeat(5000),
+                ..Output::default()
+            }),
             _ => Ok(Output::default()),
         }
     }

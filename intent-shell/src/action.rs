@@ -1,6 +1,7 @@
 //! The actions of ADR 0011, the capability each one needs and whether it needs root.
 
 use std::fmt;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -152,6 +153,21 @@ pub fn quoted(text: &str) -> String {
     json.chars().map(escape_unsafe).collect()
 }
 
+/// A path quoted like `quoted`, byte-exact: a byte that is not UTF-8 shows as
+/// `\\xNN`, so two different names never show as the same one.
+pub fn quoted_path(path: &Path) -> String {
+    let mut out = String::from("\"");
+    for chunk in path.as_os_str().as_bytes().utf8_chunks() {
+        let valid = quoted(chunk.valid());
+        out.push_str(&valid[1..valid.len() - 1]);
+        for byte in chunk.invalid() {
+            out.push_str(&format!("\\x{byte:02x}"));
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// Make text from the model or the machine safe to print: control and
 /// formatting characters become escapes, except newline and tab when `block`.
 pub fn printable(text: &str, block: bool) -> String {
@@ -196,6 +212,15 @@ fn escape_unsafe(c: char) -> String {
             | '\u{FE00}'..='\u{FE0F}'
             | '\u{FFA0}'
             | '\u{E0100}'..='\u{E01EF}'
+            | '\u{180B}'..='\u{180D}'
+            | '\u{180F}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{1D159}'
+            | '\u{FFFC}'
+            | '\u{8E2}'
+            | '\u{110BD}'
+            | '\u{110CD}'
     );
     if c.is_control() || formatting || blank {
         format!("\\u{:04x}", c as u32)
@@ -312,7 +337,7 @@ impl Action {
     /// character from the model cannot rewrite what the terminal shows.
     pub fn describe(&self) -> String {
         let q = quoted;
-        let p = |path: &Path| q(&path.to_string_lossy());
+        let p = quoted_path;
         let name = self.name();
         match self {
             Self::List { path }
@@ -378,6 +403,15 @@ mod tests {
     fn quoting_escapes_invisible_format_characters() {
         let quoted = quoted("a\u{e0041}\u{61c}\u{ad}\u{3164}\u{2800}\u{3000}\u{a0}\u{fe0f}b");
         assert!(quoted.is_ascii(), "{quoted}");
+    }
+
+    #[test]
+    fn two_paths_that_differ_in_a_non_utf8_byte_show_differently() {
+        let one = Path::new(std::ffi::OsStr::from_bytes(b"/x/a\xff"));
+        let other = Path::new(std::ffi::OsStr::from_bytes(b"/x/a\xfe"));
+        assert_ne!(quoted_path(one), quoted_path(other));
+        assert_eq!(quoted_path(one), "\"/x/a\\xff\"");
+        assert_eq!(quoted_path(Path::new("/x/ação")), "\"/x/ação\"");
     }
 
     #[test]

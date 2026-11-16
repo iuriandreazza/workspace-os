@@ -11,7 +11,7 @@ use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::action::{Access, Action, quoted};
+use crate::action::{Access, Action, quoted_path};
 use crate::ports::{Host, Output};
 
 const MAX_READ_BYTES: u64 = 64 * 1024;
@@ -83,7 +83,7 @@ impl Host for UnixHost {
 }
 
 fn io_error(path: &Path, error: std::io::Error) -> String {
-    format!("{}: {error}", quoted(&path.to_string_lossy()))
+    format!("{}: {error}", quoted_path(path))
 }
 
 fn list(path: &Path) -> Result<Output, String> {
@@ -94,7 +94,7 @@ fn list(path: &Path) -> Result<Output, String> {
     paths.sort();
     let text = paths
         .iter()
-        .map(|p| quoted(&p.to_string_lossy()))
+        .map(|p| quoted_path(p))
         .collect::<Vec<_>>()
         .join("\n");
     Ok(Output {
@@ -107,12 +107,20 @@ fn list(path: &Path) -> Result<Output, String> {
 fn stat(path: &Path) -> Result<Output, String> {
     use std::os::unix::fs::MetadataExt;
     let meta = fs::symlink_metadata(path).map_err(|e| io_error(path, e))?;
-    let kind = if meta.is_dir() {
+    use std::os::unix::fs::FileTypeExt;
+    let file_type = meta.file_type();
+    let kind = if file_type.is_dir() {
         "directory"
-    } else if meta.is_symlink() {
+    } else if file_type.is_symlink() {
         "symlink"
-    } else {
+    } else if file_type.is_file() {
         "file"
+    } else if file_type.is_fifo() {
+        "fifo"
+    } else if file_type.is_socket() {
+        "socket"
+    } else {
+        "device"
     };
     let text = format!(
         "{kind} size={} mode={:o} uid={} gid={}",
@@ -131,10 +139,7 @@ fn stat(path: &Path) -> Result<Output, String> {
 fn read(path: &Path) -> Result<Output, String> {
     // Opening a named pipe or a device can block forever, so only regular files.
     if !fs::metadata(path).map_err(|e| io_error(path, e))?.is_file() {
-        return Err(format!(
-            "{} is not a regular file",
-            quoted(&path.to_string_lossy())
-        ));
+        return Err(format!("{} is not a regular file", quoted_path(path)));
     }
     let mut bytes = Vec::new();
     fs::File::open(path)
@@ -199,7 +204,7 @@ fn find_largest(root: &Path, count: usize) -> Result<Output, String> {
     files.truncate(count);
     let text = files
         .iter()
-        .map(|(size, p)| format!("{size} {}", quoted(&p.to_string_lossy())))
+        .map(|(size, p)| format!("{size} {}", quoted_path(p)))
         .collect::<Vec<_>>()
         .join("\n");
     let mut notes = Vec::new();

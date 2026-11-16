@@ -142,7 +142,7 @@ fakes for all four.
 
 ## Tests and the gate
 
-`./scripts/check.sh` now also runs clippy and 60 tests for `intent-shell`,
+`./scripts/check.sh` now also runs clippy and 72 tests for `intent-shell`,
 none needing the model. They include one test per refusal class (no
 capability, beyond the user's permissions, root without confirmation, a
 non-administrator elevating, malformed output, rule violations) and the 27
@@ -205,6 +205,8 @@ see first, which is the point of the broker; the quality is S4's problem.
   time, so a race can fail an action but not widen it.
 - A path that does not exist is reported as "your permissions do not allow",
   because `access(2)` failing is all the check sees. Misleading, not unsafe.
+- A path is shown byte-exact: a byte that is not UTF-8 appears as `\xNN`, so
+  two different file names never show as the same action.
 - A search that could not look everywhere (unreadable directories, or the
   100,000-entry cap) says so as a `NOTE` next to the plan and next to the
   result, because a reference expands from it.

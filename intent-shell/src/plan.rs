@@ -154,6 +154,7 @@ pub fn parse(text: &str) -> Result<Document, PlanError> {
         serde_json::from_str(text).map_err(|e| PlanError::new(format!("not JSON: {e}")))?;
     match value.get("kind").and_then(Value::as_str) {
         Some("plan") => {
+            structs_are_objects(&value)?;
             let raw: RawPlan = from_value(value)?;
             check_version(raw.version)?;
             bounded("summary", &raw.summary, 1, 200)?;
@@ -186,6 +187,27 @@ fn check_version(version: u32) -> Result<(), PlanError> {
     } else {
         Err(PlanError::new(format!("unsupported version {version}")))
     }
+}
+
+/// serde also reads a struct from a JSON array (by position); the schema does not.
+fn structs_are_objects(plan: &Value) -> Result<(), PlanError> {
+    let Some(steps) = plan.get("steps").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for step in steps {
+        let args = step.get("args");
+        let step_is_object = step.is_object();
+        let args_are_object = args.is_none_or(Value::is_object);
+        let path_is_array = ["path", "from"]
+            .iter()
+            .any(|key| args.and_then(|a| a.get(key)).is_some_and(Value::is_array));
+        if !(step_is_object && args_are_object) || path_is_array {
+            return Err(PlanError::new(
+                "steps, args and references must be JSON objects",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn from_value<T: DeserializeOwned>(value: Value) -> Result<T, PlanError> {
@@ -615,6 +637,61 @@ mod tests {
     fn a_null_elevate_is_not_the_same_as_no_elevate() {
         let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
             {"id":"s1","action":"user.manage","args":{"operation":"add","user":"bob","group":null},"depends_on":[],"elevate":null}]}"#;
+        assert!(parse(text).is_err());
+    }
+
+    #[test]
+    fn structs_given_as_arrays_are_refused_like_the_schema_does() {
+        for text in [
+            r#"{"kind":"plan","version":1,"summary":"x","steps":[["s1","fs.list",["."],[],false]]}"#,
+            r#"{"kind":"plan","version":1,"summary":"x","steps":[{"id":"s1","action":"fs.write","args":["/tmp/x","c","create"],"depends_on":[],"elevate":false}]}"#,
+            r#"{"kind":"plan","version":1,"summary":"x","steps":[
+                {"id":"s1","action":"fs.list","args":{"path":"."},"depends_on":[],"elevate":false},
+                {"id":"s2","action":"fs.stat","args":{"path":["s1"]},"depends_on":["s1"],"elevate":false}]}"#,
+        ] {
+            assert!(parse(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_limits_of_the_format_are_enforced() {
+        let step = |id: String, deps: &str| {
+            format!(
+                r#"{{"id":"{id}","action":"fs.stat","args":{{"path":"."}},"depends_on":{deps},"elevate":false}}"#
+            )
+        };
+        let plan = |summary: &str, steps: &[String]| {
+            format!(
+                r#"{{"kind":"plan","version":1,"summary":"{summary}","steps":[{}]}}"#,
+                steps.join(",")
+            )
+        };
+        let steps = |n: usize| {
+            (1..=n)
+                .map(|i| step(format!("s{i}"), "[]"))
+                .collect::<Vec<_>>()
+        };
+        assert!(parse(&plan("x", &steps(MAX_STEPS))).is_ok());
+        assert!(parse(&plan("x", &steps(MAX_STEPS + 1))).is_err());
+        assert!(parse(&plan(&"x".repeat(200), &steps(1))).is_ok());
+        assert!(parse(&plan(&"x".repeat(201), &steps(1))).is_err());
+        let deps = |n: usize| {
+            format!(
+                "[{}]",
+                (1..=n)
+                    .map(|i| format!(r#""s{}""#, i + 20))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        assert!(parse(&plan("x", &[step("s1".into(), &deps(15))])).is_ok());
+        assert!(parse(&plan("x", &[step("s1".into(), &deps(16))])).is_err());
+    }
+
+    #[test]
+    fn elevate_is_required_where_it_is_allowed() {
+        let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+            {"id":"s1","action":"fs.stat","args":{"path":"."},"depends_on":[]}]}"#;
         assert!(parse(text).is_err());
     }
 
