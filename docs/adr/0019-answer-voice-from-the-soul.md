@@ -1,5 +1,5 @@
 ---
-title: "ADR 0018: The voice of the answers, written by the model from the SOUL"
+title: "ADR 0019: The voice of the answers, written by the model from the SOUL"
 type: adr
 status: proposed
 created: 2026-11-16
@@ -7,7 +7,7 @@ updated: 2026-11-16
 tags: [shell, soul, persona, model, ux]
 ---
 
-# ADR 0018: The voice of the answers, written by the model from the SOUL
+# ADR 0019: The voice of the answers, written by the model from the SOUL
 
 ## Context
 
