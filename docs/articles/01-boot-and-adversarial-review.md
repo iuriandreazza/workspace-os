@@ -27,7 +27,12 @@ tags: [article, kernel, boot, aarch64, review, testing]
 >    attribution in commits and pull requests.
 > 3. **Garbled serial output.** I do not claim to have seen any (4.4). If you
 >    did, add it.
-> 4. **Hardware-only findings** (6.3) are reasoning that was accepted without a
+> 4. **Who re-ran what.** The article speaks as "I". The re-runs marked
+>    *re-run* (5.1, 5.2, 8) were done by the assistant that drafted this text,
+>    on one machine (QEMU 10.0.13, Debian). Repeat them, or change the wording,
+>    before publishing under your name. The raw outputs are in the session notes
+>    folder, `r2-evidence/`.
+> 5. **Hardware-only findings** (6.3) are reasoning that was accepted without a
 >    hardware run. I did not open the Arm Architecture Reference Manual for
 >    them. Say so, or open it and cite it.
 
