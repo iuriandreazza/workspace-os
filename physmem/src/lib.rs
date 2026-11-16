@@ -401,6 +401,21 @@ mod tests {
     }
 
     #[test]
+    fn only_reserved_frames_that_are_memory_are_counted() {
+        let mut words = storage(256);
+        let mut builder = Builder::new(BASE, &mut words);
+        builder.add_memory(BASE, 10 * F);
+        builder.add_memory(BASE + 20 * F, 10 * F);
+        // Two frames of RAM, then the hole, then two frames of the second bank.
+        builder.reserve(BASE + 8 * F, 14 * F);
+        builder.reserve(BASE + 100 * F, 5 * F);
+        let allocator = builder.build();
+        assert_eq!(allocator.memory_frames(), 20);
+        assert_eq!(allocator.reserved_frames(), 4);
+        assert_eq!(allocator.free_frames(), 16);
+    }
+
+    #[test]
     fn a_reservation_across_the_whole_address_space_leaves_nothing() {
         let mut words = storage(64);
         let mut builder = Builder::new(BASE, &mut words);

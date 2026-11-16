@@ -285,6 +285,11 @@ symbol_address() {
 
 entry="$(symbol_address _start)"
 image_start_address=$(( $(symbol_address __image_start) ))
+# The boot code is first in the image, so the reserved image must begin at the
+# entry point: a start symbol moved past it would leave the first frame free.
+if [[ "$image_start_address" -ne $((entry)) ]]; then
+    fail "__image_start is not the entry point $entry"
+fi
 image_end_address=$(( $(symbol_address __stack_top) ))
 hex() { printf '0x%x' "$((0x$1))"; }
 image_range="$(hex "$(symbol_address __image_start | sed 's/^0x//')")..$(hex "$(symbol_address __stack_bottom | sed 's/^0x//')")"
