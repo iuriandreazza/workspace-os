@@ -170,6 +170,9 @@ pub fn plan(file: &[u8]) -> Result<LoadPlan, ElfError> {
         .map(|s| s.address + s.memory_size)
         .max()
         .unwrap_or(0);
+    if end.checked_add(PAGE_SIZE - 1).is_none() {
+        return Err(ElfError::BadSegment);
+    }
     if !base.is_multiple_of(PAGE_SIZE) {
         return Err(ElfError::Unaligned);
     }

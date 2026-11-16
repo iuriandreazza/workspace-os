@@ -311,7 +311,7 @@ find_uefi_firmware() {
 # firmware and the bootloader. The firmware publishes a device tree only with
 # ACPI off (ADR 0013, "What is not yet known"), hence `acpi=off`.
 check_uefi_boot() {
-    local mib="$2" bootloader_el="$3" counts total reserved free
+    local mib="$2" bootloader_el="$3" counts total reserved free copy_start copy_end
     BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
     start_qemu "$1" -machine virt,acpi=off -m "${mib}M" -bios "$uefi_firmware" \
         -drive "file=$disk_image,format=raw,if=virtio" "${@:4}"
@@ -341,6 +341,15 @@ check_uefi_boot() {
     fi
     expect_once "workspace-os kernel: reserved kernel image $image_range" "kernel image reservation"
     expect_once "workspace-os kernel: reserved boot stack $stack_range" "boot stack reservation"
+
+    # The kernel found an intact copy of the device tree, as big as the firmware's.
+    local blob_size copy
+    blob_size="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os bootloader: device tree at 0x[0-9a-f]* (\([0-9]*\) bytes).*$/\1/p')"
+    copy="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
+    [[ -n "$blob_size" && "$(echo "$copy" | wc -l)" -eq 1 && -n "$copy" ]] || fail "device tree copy not reported exactly once"
+    read -r copy_start copy_end <<< "$copy"
+    [[ $((copy_end - copy_start)) -eq "$blob_size" ]] \
+        || fail "kernel reserves $((copy_end - copy_start)) bytes of device tree, the bootloader copied $blob_size"
 
     # The memory line comes from the bootloader's map: most of the machine's RAM.
     local reported

@@ -263,8 +263,7 @@ fn run() -> Outcome<core::convert::Infallible> {
         slice::from_raw_parts(device_tree as *const u8, device_tree_size)
     });
     let info_page = allocate(1)?;
-    let map_bytes = allocate(pages_for(MAP_CAPACITY * bootinfo::ENTRY_SIZE))?;
-    let map_address = map_bytes.as_ptr() as usize;
+    let map_address = allocate(pages_for(MAP_CAPACITY * bootinfo::ENTRY_SIZE))?.as_ptr() as usize;
     // SAFETY: page aligned, zeroed memory big enough for `MAP_CAPACITY`
     // entries, which this function alone uses until the jump.
     let entries =
@@ -315,6 +314,9 @@ fn run() -> Outcome<core::convert::Infallible> {
     println!("workspace-os bootloader: leaving boot services, entering the kernel");
     let uart_base = uart.base as usize;
 
+    // Interrupts are masked first: the firmware's handlers must not run while
+    // the map is rebuilt.
+    cpu::mask_interrupts();
     // SAFETY: nothing below calls the firmware, and nothing uses boot
     // services memory in a way that depends on it staying valid, except this
     // function's own stack and code, which the map keeps mapped.
@@ -328,11 +330,12 @@ fn run() -> Outcome<core::convert::Infallible> {
     // `entries` has the layout of the wire format, so the map is complete; the
     // kernel's own checks are run here too, so a broken map stops the boot
     // with a message instead of in the kernel.
-    let map = MemoryMap::from_bytes(
-        slice_of(map_address, count * bootinfo::ENTRY_SIZE),
-        bootinfo::ENTRY_SIZE,
-    )
-    .and_then(|map| {
+    // SAFETY: a shared view of the entries just written, which nothing writes
+    // while it lives.
+    let written = unsafe {
+        slice::from_raw_parts(entries.as_ptr().cast::<u8>(), count * bootinfo::ENTRY_SIZE)
+    };
+    let map = MemoryMap::from_bytes(written, bootinfo::ENTRY_SIZE).and_then(|map| {
         map.validate(info.kernel_base, info.kernel_size)
             .map(|()| map)
     });
@@ -361,12 +364,6 @@ fn run() -> Outcome<core::convert::Infallible> {
     // stack, the kernel, the boot info and the map with the live memory types;
     // `plan.entry` is inside the loaded kernel.
     unsafe { cpu::enter_kernel(plan.entry, info_address, root, ENTRY_MAGIC) }
-}
-
-fn slice_of(address: usize, length: usize) -> &'static mut [u8] {
-    // SAFETY: only called with the memory map buffer allocated in `run`, which
-    // nothing else references at that point.
-    unsafe { slice::from_raw_parts_mut(address as *mut u8, length) }
 }
 
 fn convert(map: &impl uefi::mem::memory_map::MemoryMap, out: &mut [MemoryEntry]) -> Outcome<usize> {

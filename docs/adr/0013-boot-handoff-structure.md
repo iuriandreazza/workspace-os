@@ -316,3 +316,13 @@ on Apple silicon). No decision above changed.
   `proc-macro2` and `unicode-ident` are MIT or MIT/Apache-2.0 (used under MIT).
   `ucs2` 0.3.3 is MPL-2.0, which lists GPL-2.0 as a permitted secondary licence
   for a combined work; its files stay under the MPL.
+- **Limits of K2b-2, known and kept.** The identity map covers the first
+  512 GiB (or what `TCR_EL1` translates, if less): Normal memory beyond it
+  stops the boot with a message, and a Device above it is unmapped. Firmware
+  regions of kinds AcpiReclaimable, AcpiNvs and ReservedMapped are mapped
+  Normal write-back whatever EFI attributes they carry, and Device mappings are
+  execute-never. The ELF loader places segments by `p_paddr` and checks
+  `e_entry` against them, which K4's higher-half link must revisit. The kernel
+  file buffer is allocated before the kernel's own range, which assumes a
+  firmware that allocates top-down (the range failing is reported with the
+  firmware's memory map).

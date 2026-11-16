@@ -30,6 +30,13 @@ pub fn virtualization_host_extensions() -> bool {
     hcr & (1 << 34) != 0
 }
 
+/// Masks every interrupt: the firmware's handlers must not run while the
+/// bootloader rebuilds what they could depend on.
+pub fn mask_interrupts() {
+    // SAFETY: setting the DAIF mask bits only stops interrupts being taken.
+    unsafe { asm!("msr daifset, #0xf", options(nomem, nostack)) };
+}
+
 pub fn boot_cpu() -> u64 {
     let value: u64;
     // SAFETY: reading `MPIDR_EL1` has no side effects.
@@ -136,6 +143,7 @@ pub unsafe fn enter_kernel(entry: u64, boot_info: u64, root: u64, entry_magic: u
     unsafe {
         asm!(
             "msr daifset, #0xf",
+            "msr spsel, #1",
             "mrs x6, ttbr0_el1",
             "and x6, x6, x7",
             "orr x6, x6, x5",

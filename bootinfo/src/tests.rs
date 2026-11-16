@@ -701,3 +701,34 @@ fn no_flip_of_an_elf_byte_panics() {
         }
     }
 }
+
+#[test]
+fn huge_sizes_are_refused_not_overflowed() {
+    let entries = [entry(0x4020_0000, 1, MemoryKind::Kernel)];
+    let bytes = map_of(&entries, ENTRY_SIZE);
+    let map = MemoryMap::from_bytes(&bytes, ENTRY_SIZE).unwrap();
+    assert_eq!(
+        map.validate(0x4020_0000, u64::MAX),
+        Err(MapError::KernelEntry)
+    );
+
+    let file = elf_with(
+        &[(1, 0x1000, 0xffff_ffff_ffff_f000, 0x10, 0xfff)],
+        0xffff_ffff_ffff_f000,
+    );
+    assert_eq!(elf::plan(&file), Err(elf::ElfError::BadSegment));
+}
+
+#[test]
+fn a_truncated_body_gets_the_default_entry_size_and_a_big_size_is_read() {
+    let mut bytes = sample().to_bytes();
+    let size = offset_of!(BootInfo, memory_map) as u32;
+    bytes[12..16].copy_from_slice(&size.to_le_bytes());
+    let parsed = BootInfo::parse(&bytes[..size as usize]).unwrap();
+    assert_eq!(parsed.memory_map_entry_size, ENTRY_SIZE as u32);
+
+    let mut big = sample().to_bytes().to_vec();
+    big.resize(8192, 0);
+    big[12..16].copy_from_slice(&8192u32.to_le_bytes());
+    assert!(BootInfo::parse(&big).is_ok());
+}

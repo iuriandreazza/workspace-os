@@ -128,6 +128,7 @@ pub enum HandoffError {
     UnsupportedArch(u32),
     UnsupportedConsole(u32),
     NoMemory,
+    BadDeviceTree(devicetree::Error),
 }
 
 impl fmt::Display for HandoffError {
@@ -137,6 +138,7 @@ impl fmt::Display for HandoffError {
             Self::UnsupportedArch(arch) => write!(f, "boot info is for architecture {arch}"),
             Self::UnsupportedConsole(kind) => write!(f, "unsupported console kind {kind}"),
             Self::NoMemory => f.write_str("boot info holds no memory"),
+            Self::BadDeviceTree(error) => write!(f, "device tree copy: {error}"),
         }
     }
 }
@@ -194,7 +196,9 @@ pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, bool)> {
     } else {
         // SAFETY: the bootloader copied the blob to `device_tree` and reserves
         // that memory (BootloaderReclaimable) until the kernel is done with it.
-        unsafe { Fdt::from_address(info.device_tree as usize) }.ok()
+        let blob = unsafe { Fdt::from_address(info.device_tree as usize) }
+            .map_err(|e| (HandoffError::BadDeviceTree(e), true))?;
+        Some(blob)
     };
 
     Ok(Board {

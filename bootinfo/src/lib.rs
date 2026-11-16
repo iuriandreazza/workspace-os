@@ -31,8 +31,8 @@ pub const VERSION_MINOR: u16 = 0;
 
 /// The frozen header: no future version changes it.
 pub const HEADER_SIZE: usize = 32;
-/// A `size` above this is bogus: the structure is a hundred-odd bytes.
-const MAX_SIZE: usize = 4096;
+/// A `size` above this is bogus: the structure is a hundred-odd bytes today.
+const MAX_SIZE: usize = 64 * 1024;
 /// A memory map above this many bytes is bogus.
 const MAX_MAP_BYTES: usize = 1 << 20;
 
@@ -269,7 +269,12 @@ impl BootInfo {
             boot_cpu: read_u64(&known, offset_of!(Self, boot_cpu)),
             memory_map: read_u64(&known, offset_of!(Self, memory_map)),
             memory_map_count: read_u64(&known, offset_of!(Self, memory_map_count)),
-            memory_map_entry_size: read_u32(&known, offset_of!(Self, memory_map_entry_size)),
+            // Absent in a body that stops before it: the version 1.0 default.
+            memory_map_entry_size: if limit > offset_of!(Self, memory_map_entry_size) {
+                read_u32(&known, offset_of!(Self, memory_map_entry_size))
+            } else {
+                ENTRY_SIZE as u32
+            },
             reserved1: 0,
             device_tree: read_u64(&known, offset_of!(Self, device_tree)),
             device_tree_size: read_u64(&known, offset_of!(Self, device_tree_size)),
@@ -545,8 +550,10 @@ impl<'a> MemoryMap<'a> {
             }
             if entry.kind() == MemoryKind::Kernel {
                 kernel_entries += 1;
-                let size = kernel_size.div_ceil(PAGE_SIZE) * PAGE_SIZE;
-                if entry.base != kernel_base || entry.length != size {
+                let size = kernel_size
+                    .checked_add(PAGE_SIZE - 1)
+                    .map(|end| end / PAGE_SIZE * PAGE_SIZE);
+                if entry.base != kernel_base || Some(entry.length) != size {
                     return Err(MapError::KernelEntry);
                 }
             }
