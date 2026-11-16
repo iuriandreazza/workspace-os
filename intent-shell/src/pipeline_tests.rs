@@ -834,3 +834,69 @@ fn a_long_result_is_cut_in_the_log_but_not_in_what_the_person_sees() {
     );
     assert!(result.outcome.render().contains(&"x".repeat(5000)));
 }
+
+#[test]
+fn a_write_beyond_the_users_permissions_is_refused() {
+    let host = files().forbid(Access::Write, "/work/new");
+    let text = plan(&[step(
+        "s1",
+        "fs.write",
+        r#"{"path":"/work/new","content":"x","mode":"create"}"#,
+        "false",
+    )]);
+    let result = run(&[&text], &host, false);
+    assert!(matches!(
+        reviewed(&result.outcome).steps[0].items[0].verdict,
+        Verdict::Refused(Refusal::PermissionDenied {
+            access: Access::Write,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_move_and_a_write_need_the_write_capability_not_only_the_read_one() {
+    let capabilities: BTreeSet<_> = [Capability::FsRead].into_iter().collect();
+    let authority = Authority {
+        user: user(false),
+        capabilities,
+    };
+    let write = plan(&[step(
+        "s1",
+        "fs.write",
+        r#"{"path":"/work/new","content":"x","mode":"create"}"#,
+        "false",
+    )]);
+    for text in [move_plan("/work/a"), write] {
+        let (result, _) = run_with(
+            &[&text],
+            &files(),
+            &authority,
+            Answers::yes(),
+            MemoryLog::default(),
+        );
+        let Outcome::AllRefused(review) = &result.outcome else {
+            panic!("{:?}", result.outcome)
+        };
+        assert_eq!(
+            review.steps[0].items[0].verdict,
+            Verdict::Refused(Refusal::CapabilityNotGranted(Capability::FsWrite))
+        );
+    }
+}
+
+#[test]
+fn an_action_is_not_run_when_its_own_record_cannot_be_written() {
+    // request, model_output, plan_accepted, review, plan_confirmation: then the execute event fails.
+    let host = files();
+    let text = plan(&[step("s1", "fs.stat", r#"{"path":"/work/a"}"#, "false")]);
+    let (result, _) = run_with(
+        &[&text],
+        &host,
+        &Authority::full(user(false)),
+        Answers::yes(),
+        MemoryLog::failing_after(5),
+    );
+    assert!(matches!(result.outcome, Outcome::LogFailed { .. }));
+    assert!(host.executed.borrow().is_empty());
+}

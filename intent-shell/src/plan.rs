@@ -201,10 +201,18 @@ fn structs_are_objects(plan: &Value) -> Result<(), PlanError> {
         let path_is_array = ["path", "from"]
             .iter()
             .any(|key| args.and_then(|a| a.get(key)).is_some_and(Value::is_array));
+        // Unit enums are strings; serde also reads `{"create": null}`.
+        let enum_is_not_string = ["mode", "operation"].iter().any(|key| {
+            args.and_then(|a| a.get(key))
+                .is_some_and(|v| !v.is_string())
+        });
         if !(step_is_object && args_are_object) || path_is_array {
             return Err(PlanError::new(
                 "steps, args and references must be JSON objects",
             ));
+        }
+        if enum_is_not_string {
+            return Err(PlanError::new("mode and operation must be strings"));
         }
     }
     Ok(())
@@ -651,6 +659,13 @@ mod tests {
         ] {
             assert!(parse(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn an_enum_given_as_an_object_is_refused_like_the_schema_does() {
+        let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+            {"id":"s1","action":"fs.write","args":{"path":"a","content":"c","mode":{"create":null}},"depends_on":[],"elevate":false}]}"#;
+        assert!(parse(text).is_err());
     }
 
     #[test]

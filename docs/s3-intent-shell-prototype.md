@@ -142,7 +142,7 @@ fakes for all four.
 
 ## Tests and the gate
 
-`./scripts/check.sh` now also runs clippy and 72 tests for `intent-shell`,
+`./scripts/check.sh` now also runs clippy and 76 tests for `intent-shell`,
 none needing the model. They include one test per refusal class (no
 capability, beyond the user's permissions, root without confirmation, a
 non-administrator elevating, malformed output, rule violations) and the 27

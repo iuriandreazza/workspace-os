@@ -221,6 +221,13 @@ fn escape_unsafe(c: char) -> String {
             | '\u{8E2}'
             | '\u{110BD}'
             | '\u{110CD}'
+            | '\u{890}'
+            | '\u{891}'
+            | '\u{FFFE}'
+            | '\u{FFFF}'
+            | '\u{13440}'
+            | '\u{E000}'..='\u{F8FF}'
+            | '\u{F0000}'..='\u{10FFFF}'
     );
     if c.is_control() || formatting || blank {
         format!("\\u{:04x}", c as u32)
@@ -401,7 +408,9 @@ mod tests {
 
     #[test]
     fn quoting_escapes_invisible_format_characters() {
-        let quoted = quoted("a\u{e0041}\u{61c}\u{ad}\u{3164}\u{2800}\u{3000}\u{a0}\u{fe0f}b");
+        let quoted = quoted(
+            "a\u{890}\u{f0000}\u{e000}\u{fffe}\u{e0041}\u{61c}\u{ad}\u{3164}\u{2800}\u{3000}\u{a0}\u{fe0f}b",
+        );
         assert!(quoted.is_ascii(), "{quoted}");
     }
 

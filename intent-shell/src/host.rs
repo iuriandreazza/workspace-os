@@ -72,8 +72,10 @@ impl Host for UnixHost {
         match action {
             Action::List { path } => list(path),
             Action::Stat { path } => stat(path),
-            Action::Read { path } => read(path),
-            Action::FindLargest { path, count } => find_largest(path, *count as usize),
+            Action::Read { path } => read(path, MAX_READ_BYTES),
+            Action::FindLargest { path, count } => {
+                find_largest(path, *count as usize, MAX_WALKED_ENTRIES)
+            }
             other => Err(format!(
                 "{} is not executable in this prototype",
                 other.name()
@@ -136,14 +138,14 @@ fn stat(path: &Path) -> Result<Output, String> {
     })
 }
 
-fn read(path: &Path) -> Result<Output, String> {
+fn read(path: &Path, limit: u64) -> Result<Output, String> {
     // Opening a named pipe or a device can block forever, so only regular files.
     if !fs::metadata(path).map_err(|e| io_error(path, e))?.is_file() {
         return Err(format!("{} is not a regular file", quoted_path(path)));
     }
     let mut bytes = Vec::new();
     fs::File::open(path)
-        .and_then(|file| file.take(MAX_READ_BYTES).read_to_end(&mut bytes))
+        .and_then(|file| file.take(limit).read_to_end(&mut bytes))
         .map_err(|e| io_error(path, e))?;
     // File content is data for the terminal, not for the terminal to obey.
     let text = String::from_utf8_lossy(&bytes)
@@ -163,7 +165,7 @@ fn read(path: &Path) -> Result<Output, String> {
     })
 }
 
-fn find_largest(root: &Path, count: usize) -> Result<Output, String> {
+fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, String> {
     let mut files: Vec<(u64, PathBuf)> = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     let mut walked = 0usize;
@@ -180,7 +182,7 @@ fn find_largest(root: &Path, count: usize) -> Result<Output, String> {
         };
         for entry in entries.flatten() {
             walked += 1;
-            if walked > MAX_WALKED_ENTRIES {
+            if walked > walk_limit {
                 truncated = true;
                 break;
             }
@@ -210,7 +212,7 @@ fn find_largest(root: &Path, count: usize) -> Result<Output, String> {
     let mut notes = Vec::new();
     if truncated {
         notes.push(format!(
-            "stopped after {MAX_WALKED_ENTRIES} entries: larger files may exist"
+            "stopped after {walk_limit} entries: larger files may exist"
         ));
     }
     if unreadable > 0 {
