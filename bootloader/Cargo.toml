@@ -1,0 +1,21 @@
+[package]
+name = "bootloader"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "UEFI bootloader: loads the kernel and hands it over with the structure of ADR 0013"
+
+[lints]
+workspace = true
+
+[dependencies]
+bootinfo = { path = "../bootinfo" }
+devicetree = { path = "../devicetree" }
+uefi = { version = "0.41", default-features = false, features = ["panic_handler"] }
+
+[[bin]]
+name = "bootloader"
+path = "src/main.rs"
+# The std test harness cannot link into a UEFI application.
+test = false
+bench = false

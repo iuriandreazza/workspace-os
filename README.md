@@ -15,7 +15,8 @@ interrupted code. Any other exception ends in a kernel panic that describes it, 
 the kernel stack is valid (guard pages come with the MMU).
 
 The kernel reads the whole memory map and the reserved regions from the device
-tree and manages physical memory in 4 KiB frames.
+tree and manages physical memory in 4 KiB frames. A UEFI bootloader loads it from a
+disk image (QEMU and VirtualBox on Apple silicon) and hands over the memory map.
 
 Next milestone: the MMU, the base for isolated processes. The full plan is in [docs/roadmap.md](docs/roadmap.md).
 
@@ -23,7 +24,7 @@ Next milestone: the MMU, the base for isolated processes. The full plan is in [d
 
 - `rustup`. The Rust version, target and components are pinned in
   `rust-toolchain.toml` and installed automatically.
-- QEMU with `qemu-system-aarch64`
+- QEMU with `qemu-system-aarch64`, and AArch64 UEFI firmware for the bootloader boot of the gate (Homebrew's QEMU ships it; on Debian and Ubuntu install `qemu-efi-aarch64`)
 
 ## Usage
 
@@ -32,6 +33,7 @@ git config core.hooksPath .githooks   # once per clone: enables the git hooks
 cargo build                           # build the kernel
 cargo run                             # boot it in QEMU (exit with Ctrl-A then X)
 ./scripts/check.sh                    # format, lint, unit tests and boot smoke test
+./scripts/build-disk-image.sh         # bootable UEFI disk image; see docs/booting-the-image.md
 ./scripts/intent-shell.sh             # the intent shell prototype, on the host (needs llama-server)
 ```
 
@@ -60,6 +62,8 @@ passing.
 | `kernel/src/board.rs` | Reads memory and UART from the device tree; QEMU `virt` fallback location of the blob |
 | `devicetree/` | Minimal, allocation-free device tree reader with host unit tests |
 | `kernel/src/drivers/` | Device drivers that live in the kernel for now |
+| `bootloader/` | UEFI application: loads the kernel from the EFI system partition and enters it with a `BootInfo` (built for `aarch64-unknown-uefi`) |
+| `bootinfo/` | The handoff structure, memory map conversion, ELF placement and identity map page tables, shared by bootloader and kernel, with host unit tests |
 | `docs/adr/` | Architecture decision records |
 
 ## Decisions
@@ -74,6 +78,7 @@ passing.
 - [ADR 0008: Own UEFI bootloader, written with Limine as the reference](docs/adr/0008-own-uefi-bootloader.md)
 - [ADR 0009: A small model in the bootloader detects and decides how to load kernels](docs/adr/0009-boot-model-detects-kernels.md)
 - [ADR 0010: Own minimal device tree reader, with no allocation](docs/adr/0010-own-device-tree-reader.md)
+- [ADR 0013: Boot handoff structure between the bootloader and the kernel](docs/adr/0013-boot-handoff-structure.md)
 
 ## Licence
 

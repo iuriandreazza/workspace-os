@@ -9,7 +9,7 @@ tags: [research, boot, bootloader, uefi, virtualbox, qemu, limine, rust]
 
 # K2b research: what the boot environments provide and how Limine hands over
 
-Input to ADR 0012 (the handoff between bootloader and kernel). Everything here
+Input to ADR 0013 (the handoff between bootloader and kernel). Everything here
 was read in this session on 2026-11-15. Source links are pinned to the commit
 that was current when read, so they keep pointing at the text that was read.
 Anything not read is marked **unverified**.
