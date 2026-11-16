@@ -46,6 +46,9 @@
 #             the amount it reports follows
 #   uefi-acpi-only  ACPI left on: no device tree is published, so the
 #             bootloader must refuse and the kernel must not start
+#   uefi-el2-high  EL2 with 3.5 GiB: RAM and the page tables lie above 4 GiB,
+#             which only works if the physical address size reaches EL1's
+#             translation registers
 #   uefi-el2  the firmware runs the bootloader at EL2, which the bootloader
 #             must leave for EL1 itself before the kernel starts
 #
@@ -421,6 +424,15 @@ check_uefi_boot() {
     local tables
     tables="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os bootloader: page tables at \(0x[0-9a-f]*\)$/\1/p')"
     [[ -n "$tables" ]] || fail "bootloader did not report its page tables"
+    # The tables are memory the bootloader owns and the kernel may reclaim later.
+    local owned=0 table_start table_end table_kind
+    while read -r table_start table_end table_kind; do
+        if [[ "$table_kind" == bootloader-reclaimable \
+            && $((table_start)) -le $((tables)) && $((tables)) -lt $((table_end)) ]]; then
+            owned=1
+        fi
+    done < <(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    [[ "$owned" -eq 1 ]] || fail "the page tables at $tables are not in a bootloader-reclaimable entry of the memory map"
     expect_once "workspace-os kernel: mapping: kernel image 0xff, uart 0x00, boot info 0xff, tables at $tables" "memory types and root of the bootloader's map"
     expect_once "workspace-os kernel: frames: exhausted after $free allocations, next request refused" "exhaustion report"
     expect_once "workspace-os kernel: frames: returned $free, $free free again" "return of every frame"
@@ -537,6 +549,7 @@ disk_image="$work_dir/disk.img"
 check_uefi_boot uefi 256 1
 check_uefi_boot uefi-768 768 1
 check_uefi_boot uefi-el2 256 2 -machine virtualization=on
+check_uefi_boot uefi-el2-high 3584 2 -machine virtualization=on
 check_uefi_refusal uefi-acpi-only
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
