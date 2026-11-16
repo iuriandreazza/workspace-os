@@ -38,6 +38,10 @@ const EC_DATA_ABORT_LOWER: u64 = 0x24;
 const EC_DATA_ABORT: u64 = 0x25;
 const EC_SP_ALIGNMENT: u64 = 0x26;
 const EC_BRK_A64: u64 = 0x3c;
+
+/// The only BRK immediate the kernel resumes from. The compiler lowers
+/// `abort` and `unreachable` to `brk #0x1`, and those must stay fatal.
+const RESUMABLE_BREAKPOINT: u64 = 0x800;
 const EC_WATCHPOINT_LOWER: u64 = 0x34;
 const EC_WATCHPOINT: u64 = 0x35;
 
@@ -129,7 +133,7 @@ impl core::fmt::Display for Report<'_> {
 #[unsafe(no_mangle)]
 extern "C" fn handle_sync_exception(frame: &mut TrapFrame) {
     let syndrome = Syndrome::new(frame.esr);
-    if syndrome.class == EC_BRK_A64 {
+    if syndrome.class == EC_BRK_A64 && syndrome.iss & 0xffff == RESUMABLE_BREAKPOINT {
         let mut console = board::console();
         let _ = writeln!(
             console,
@@ -172,6 +176,15 @@ fn vector_description(index: u64) -> &'static str {
 /// ESR_EL1, ELR_EL1 and FAR_EL1 on a freshly reset stack.
 #[unsafe(no_mangle)]
 extern "C" fn unhandled_exception(vector: u64, esr: u64, elr: u64, far: u64) -> ! {
+    // IRQ and FIQ do not update ESR_EL1 and FAR_EL1: decoding them would report
+    // an older, unrelated exception.
+    let is_synchronous_or_serror = matches!(vector % 4, 0 | 3);
+    if !is_synchronous_or_serror {
+        panic!(
+            "unhandled exception: {} at {elr:#x}",
+            vector_description(vector)
+        );
+    }
     let syndrome = Syndrome::new(esr);
     let report = Report {
         esr,

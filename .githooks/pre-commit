@@ -2,8 +2,8 @@
 set -eu
 
 # Git clients often run hooks without the login shell's PATH, so also look for
-# the Rust toolchain in the usual rustup locations.
-for dir in "$HOME/.cargo/bin" /opt/homebrew/opt/rustup/bin /usr/local/opt/rustup/bin; do
+# the Rust toolchain and QEMU in the usual locations.
+for dir in "$HOME/.cargo/bin" /opt/homebrew/opt/rustup/bin /usr/local/opt/rustup/bin /opt/homebrew/bin /usr/local/bin; do
     if [ -d "$dir" ]; then
         PATH="$dir:$PATH"
     fi

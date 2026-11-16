@@ -124,7 +124,7 @@ unhandled_exception_entry:
     mrs  x3, far_el1
     b    unhandled_exception
 
-// Takes a breakpoint with distinct values in x0 to x30 and in the flags, then
+// Takes the resumable breakpoint with distinct values in x0 to x30 and in the flags, then
 // checks that every one came back, with SP and SP_EL0. Returns 0 on success.
 .global exception_selftest
 exception_selftest:
@@ -145,16 +145,18 @@ exception_selftest:
     mov  x29, sp
     ldr  x30, =0x0badc0ffee0ddf00
     msr  sp_el0, x30
-    mov  x30, sp
-    brk  #0x1
+    add  x30, sp, #16
+    brk  #0x800
 
     // Branches on the flags need no scratch register, so check them first.
     b.pl .Lselftest_failed
     b.cc .Lselftest_failed
     b.eq .Lselftest_failed
     b.vs .Lselftest_failed
+    add  x29, x29, #16
     cmp  x30, x29
     b.ne .Lselftest_failed
+    sub  x29, x29, #16
     mov  x30, sp
     cmp  x30, x29
     b.ne .Lselftest_failed

@@ -22,7 +22,7 @@
 set -euo pipefail
 
 readonly EXPECTED_BANNER="workspace-os kernel: booted on aarch64 in EL1"
-readonly BREAKPOINT_REPORT="exception: breakpoint #0x1 at"
+readonly BREAKPOINT_REPORT="exception: breakpoint #0x800 at"
 readonly RESUME_MARKER="workspace-os kernel: resumed after breakpoint"
 readonly PANIC_MARKER="kernel panic"
 readonly BOOT_TIMEOUT_SECONDS=10
@@ -132,15 +132,16 @@ check_panic() {
     local elf="$2" expected="$3"
     start_qemu "$1" -kernel "$elf"
 
+    # The panic line reaches the log in pieces: wait for the text itself.
     for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
-        if grep -qF "$PANIC_MARKER" "$serial_log"; then
+        if grep -qF "$expected" "$serial_log"; then
             break
         fi
-        qemu_is_running || fail "QEMU exited without a kernel panic"
+        qemu_is_running || fail "QEMU exited without the expected kernel panic"
         sleep 0.1
     done
-    grep -qF "$PANIC_MARKER" "$serial_log" || fail "no kernel panic within ${BOOT_TIMEOUT_SECONDS}s"
-    grep -qF "$expected" "$serial_log" || fail "kernel panic does not mention '$expected'"
+    grep -qF "$expected" "$serial_log" || fail "no kernel panic mentioning '$expected' within ${BOOT_TIMEOUT_SECONDS}s"
+    grep -qF "$PANIC_MARKER" "$serial_log" || fail "'$expected' appeared without a kernel panic"
 
     stop_qemu
     echo "PASS ($boot_name): unhandled exception ended in a kernel panic"

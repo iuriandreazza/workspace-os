@@ -23,10 +23,12 @@ _start:
     b    .Lel1
 
 .Lfrom_el3:
-    // RW: lower levels are AArch64. HCE: hvc is enabled. NS: the kernel runs
+    // RW: lower levels are AArch64. HCE: hvc is enabled. Bits 5:4 are RES1.
+    // NS: the kernel runs
     // in the non-secure world.
-    mov  x0, #((1 << 10) | (1 << 8) | (1 << 0))
+    mov  x0, #((1 << 10) | (1 << 8) | (3 << 4) | (1 << 0))
     msr  scr_el3, x0
+    msr  cptr_el3, xzr              // no trap of FP, SIMD or SVE to EL3
     // HCR_EL2.RW resets to an unknown value, so when EL2 exists the kernel goes
     // through it: EL1 could otherwise come up as AArch32.
     mrs  x0, id_aa64pfr0_el1
@@ -46,10 +48,15 @@ _start:
 .Lfrom_el2:
     // SCTLR_EL2 resets to an unknown value: set the RES1 bits, nothing else.
     movz x0, #0x30c5, lsl #16
-    movk x0, #0x0838
+    movk x0, #0x0830
     msr  sctlr_el2, x0
     mov  x0, #(1 << 31)             // HCR_EL2: RW only, EL1 is AArch64
     msr  hcr_el2, x0
+    // Reset values are unknown: clear every trap to EL2, where no handler exists.
+    mov  x0, #0x33ff                // CPTR_EL2: RES1 bits only
+    msr  cptr_el2, x0
+    msr  mdcr_el2, xzr
+    msr  hstr_el2, xzr
     // EL1 reads of MIDR_EL1 and MPIDR_EL1 return these.
     mrs  x0, midr_el1
     msr  vpidr_el2, x0
@@ -66,7 +73,8 @@ _start:
 
 .Lel1:
     // SCTLR_EL1 is unknown after a drop from a higher level: RES1 bits only,
-    // so the MMU and the caches are off.
+    // so the MMU and the caches are off. The boot protocol guarantees that
+    // they were off already: nothing is cleaned from a data cache here.
     movz x0, #0x30d0, lsl #16
     movk x0, #0x0800
     msr  sctlr_el1, x0
@@ -76,6 +84,7 @@ _start:
     adrp x0, exception_vectors
     add  x0, x0, :lo12:exception_vectors
     msr  vbar_el1, x0
+    isb
 
     adrp x0, __stack_top
     add  x0, x0, :lo12:__stack_top
