@@ -36,7 +36,7 @@ listed), `later` (not designed yet).
 | Track | What | Can start |
 |---|---|---|
 | K | Kernel and bootloader | now, one item at a time |
-| B | Boot model | after K2c |
+| B | Boot model | research (B1-1) now, in parallel; the rest after K2c |
 | S | Intent shell with a local SLM | now, in parallel with K, on the host |
 | R | Research and articles | now, in parallel |
 | P | Policy plane (purpose-trained models) | after K7 |
@@ -87,8 +87,9 @@ them (ADR 0009). It builds on the bootloader items of track K.
 
 | Item | Session | Done when | Status |
 |---|---|---|---|
-| B1 | Research, then ADR: language model or purpose-trained classifier and its size; the inputs it reads and the typed decision it returns; how inference runs in the UEFI environment; licences | ADR accepted, with a measured estimate of inference time in UEFI | blocked: K2c |
-| B2 | Corpus and training, offline: disk layouts and kernel images from several systems, the training run, and an evaluation harness on the host | Accuracy on a held-out part of the corpus, recorded in `docs/` | blocked: B1 |
+| B1-1 | Research, documentation only: language model or purpose-trained classifier and its size; the inputs it can read from a disk and the typed decision it returns; how inference can run in the UEFI environment (memory, floating point, no operating system); licences of candidate models and runtimes (ADR 0005, ADR 0017). Touches no code, so it runs in parallel with track K | Every claim has a source that was actually read; what could not be verified is listed. Result: `docs/b1-boot-model-research.md` | next |
+| B1-2 | ADR from the research of B1-1, with inference time measured in the UEFI environment under QEMU | ADR accepted, with the measured estimate and the exact commands | blocked: B1-1, K2c |
+| B2 | Corpus and training, offline: disk layouts and kernel images from several systems, the training run, and an evaluation harness on the host | Accuracy on a held-out part of the corpus, recorded in `docs/` | blocked: B1-2 |
 | B3 | Inference in the bootloader: the model decides, decisions are stored with a fingerprint of the disk, the last successful decisions are the fallback, and the loader checks the format before jumping | With the model: Linux and our kernel are found on a disk with no hand-written entries. Without the model: our kernel still boots. A deliberately wrong decision ends in an error on the menu | blocked: B2, K2d |
 | B4 | Integrity of the model's weights at boot | Replaced weights are refused | blocked: B3 |
 
