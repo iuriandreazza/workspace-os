@@ -96,8 +96,8 @@ runtime before it has userspace, memory management and a filesystem.
 
 | Item | Session | Done when | Status |
 |---|---|---|---|
-| S1 | Run Bonsai 8B locally with `llama.cpp` (`llama-server`). Measure tokens per second, time to first token and memory at 8k and 32k context. Record one tool call end to end | Numbers and the tool-call transcript recorded in `docs/`, with the exact commands | next |
-| S2 | Action plan format. ADR first: the structured actions the model may emit (including proposing a SOUL change, ADR 0006), the capability each one needs, which ones need root and so a per-action confirmation (ADR 0007), and how output is constrained to the format | ADR accepted; a schema file exists | blocked: S1 |
+| S1 | Run Bonsai 8B locally with `llama.cpp` (`llama-server`). Measure tokens per second, time to first token and memory at 8k and 32k context. Record one tool call end to end | Numbers and the tool-call transcript recorded in `docs/s1-bonsai-8b-local-run.md`, with the exact commands | done |
+| S2 | Action plan format. ADR first: the structured actions the model may emit (including proposing a SOUL change, ADR 0006), the capability each one needs, which ones need root and so a per-action confirmation (ADR 0007), and how output is constrained to the format | ADR accepted; a schema file exists | next |
 | S3 | Shell prototype on the host: natural language to plan, deterministic capability broker that validates it against the user's permissions and the action's capability, never more than both allow (ADR 0007), dry-run and confirmation, a log of every model decision (ADR 0002) | A session can turn "list the largest files here" into a validated plan and run it | blocked: S2 |
 | S4 | Evaluation set: intents with expected plans. Measure Bonsai 8B, and compare with at least one alternative that has native tool calling | Accuracy table in `docs/`; decision to keep or change the model | blocked: S3 |
 | S5 | Deterministic fallback shell: the same actions typed as commands, with no model loaded | Every action in the format is reachable without the model | blocked: S3 |
