@@ -11,6 +11,7 @@
 #![no_main]
 
 mod cpu;
+mod ui;
 
 use core::slice;
 use core::time::Duration;
@@ -216,6 +217,7 @@ fn fail_on_uart(uart: usize, reason: impl core::fmt::Display) -> ! {
 }
 
 fn run() -> Outcome<core::convert::Infallible> {
+    ui::banner();
     println!(
         "workspace-os bootloader: started at EL{}",
         cpu::current_el()
@@ -314,6 +316,21 @@ fn run() -> Outcome<core::convert::Infallible> {
         uefi::table::system_table_raw().map_or(0, |table| table.as_ptr() as u64);
     let info_address = info_page.as_ptr() as u64;
 
+    let usable_bytes: u64 = entries[..count]
+        .iter()
+        .filter(|entry| entry.kind() == bootinfo::MemoryKind::Usable)
+        .map(|entry| entry.length)
+        .sum();
+    ui::summary(&ui::Summary {
+        kernel_base: plan.base,
+        kernel_end: plan.end,
+        entry: plan.entry,
+        usable_mib: usable_bytes >> 20,
+        regions: count,
+        console: uart.base,
+        device_tree_bytes: device_tree_size,
+        exception_level: cpu::current_el(),
+    });
     println!("workspace-os bootloader: page tables at {pool_address:#x}");
     println!("workspace-os bootloader: leaving boot services, entering the kernel");
     let uart_base = uart.base as usize;
@@ -388,6 +405,7 @@ fn main() -> Status {
         Ok(never) => match never {},
         Err(failure) => {
             println!("workspace-os bootloader: {failure}");
+            ui::failure(format_args!("{failure}"));
             boot::stall(Duration::from_secs(5));
             match failure {
                 Failure::Firmware(error) => error.status(),
