@@ -54,6 +54,7 @@
 #             translation registers
 #   uefi-no-kernel  the partition holds no `\KERNEL.ELF`: the bootloader must
 #             say that file is missing
+#   uefi-load-at-zero  a kernel linked at address 0
 #   uefi-load-beyond-ram  a kernel linked past the end of RAM
 #   uefi-load-busy  a kernel linked where the firmware keeps its own memory
 #             (the case of VirtualBox with 1024 MiB, which reserves
@@ -430,7 +431,9 @@ check_uefi_boot() {
     # The kernel runs on the bootloader's own tables, not the firmware's (the
     # root is the pool the bootloader printed), and what the tables map holds up
     # at the kernel, the UART and the boot info.
-    expect_once "mapping: runtime services 0xff" "memory type of the runtime services regions"
+    # The probe prints -1 as 0xffffffff when it finds nothing, so the line ends here.
+    [[ "$(plain_log | grep -cE 'mapping: runtime services 0xff$')" -eq 1 ]] \
+        || fail "memory type of the runtime services regions is not Normal write-back (0xff)"
     # SCTLR_EL1: MMU (bit 0), data cache (2) and instruction cache (12) on;
     # alignment check (1) and write-implies-execute-never (19) off.
     local sctlr
@@ -603,6 +606,9 @@ relocated_image() {
     python3 -I scripts/make-disk-image.py "$work_dir/relocated.img" \
         target/aarch64-unknown-uefi/debug/bootloader.efi "$work_dir/relocated.elf"
 }
+relocated_image 0
+check_uefi_refusal uefi-load-at-zero "$work_dir/relocated.img" \
+    "the kernel is linked at address 0" -machine virt,acpi=off
 relocated_image 0x7ff00000
 check_uefi_refusal uefi-load-beyond-ram "$work_dir/relocated.img" \
     "the kernel's load address is not free RAM" -machine virt,acpi=off

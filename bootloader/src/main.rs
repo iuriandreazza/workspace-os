@@ -141,6 +141,10 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
 /// Returns the plan, and leaves `plan.span()` bytes at `plan.base` allocated.
 fn load_kernel(file: &[u8]) -> Outcome<elf::LoadPlan> {
     let plan = elf::plan(file).map_err(Failure::Elf)?;
+    // Page zero cannot be a slice in Rust, and no firmware gives it away.
+    if plan.base == 0 {
+        return Err(Failure::Message("the kernel is linked at address 0"));
+    }
     let pages = pages_for(plan.span() as usize);
     boot::allocate_pages(
         AllocateType::Address(plan.base),
@@ -219,14 +223,26 @@ fn find_tables() -> Tables {
 /// console is too; this is the only way left to say why the boot stops.
 struct Uart(usize);
 
+const UART_FLAGS: usize = 0x18;
+const UART_TX_FIFO_FULL: u32 = 1 << 5;
+
 impl core::fmt::Write for Uart {
     fn write_str(&mut self, text: &str) -> core::fmt::Result {
         for byte in text.bytes() {
             // SAFETY: `self.0` is the PL011 the device tree named, mapped as
             // Device memory by the firmware and by our own map; the data
-            // register is at offset 0. The FIFO is not waited for: a byte lost
-            // in a failure message is acceptable.
-            unsafe { core::ptr::write_volatile(self.0 as *mut u8, byte) };
+            // register is at offset 0 and the flag register at 0x18, whose bit
+            // 5 says the transmit FIFO is full. Waiting on it keeps a message
+            // of any length from being cut after the first FIFO's worth.
+            unsafe {
+                while core::ptr::read_volatile((self.0 + UART_FLAGS) as *const u32)
+                    & UART_TX_FIFO_FULL
+                    != 0
+                {
+                    core::hint::spin_loop();
+                }
+                core::ptr::write_volatile(self.0 as *mut u8, byte);
+            }
         }
         Ok(())
     }
@@ -361,13 +377,14 @@ fn run() -> Outcome<core::convert::Infallible> {
     ui::go(format_args!("leaving boot services, entering the kernel"));
     let uart_base = uart.base as usize;
 
-    // Interrupts are masked first: the firmware's handlers must not run while
-    // the map is rebuilt.
-    cpu::mask_interrupts();
     // SAFETY: nothing below calls the firmware, and nothing uses boot
     // services memory in a way that depends on it staying valid, except this
     // function's own stack and code, which the map keeps mapped.
     let final_map = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
+    // Not before the call: the firmware's exit notifications may wait on an
+    // interrupt. Once it returns, its handlers must not run while the map is
+    // rebuilt.
+    cpu::mask_interrupts();
 
     let count =
         convert(&final_map, entries).unwrap_or_else(|reason| fail_on_uart(uart_base, reason));
