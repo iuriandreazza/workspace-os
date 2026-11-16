@@ -190,6 +190,9 @@ impl State {
     pub fn on_event(&mut self, event: Event) -> bool {
         self.scroll = 0;
         self.asked_ms = self.clock_ms;
+        if !matches!(event, Event::Busy(_)) {
+            self.forced_quit = false;
+        }
         match event {
             Event::Busy(label) => self.busy(label),
             Event::AskPlan { screen, details } => {
@@ -208,7 +211,6 @@ impl State {
                 };
             }
             Event::Outcome(text) => {
-                self.forced_quit = false;
                 self.blocks.push(Block::Outcome(text));
                 self.mode = Mode::Input;
             }
@@ -628,6 +630,22 @@ mod tests {
             !state.forced_quit
                 || matches!(state.blocks.last(), Some(Block::Note(n)) if n.contains("Ctrl-C again"))
         );
+    }
+
+    #[test]
+    fn a_question_clears_the_early_quit_so_leaving_at_it_waits_for_the_log() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let mut state = State::new(String::new());
+        state.on_event(Event::Busy("working"));
+        assert_eq!(state.on_key(ctrl_c), Effect::Nothing);
+        assert!(state.forced_quit);
+        state.on_event(Event::AskPlan {
+            screen: "plan".to_owned(),
+            details: String::new(),
+        });
+        assert!(!state.forced_quit);
+        assert_eq!(state.on_key(ctrl_c), Effect::Quit);
+        assert!(!state.forced_quit);
     }
 
     #[test]

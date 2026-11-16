@@ -30,6 +30,8 @@ use crate::ports::{Confirm, DecisionLog, Host, Planner, Retry, User};
 use crate::session::Shell;
 use state::{Effect, Event, Mode, Reply, State};
 
+/// How long a step is waited for after a termination signal.
+const SIGNAL_PATIENCE: Duration = Duration::from_secs(5);
 const TICK: Duration = Duration::from_millis(100);
 
 /// The worker's `Confirm`: asks the interface and waits. If the interface is
@@ -292,11 +294,14 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
         }
     );
     drop((request_tx, reply_tx));
-    // A second Ctrl-C, SIGTERM or SIGHUP stops the wait for a stuck step.
+    // A second Ctrl-C or signal stops the wait for a stuck step, and a signal
+    // alone (a closed terminal never sends a second) waits only a few seconds.
+    let waiting_since = Instant::now();
     while !waiting_for_model
         && !state.forced_quit
         && !worker.is_finished()
         && TERMINATIONS.load(Ordering::Relaxed) < 2
+        && (TERMINATIONS.load(Ordering::Relaxed) == 0 || waiting_since.elapsed() < SIGNAL_PATIENCE)
     {
         thread::sleep(Duration::from_millis(50));
     }

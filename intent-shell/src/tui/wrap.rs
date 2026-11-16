@@ -4,6 +4,10 @@
 use ratatui::text::Span;
 
 fn cell_width(c: char) -> usize {
+    // Printable ASCII is one cell: the common case, without an allocation.
+    if c.is_ascii_graphic() || c == ' ' {
+        return 1;
+    }
     Span::raw(c.to_string()).width()
 }
 
