@@ -52,7 +52,8 @@ passing.
 | `kernel/src/main.rs` | Kernel entry point and panic handler |
 | `kernel/src/arch/` | Architecture-specific code (boot assembly, exception vectors, linker script) |
 | `kernel/src/memory_image.rs` | Boot-time self-test of `.bss` and `.data` |
-| `kernel/src/board.rs` | Board description (QEMU `virt`) |
+| `kernel/src/board.rs` | Reads memory and UART from the device tree; QEMU `virt` fallback location of the blob |
+| `devicetree/` | Minimal, allocation-free device tree reader with host unit tests |
 | `kernel/src/drivers/` | Device drivers that live in the kernel for now |
 | `docs/adr/` | Architecture decision records |
 
@@ -67,6 +68,7 @@ passing.
 - [ADR 0007: Linux-style user permissions over kernel capabilities](docs/adr/0007-linux-style-user-permissions.md)
 - [ADR 0008: Own UEFI bootloader, written with Limine as the reference](docs/adr/0008-own-uefi-bootloader.md)
 - [ADR 0009: A small model in the bootloader detects and decides how to load kernels](docs/adr/0009-boot-model-detects-kernels.md)
+- [ADR 0010: Own minimal device tree reader, with no allocation](docs/adr/0010-own-device-tree-reader.md)
 
 ## Licence
 

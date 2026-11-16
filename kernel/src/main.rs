@@ -10,14 +10,32 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_main() -> ! {
+pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     memory_image::assert_initialised();
+
+    let board = match board::discover(device_tree_address) {
+        Ok(board) => board,
+        // Without the device tree there is no console to report on.
+        Err(_) => arch::halt(),
+    };
 
     let mut console = board::console();
     let _ = writeln!(
         console,
         "workspace-os kernel: booted on aarch64 in EL{}",
         arch::current_el()
+    );
+
+    let _ = writeln!(
+        console,
+        "workspace-os kernel: memory {} MiB at {:#x}",
+        board.memory.size >> 20,
+        board.memory.base
+    );
+    let _ = writeln!(
+        console,
+        "workspace-os kernel: uart pl011 at {:#x}",
+        board.uart.base
     );
 
     arch::run_selftest();

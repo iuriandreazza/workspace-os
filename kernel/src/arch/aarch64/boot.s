@@ -3,6 +3,11 @@
 .section .text.boot
 .global _start
 _start:
+    // The boot protocol passes the device tree address in x0; QEMU's ELF
+    // loader leaves it zero. Keep it in x19, which nothing below touches, and
+    // hand it to kernel_main. The code below only uses x0 to x2.
+    mov  x19, x0
+
     // Interrupts stay masked until the kernel installs an exception table.
     msr  daifset, #0xf
 
@@ -102,6 +107,7 @@ _start:
     str  xzr, [x0], #8
     b    1b
 2:
+    mov  x0, x19
     bl   kernel_main
 .Lpark:
     wfe
