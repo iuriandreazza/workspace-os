@@ -6,7 +6,8 @@ It reads the licence each crate declares in its manifest (`cargo metadata`),
 for the crates cargo can build in this workspace (`cargo tree`, all targets,
 all kinds, all features of the workspace crates). A crate that sits in
 Cargo.lock only through an optional feature nobody enables is not built, so it
-is not checked; enabling that feature changes the tree and so the verdict.
+is not checked; the declared licence is trusted as written, so it cannot catch a
+crate whose manifest misstates its code; enabling that feature changes the tree and so the verdict.
 """
 import json
 import re

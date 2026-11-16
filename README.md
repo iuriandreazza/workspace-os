@@ -25,6 +25,7 @@ Next milestone: the MMU, the base for isolated processes. The full plan is in [d
 - `rustup`. The Rust version, target and components are pinned in
   `rust-toolchain.toml` and installed automatically.
 - QEMU with `qemu-system-aarch64`, and AArch64 UEFI firmware for the bootloader boot of the gate (Homebrew's QEMU ships it; on Debian and Ubuntu install `qemu-efi-aarch64`)
+- `python3`, standard library only: the licence check and the disk image tool use it.
 
 ## Usage
 
