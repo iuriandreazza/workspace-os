@@ -295,9 +295,9 @@ find_uefi_firmware() {
     for candidate in \
         /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
         /usr/local/share/qemu/edk2-aarch64-code.fd \
-        /usr/share/qemu/edk2-aarch64-code.fd \
         /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-        /usr/share/AAVMF/AAVMF_CODE.fd; do
+        /usr/share/AAVMF/AAVMF_CODE.fd \
+        /usr/share/qemu/edk2-aarch64-code.fd; do
         if [[ -f "$candidate" ]]; then
             echo "$candidate"
             return
@@ -404,7 +404,13 @@ check_uefi_boot() {
 
     # Normal cacheable memory for the kernel and Device memory for the UART:
     # the translation the bootloader installed, as the hardware reports it.
-    expect_once "workspace-os kernel: mapping: kernel image 0xff, uart 0x00" "memory types of the bootloader's map"
+    # The kernel runs on the bootloader's own tables, not the firmware's (the
+    # root is the pool the bootloader printed), and what the tables map holds up
+    # at the kernel, the UART and the boot info.
+    local tables
+    tables="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os bootloader: page tables at \(0x[0-9a-f]*\)$/\1/p')"
+    [[ -n "$tables" ]] || fail "bootloader did not report its page tables"
+    expect_once "workspace-os kernel: mapping: kernel image 0xff, uart 0x00, boot info 0xff, tables at $tables" "memory types and root of the bootloader's map"
     expect_once "workspace-os kernel: frames: exhausted after $free allocations, next request refused" "exhaustion report"
     expect_once "workspace-os kernel: frames: returned $free, $free free again" "return of every frame"
     expect_once "workspace-os kernel: frames: double free refused" "double free refusal"

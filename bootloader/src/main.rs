@@ -36,7 +36,7 @@ const PL011_COMPATIBLE: &str = "arm,pl011";
 const MAX_DEVICE_TREE: usize = 2 << 20;
 /// Room for the memory map the kernel receives. The firmware's has some
 /// dozens of entries.
-const MAP_CAPACITY: usize = 4096;
+const MAP_CAPACITY: usize = 2048;
 /// Tables on top of the bound for the preliminary map: allocating the buffers
 /// and leaving boot services can split a few entries after the bound was taken.
 const EXTRA_TABLES: usize = 64;
@@ -97,9 +97,12 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
         .into_regular_file()
         .ok_or(Failure::Message("kernel path is a directory"))?;
 
-    let mut info_buffer = [0u8; 256];
+    // `get_info` wants a buffer aligned for `FileInfo`.
+    #[repr(align(8))]
+    struct InfoBuffer([u8; 256]);
+    let mut info_buffer = InfoBuffer([0u8; 256]);
     let size = file
-        .get_info::<FileInfo>(&mut info_buffer)
+        .get_info::<FileInfo>(&mut info_buffer.0)
         .map_err(|e| Failure::Firmware(uefi::Error::new(e.status(), ())))?
         .file_size() as usize;
     let buffer = allocate(pages_for(size.max(1)))?;
@@ -311,6 +314,7 @@ fn run() -> Outcome<core::convert::Infallible> {
         uefi::table::system_table_raw().map_or(0, |table| table.as_ptr() as u64);
     let info_address = info_page.as_ptr() as u64;
 
+    println!("workspace-os bootloader: page tables at {pool_address:#x}");
     println!("workspace-os bootloader: leaving boot services, entering the kernel");
     let uart_base = uart.base as usize;
 

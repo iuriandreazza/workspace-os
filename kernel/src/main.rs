@@ -89,9 +89,11 @@ pub extern "C" fn kernel_main(
         };
         let _ = writeln!(
             console,
-            "workspace-os kernel: mapping: kernel image {:#04x}, uart {:#04x}",
+            "workspace-os kernel: mapping: kernel image {:#04x}, uart {:#04x}, boot info {:#04x}, tables at {:#x}",
             attribute(arch::kernel_image().start),
-            attribute(board.uart.base as usize)
+            attribute(board.uart.base as usize),
+            attribute(handoff_address),
+            arch::translation_root()
         );
     }
     let _ = writeln!(

@@ -44,6 +44,14 @@ pub fn halt() -> ! {
     }
 }
 
+/// `TTBR0_EL1` without the ASID: the root of the table the kernel runs on.
+pub fn translation_root() -> u64 {
+    let ttbr: u64;
+    // SAFETY: reading `TTBR0_EL1` has no side effects.
+    unsafe { asm!("mrs {}, ttbr0_el1", out(reg) ttbr, options(nomem, nostack, preserves_flags)) };
+    ttbr & 0x0000_ffff_ffff_f000
+}
+
 /// The memory attribute byte (as in `MAIR_EL1`) the current translation gives
 /// `address` for a privileged read, or `None` if the translation faults. With
 /// the MMU off it describes the default type of every access.
