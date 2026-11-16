@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/iuriandreazza/workspace-os/docs/schemas/action-plan.schema.json",
+  "title": "Action plan, version 1",
+  "description": "What the intent shell model may emit (ADR 0011). Either a plan or a clarifying question. Structural rules only; ids, dependencies and references are checked by code (see the ADR).",
+  "oneOf": [
+    { "$ref": "#/$defs/plan" },
+    { "$ref": "#/$defs/clarify" }
+  ],
+  "$defs": {
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version", "summary", "steps"],
+      "properties": {
+        "kind": { "const": "plan" },
+        "version": { "const": 1 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    },
+    "clarify": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version", "question"],
+      "properties": {
+        "kind": { "const": "clarify" },
+        "version": { "const": 1 },
+        "question": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "stepId": { "type": "string", "pattern": "^s[0-9]{1,2}$" },
+    "dependsOn": {
+      "type": "array",
+      "maxItems": 15,
+      "items": { "$ref": "#/$defs/stepId" }
+    },
+    "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "pathOrRef": {
+      "oneOf": [
+        { "$ref": "#/$defs/path" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["from_step"],
+          "properties": { "from_step": { "$ref": "#/$defs/stepId" } }
+        }
+      ]
+    },
+    "step": {
+      "oneOf": [
+        { "$ref": "#/$defs/fsList" },
+        { "$ref": "#/$defs/fsStat" },
+        { "$ref": "#/$defs/fsRead" },
+        { "$ref": "#/$defs/fsFindLargest" },
+        { "$ref": "#/$defs/fsWrite" },
+        { "$ref": "#/$defs/fsMove" },
+        { "$ref": "#/$defs/fsDelete" },
+        { "$ref": "#/$defs/processRun" },
+        { "$ref": "#/$defs/userManage" },
+        { "$ref": "#/$defs/systemConfigure" },
+        { "$ref": "#/$defs/soulProposeChange" }
+      ]
+    },
+    "fsList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on", "elevate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "fs.list" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": { "path": { "$ref": "#/$defs/pathOrRef" } }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" },
+        "elevate": { "type": "boolean" }
+      }
+    },
+    "fsStat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on", "elevate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "fs.stat" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": { "path": { "$ref": "#/$defs/pathOrRef" } }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" },
+        "elevate": { "type": "boolean" }
+      }
+    },
+    "fsRead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on", "elevate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "fs.read" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": { "path": { "$ref": "#/$defs/pathOrRef" } }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" },
+        "elevate": { "type": "boolean" }
+      }
+    },
+    "fsFindLargest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on", "elevate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "fs.find_largest" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "count"],
+          "properties": {
+            "path": { "$ref": "#/$defs/path" },
+            "count": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" },
+        "elevate": { "type": "boolean" }
+      }
+    },
+    "fsWrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on", "elevate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "fs.write" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "content", "mode"],
+          "properties": {
+            "path": { "$ref": "#/$defs/path" },
+            "content": { "type": "string", "maxLength": 65536 },
+            "mode": { "enum": ["create", "overwrite", "append"] }
+          }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" },
+        "elevate": { "type": "boolean" }
+      }
+    },
+    "fsMove": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on", "elevate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "fs.move" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["from", "to"],
+          "properties": {
+            "from": { "$ref": "#/$defs/pathOrRef" },
+            "to": { "$ref": "#/$defs/path" }
+          }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" },
+        "elevate": { "type": "boolean" }
+      }
+    },
+    "fsDelete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on", "elevate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "fs.delete" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": { "path": { "$ref": "#/$defs/pathOrRef" } }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" },
+        "elevate": { "type": "boolean" }
+      }
+    },
+    "processRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on", "elevate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "process.run" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["program", "argv"],
+          "properties": {
+            "program": { "type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$" },
+            "argv": {
+              "type": "array",
+              "maxItems": 32,
+              "items": { "type": "string", "maxLength": 1024 }
+            }
+          }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" },
+        "elevate": { "type": "boolean" }
+      }
+    },
+    "userManage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "user.manage" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "user", "group"],
+          "properties": {
+            "operation": { "enum": ["add", "remove", "add_to_group", "remove_from_group"] },
+            "user": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },
+            "group": {
+              "oneOf": [
+                { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" }
+      }
+    },
+    "systemConfigure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "system.configure" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "value"],
+          "properties": {
+            "key": { "type": "string", "pattern": "^[a-z][a-z0-9_.]{0,63}$" },
+            "value": { "type": "string", "maxLength": 256 }
+          }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" }
+      }
+    },
+    "soulProposeChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "soul.propose_change" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rationale", "new_text"],
+          "properties": {
+            "rationale": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "new_text": { "type": "string", "minLength": 1, "maxLength": 16384 }
+          }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" }
+      }
+    }
+  }
+}
