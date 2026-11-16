@@ -43,10 +43,10 @@ pub enum Parsed {
 /// name with `_` written as `-` (ADR 0022).
 enum Arg {
     /// A reference in the primary position: `--in`, `--name`, `--kind`,
-    /// `--new-name`, `--from-step`.
-    Reference(&'static str),
+    /// `--new-name`, `--from-step`, of the forms the argument accepts.
+    Reference(&'static str, &'static [Form]),
     /// The destination of a move, written with the same flags behind `--to-`.
-    Destination(&'static str),
+    Destination(&'static str, &'static [Form]),
     Number(&'static str),
     Text(&'static str),
     /// A word the format checks, with the value to use when the flag is absent
@@ -73,14 +73,40 @@ impl Command {
     }
 }
 
-const TARGET: Arg = Arg::Reference("target");
+/// A form of reference, as the schema's argument definitions list them. The
+/// format checks the same rule again; this copy lets the error and `help` say
+/// which flags an action takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Form {
+    Place,
+    Named,
+    New,
+    Step,
+}
+
+impl Form {
+    fn flags(self, prefix: &str) -> String {
+        match self {
+            Self::Place => format!("--{prefix}in PLACE"),
+            Self::Named => format!("--{prefix}name NAME --{prefix}in PLACE"),
+            Self::New => format!("--{prefix}new-name NAME --{prefix}in PLACE"),
+            Self::Step => format!("--{prefix}from-step sN"),
+        }
+    }
+}
+
+const READABLE: &[Form] = &[Form::Named, Form::Step];
+const TARGET: Arg = Arg::Reference("target", READABLE);
 
 static COMMANDS: &[Command] = &[
     Command {
         group: "fs",
         verb: "list",
         elevate: true,
-        args: &[TARGET],
+        args: &[Arg::Reference(
+            "target",
+            &[Form::Place, Form::Named, Form::Step],
+        )],
     },
     Command {
         group: "fs",
@@ -98,14 +124,17 @@ static COMMANDS: &[Command] = &[
         group: "fs",
         verb: "find_largest",
         elevate: true,
-        args: &[TARGET, Arg::Number("count")],
+        args: &[
+            Arg::Reference("target", &[Form::Place, Form::Named]),
+            Arg::Number("count"),
+        ],
     },
     Command {
         group: "fs",
         verb: "write",
         elevate: true,
         args: &[
-            TARGET,
+            Arg::Reference("target", &[Form::Named, Form::New]),
             Arg::Text("content"),
             Arg::Choice("mode", Some("create"), "create|overwrite|append"),
         ],
@@ -114,7 +143,10 @@ static COMMANDS: &[Command] = &[
         group: "fs",
         verb: "move",
         elevate: true,
-        args: &[Arg::Reference("from"), Arg::Destination("to")],
+        args: &[
+            Arg::Reference("from", READABLE),
+            Arg::Destination("to", &[Form::Place, Form::Named, Form::New]),
+        ],
     },
     Command {
         group: "fs",
@@ -160,6 +192,37 @@ static COMMANDS: &[Command] = &[
 #[cfg(test)]
 pub(crate) fn actions() -> Vec<String> {
     COMMANDS.iter().map(Command::action).collect()
+}
+
+/// The forms each reference argument accepts, for the test that compares them with the schema.
+#[cfg(test)]
+pub(crate) fn reference_forms(action: &str) -> Vec<(&'static str, Vec<&'static str>)> {
+    let names = |forms: &[Form]| {
+        forms
+            .iter()
+            .map(|form| match form {
+                Form::Place => "place",
+                Form::Named => "named",
+                Form::New => "new",
+                Form::Step => "step",
+            })
+            .collect()
+    };
+    COMMANDS
+        .iter()
+        .find(|c| c.action() == action)
+        .map(|c| {
+            c.args
+                .iter()
+                .filter_map(|arg| match arg {
+                    Arg::Reference(key, forms) | Arg::Destination(key, forms) => {
+                        Some((*key, names(forms)))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The commands that take `--elevate`, for the test that compares them with the root rules.
@@ -343,10 +406,10 @@ fn allowed_flags(command: &Command) -> Vec<String> {
     }
     for arg in command.args {
         match arg {
-            Arg::Reference(_) => {
+            Arg::Reference(..) => {
                 allowed.extend(["in", "name", "kind", "new-name", "from-step"].map(str::to_owned));
             }
-            Arg::Destination(_) => {
+            Arg::Destination(..) => {
                 allowed.extend(["to-in", "to-name", "to-new-name"].map(str::to_owned));
             }
             Arg::Number(key) | Arg::Text(key) | Arg::Choice(key, ..) | Arg::OptionalText(key) => {
@@ -453,8 +516,8 @@ fn build_arg(
             .ok_or_else(|| CommandError::new(format!("{name} needs --{flag}")))
     };
     Ok(match arg {
-        Arg::Reference(key) => (*key, reference(name, flags, "", depends_on)?),
-        Arg::Destination(key) => (*key, reference(name, flags, "to-", depends_on)?),
+        Arg::Reference(key, forms) => (*key, reference(name, flags, "", forms, depends_on)?),
+        Arg::Destination(key, forms) => (*key, reference(name, flags, "to-", forms, depends_on)?),
         Arg::Text(key) => (*key, Value::String(required(flags, key)?)),
         Arg::Number(key) => {
             let text = required(flags, key)?;
@@ -466,8 +529,15 @@ fn build_arg(
             })?;
             (*key, json!(number))
         }
-        Arg::Choice(key, default, _) => {
+        Arg::Choice(key, default, words) => {
             let value = match (flags.take(&flag_name(key)), default) {
+                (Some(value), _) if !words.split('|').any(|word| word == value) => {
+                    return Err(CommandError::new(format!(
+                        "{name}: --{} {value:?} is not one of {}",
+                        flag_name(key),
+                        words.replace('|', ", ")
+                    )));
+                }
                 (Some(value), _) => value,
                 (None, Some(default)) => (*default).to_owned(),
                 (None, None) => {
@@ -492,6 +562,34 @@ fn build_arg(
 /// The flags of one reference, with `prefix` in front of each. Which forms an
 /// argument accepts is the format's rule, not this function's.
 fn reference(
+    name: &str,
+    flags: &mut Flags,
+    prefix: &str,
+    forms: &[Form],
+    depends_on: &mut Vec<String>,
+) -> Result<Value, CommandError> {
+    let value = reference_value(name, flags, prefix, depends_on)?;
+    let form = match (
+        value.get("place"),
+        value.get("from_step"),
+        value.get("new_name"),
+    ) {
+        (Some(_), ..) => Form::Place,
+        (_, Some(_), _) => Form::Step,
+        (.., Some(_)) => Form::New,
+        _ => Form::Named,
+    };
+    if forms.contains(&form) {
+        return Ok(value);
+    }
+    let takes: Vec<String> = forms.iter().map(|f| f.flags(prefix)).collect();
+    Err(CommandError::new(format!(
+        "{name}: this reference is not accepted here; use {}",
+        takes.join(" or ")
+    )))
+}
+
+fn reference_value(
     name: &str,
     flags: &mut Flags,
     prefix: &str,
@@ -592,11 +690,11 @@ fn help() -> String {
     let mut out = String::from("Commands (one line, steps separated by `;`):\n");
     for command in COMMANDS {
         let mut line = format!("  {} {}", command.group, command.verb);
+        let mut last = String::new();
         for arg in command.args {
-            line.push(' ');
-            line.push_str(&match arg {
-                Arg::Reference(_) => "REFERENCE".to_owned(),
-                Arg::Destination(_) => "--to-in PLACE | --to-name NAME --to-in PLACE | --to-new-name NAME --to-in PLACE".to_owned(),
+            let text = match arg {
+                Arg::Reference(_, forms) => forms_help(forms, ""),
+                Arg::Destination(_, forms) => forms_help(forms, "to-"),
                 Arg::Number(key) => format!("--{} N", flag_name(key)),
                 Arg::Text(key) => format!("--{} TEXT", flag_name(key)),
                 Arg::Choice(key, Some(default), words) => {
@@ -605,21 +703,38 @@ fn help() -> String {
                 Arg::Choice(key, None, words) => format!("--{} {words}", flag_name(key)),
                 Arg::OptionalText(key) => format!("[--{} TEXT]", flag_name(key)),
                 Arg::Argv(_) => "[-- ARGUMENT...]".to_owned(),
-            });
+            };
+            // Everything after `--` is an argument, so it comes last.
+            if matches!(arg, Arg::Argv(_)) {
+                last = text;
+            } else {
+                line.push(' ');
+                line.push_str(&text);
+            }
         }
         if command.elevate {
             line.push_str(" [--elevate]");
+        }
+        line.push_str(" [--after sN]");
+        if !last.is_empty() {
+            line.push(' ');
+            line.push_str(&last);
         }
         out.push_str(&line);
         out.push('\n');
     }
     out.push_str(&format!(
-        "REFERENCE is --in PLACE, --name NAME --in PLACE [--kind file|folder|any],\n\
-         --new-name NAME --in PLACE, or --from-step sN (what step sN found).\n\
+        "A name is --name NAME --in PLACE [--kind file|folder|any] (default any).\n\
+         --from-step sN means what step sN found; flags after `--` belong to the program.\n\
          Places: {places}.\n\
          Steps are s1, s2, ... by position; --after sN makes a step wait for sN.\n\
          Quote with '...' or \"...\"; nothing is expanded. A line holds up to 16 steps.\n",
         places = place_words()
     ));
     out
+}
+
+fn forms_help(forms: &[Form], prefix: &str) -> String {
+    let all: Vec<String> = forms.iter().map(|f| f.flags(prefix)).collect();
+    format!("({})", all.join(" | "))
 }

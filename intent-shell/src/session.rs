@@ -84,6 +84,18 @@ pub enum Entry {
     Command,
 }
 
+impl Entry {
+    /// The one place that decides: a session with a model reads requests,
+    /// one without reads commands.
+    pub fn for_model(has_model: bool) -> Self {
+        if has_model {
+            Self::Request
+        } else {
+            Self::Command
+        }
+    }
+}
+
 pub struct Shell<'a> {
     pub authority: &'a Authority,
     pub host: &'a dyn Host,

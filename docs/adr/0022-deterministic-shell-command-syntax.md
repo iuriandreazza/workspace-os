@@ -96,8 +96,10 @@ empty token. An unterminated quote or a trailing `\` is an error.
 `-`, after `--`, followed by its value. A flag appears at most once. The
 schema's argument is the only source: an unknown flag, a missing required flag,
 a repeated flag or a value of the wrong type is an error naming the flag, and is
-never guessed. Flag values are always the next token, so a value may start with
-`-` only if quoted. `--elevate` takes no value. Nothing else is boolean.
+never guessed. Flag values are always the next token. A value that starts with `--` must be
+quoted or escaped (`'--x'`, `\--x`), or it is read as the next flag; a single `-`
+is an ordinary character (`--count -1` is refused by the number check, not by
+the tokenizer). `--elevate` takes no value. Nothing else is boolean.
 
 | Action | Flags |
 |---|---|
@@ -124,7 +126,10 @@ propose_change` do not take it, as in the schema.
 | `--new-name notes.txt --in documents` | `{"new_name":…,"in":…}` |
 | `--from-step s1` | `{"from_step":"s1"}` |
 
-Mixing forms is an error. The reference of `fs move`'s destination uses the same
+An action takes only the forms its argument accepts in the schema (a place is
+for `fs list`, `fs find_largest` and a move's destination, never for `fs
+delete`); the command layer says which flags the action takes, `help` lists them
+per action, and a test compares both with the schema. Mixing forms is an error. The reference of `fs move`'s destination uses the same
 flags with `--to-` in front; its `--to-name` is always a folder, so `--to-kind`
 does not exist. There is no flag in which a path can be written (ADR 0014).
 
@@ -147,7 +152,9 @@ events: `plan_accepted`, `search`, `choice`, `review`, `plan_confirmation` or
 command is never logged as a model decision (ADR 0002 rule 3 concerns the
 model, and the log is what retraining reads). The first write of a typed
 command is its own record, and the shell stops before anything when the log
-cannot be written.
+cannot be written. That holds for the recovery mode too (ADR 0002 rule 3 and
+ADR 0011): it starts only where the decision log can be opened, and a recovery
+boot has to give it a writable place (K13).
 
 ### 5. Growth with ADR 0018
 
@@ -169,7 +176,7 @@ the same documents, so the mechanical table stays the only definition.
 | Several steps | `;` inside one line | A script of one step per line: needs a line adapter with state ("more to come") and cannot work in the single-line input of the interface. Many independent requests are already many lines |
 | References between steps | `--from-step s1` | `$s1`: ADR 0011 hints at it, but `$` invites the expansion this shell must not have |
 | Elevation | Explicit `--elevate`, decided by the broker | Prompting for root on refusal: it would promote a refused step, which ADR 0011 forbids |
-| Defaults | `--kind any`, `--mode create` only | None: safer to read but unusable. `create` is the weakest mode (it refuses to overwrite). `any` is the widest kind, not the narrowest, so `fs delete --name backup --in home` may match a file and a folder: the match is shown by name, an ambiguity is the person's choice, and the plan is confirmed before a delete runs. ADR 0014's example writes `--kind file` explicitly when that is meant |
+| Defaults | `--kind any`, `--mode create` only | None: safer to read but unusable. `create` is the weakest mode (it refuses to overwrite). `any` is the widest kind, not the narrowest, so `fs delete --name backup --in home` may match a file and a folder: the match is shown by name, an ambiguity is the person's choice, and the plan is confirmed before a delete runs. ADR 0014's example writes `--kind file` explicitly when that is meant. Known limit: the friendly plan screen does not say whether a resolved name is a file or a folder, so type `--kind file` or `--kind folder` when it matters; showing the kind belongs to the screen (a follow-up) |
 
 ## Consequences
 

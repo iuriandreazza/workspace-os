@@ -25,11 +25,7 @@ pub struct Setup {
 
 impl Setup {
     pub fn entry(&self) -> Entry {
-        if self.planner.is_some() {
-            Entry::Request
-        } else {
-            Entry::Command
-        }
+        Entry::for_model(self.planner.is_some())
     }
 
     pub fn header(&self) -> String {

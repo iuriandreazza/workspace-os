@@ -9,6 +9,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::wrap::{text_width, wrap};
 use crate::action::printable;
+use crate::session::Entry;
 
 /// An entry of the history. The text is already safe to print: it comes from
 /// `screen` and `Outcome::render`, which escape what the model and the machine
@@ -153,10 +154,14 @@ impl State {
         }
     }
 
-    /// The shell has no model: a line is a command and nothing waits for one.
-    pub fn without_model(mut self) -> Self {
-        self.submit_label = "working";
-        self
+    /// A state for how the session reads lines: with no model a line is a
+    /// command and nothing waits for one.
+    pub fn for_entry(header: String, entry: Entry) -> Self {
+        let mut state = Self::new(header);
+        if entry == Entry::Command {
+            state.submit_label = "working";
+        }
+        state
     }
 
     pub fn set_size(&mut self, width: u16, height: u16) {
@@ -920,6 +925,32 @@ mod tests {
             assert_eq!(state.on_key(ctrl('d')), Effect::Nothing);
         }
         assert_eq!(State::new(String::new()).on_key(ctrl('d')), Effect::Quit);
+    }
+
+    #[test]
+    fn with_no_model_a_sent_line_is_work_not_a_wait_for_the_model() {
+        let sent = |mut state: State| {
+            for c in "fs list --in home".chars() {
+                state.on_key(press(KeyCode::Char(c)));
+            }
+            state.on_key(press(KeyCode::Enter));
+            state.mode
+        };
+        assert!(matches!(
+            sent(State::for_entry(String::new(), Entry::Request)),
+            Mode::Busy {
+                label: "asking the model",
+                ..
+            }
+        ));
+        // Leaving waits for a running step only under the label "working".
+        assert!(matches!(
+            sent(State::for_entry(String::new(), Entry::Command)),
+            Mode::Busy {
+                label: "working",
+                ..
+            }
+        ));
     }
 
     #[test]

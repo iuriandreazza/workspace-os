@@ -265,18 +265,18 @@ fn what_cannot_be_read_as_a_command_is_refused_with_the_reason_and_runs_nothing(
 fn the_format_refuses_what_the_model_would_be_refused() {
     // Each of these parses as words and is refused by the same check as the model's text.
     for (line, reason) in [
-        ("fs delete --in downloads", "does not accept"),
-        ("fs read --in downloads", "does not accept"),
+        ("fs delete --in downloads", "not accepted here"),
+        ("fs read --in downloads", "not accepted here"),
         (
             "fs write --name a --in home --content x --mode wipe",
             "wipe",
         ),
-        ("fs write --in home --content x", "does not accept"),
+        ("fs write --in home --content x", "not accepted here"),
         ("fs find_largest --in home --count 0", "1 to 100"),
         ("fs find_largest --in home --count 101", "1 to 100"),
         (
             "fs find_largest --from-step s1 --count 1",
-            "does not accept",
+            "not accepted here",
         ),
         (
             "fs move --name a --in home --to-name b --to-in home --from-step s1",
@@ -909,5 +909,113 @@ fn what_is_refused_cannot_forge_the_screen() {
             !text.contains('\u{1b}') && !text.contains('\u{202e}'),
             "{text:?}"
         );
+    }
+}
+
+#[test]
+fn the_forms_each_argument_takes_are_the_ones_the_schema_allows() {
+    let schema: Value = serde_json::from_str(&docs("action-plan.schema.json")).unwrap();
+    let defs = &schema["$defs"];
+    let form_of = |reference: &str| match reference.rsplit('/').next().unwrap() {
+        "refPlace" => "place",
+        "refNamed" | "refFolder" => "named",
+        "refNew" => "new",
+        "refFromStep" => "step",
+        other => panic!("{other}"),
+    };
+    let mut checked = 0;
+    for action in command::actions() {
+        let forms = command::reference_forms(&action);
+        let step_def = defs["step"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["$ref"].as_str().unwrap().rsplit('/').next().unwrap())
+            .find(|name| defs[name]["properties"]["action"]["const"] == action.as_str())
+            .unwrap();
+        let args = &defs[step_def]["properties"]["args"]["properties"];
+        for key in ["target", "from", "to"] {
+            let Some(argument) = args.get(key) else {
+                continue;
+            };
+            let type_name = argument["$ref"]
+                .as_str()
+                .unwrap()
+                .rsplit('/')
+                .next()
+                .unwrap();
+            let mut allowed: Vec<&str> = defs[type_name]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| form_of(r["$ref"].as_str().unwrap()))
+                .collect();
+            let mut ours = forms.iter().find(|(k, _)| *k == key).unwrap().1.clone();
+            allowed.sort();
+            ours.sort();
+            assert_eq!(allowed, ours, "{action} {key}");
+            checked += 1;
+        }
+        assert_eq!(
+            forms.len(),
+            args.as_object()
+                .unwrap()
+                .keys()
+                .filter(|k| ["target", "from", "to"].contains(&k.as_str()))
+                .count(),
+            "{action}"
+        );
+    }
+    assert_eq!(checked, 8);
+}
+
+#[test]
+fn flags_after_the_double_dash_belong_to_the_program() {
+    let plan = plan_of("process run --program tar -- x --elevate --after s1");
+    assert!(!plan.steps[0].elevate && plan.steps[0].depends_on.is_empty());
+    assert!(format!("{:?}", plan.steps[0].spec).contains("\"--elevate\""));
+    let Ok(Parsed::Help(text)) = command::parse("help") else {
+        panic!("help")
+    };
+    let line = text.lines().find(|l| l.contains("process run")).unwrap();
+    assert!(line.ends_with("[-- ARGUMENT...]"), "{line}");
+}
+
+#[test]
+fn a_word_the_format_checks_names_its_flag() {
+    for (line, flag) in [
+        (
+            "fs write --new-name n --in home --content x --mode Create",
+            "--mode",
+        ),
+        ("user manage --operation foo --user bob", "--operation"),
+    ] {
+        let why = refused(line);
+        assert!(
+            why.contains(flag) && why.contains("is not one of"),
+            "{line}: {why}"
+        );
+    }
+}
+
+#[test]
+fn the_shell_applies_the_formats_semantic_rules_to_a_typed_line() {
+    // Each line is well formed as words and as structure, and breaks a rule only `check_rules` knows.
+    for line in [
+        "fs list --in home --after s9",
+        "fs stat --name a --in home --after s2; fs stat --name b --in home --after s1",
+        "fs stat --from-step s2; fs stat --name a --in home",
+        "user manage --operation add --user bob --group staff",
+    ] {
+        let host = files();
+        let result = typed(line, &host, false, Answers::yes(), MemoryLog::default());
+        assert!(
+            matches!(result.outcome, Outcome::BadCommand(_)),
+            "{line}: {:?}",
+            result.outcome
+        );
+        assert!(host.executed.borrow().is_empty(), "{line}");
+        assert_eq!(result.log.events.len(), 1, "{line}");
+        assert_eq!(result.log.events[0]["accepted"], false, "{line}");
     }
 }

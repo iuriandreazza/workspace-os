@@ -83,15 +83,22 @@ interface). `command_tests.rs`, none needing a model:
 - every action in the schema's `step` list has a command and no command is
   invented (the schema is read in the test), and `--elevate` is accepted exactly
   where the root rule says a step may ask for root;
-- quoting, escapes and 33 malformed lines, each refused with the reason, and 20
+- quoting, escapes and about 35 malformed lines, each refused with the reason, and 19
   lines that parse as words and are refused by the format's own rules (a place
   to delete, a count of 0, a name with `..`, `elevate` on `user.manage`, 17 steps);
 - the same scenario typed and as the model's document gives the same log events
   (apart from the author's), the same questions, the same root panels, the same
   executed actions and the same outcome: a read that runs without asking, a
   delete that asks, a refused delete, a root action held for a non-administrator,
-  a root panel for an administrator, an ambiguous name and the person's choice,
-  a name not found;
+  a root panel for an administrator, an ambiguous name and the person's choice;
+  a name not found, a declined plan and a dead log are tested on the typed side;
+- the shell itself (not only the helper) refuses a typed line that breaks a
+  semantic rule of the format, and the forms each argument takes are compared
+  with the schema, as `help` prints them;
+- `tests/no_model.rs` runs the real binary with `--no-model --plain`: a read runs,
+  a bad line is refused, a delete asks, root needs an administrator and gets its
+  own panel, `--model` with `--no-model` is refused, and the log holds `command`
+  and no model event;
 - a log that cannot be written stops a command before it runs anything, including
   a refused one.
 
@@ -106,6 +113,9 @@ Mutation check, by hand (each change applied, the suite run, the source restored
 | the typed line is not logged | the log test |
 | a backslash is not an escape | 2 tests |
 | `system configure` takes `--elevate` | 2 tests |
+| the shell checks a typed plan with `parse` instead of `parse_checked` | the semantic-rules test |
+| a session with no model still reads requests | the interface and binary tests |
+| the interface waits for a model under no model | the state test |
 
 ## Limits and follow-ups
 

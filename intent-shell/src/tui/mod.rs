@@ -105,11 +105,7 @@ fn serve(
     events: Sender<Event>,
     replies: Receiver<Reply>,
 ) {
-    let entry = if model.is_some() {
-        Entry::Request
-    } else {
-        Entry::Command
-    };
+    let entry = Entry::for_model(model.is_some());
     let planner = ProgressPlanner {
         inner: model.unwrap_or(&NoModel),
         events: events.clone(),
@@ -283,10 +279,7 @@ fn write_transcript(path: &Path, text: &str) -> std::io::Result<()> {
 /// Open the interface and run until the person quits. The history is printed
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
-    let mut state = State::new(setup.header());
-    if setup.entry() == Entry::Command {
-        state = state.without_model();
-    }
+    let mut state = State::for_entry(setup.header(), setup.entry());
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
