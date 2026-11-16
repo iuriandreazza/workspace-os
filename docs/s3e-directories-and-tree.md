@@ -65,7 +65,7 @@ request + current directory ─► model (output constrained by the schema, vers
    and the interface (candidates selected with the arrows, context unmarked).
 4. **Schema version 3** (`docs/schemas/`): `{"path": …}`, `{"under_home": true,
    "name", "kind"}`, `in` as a place or a path, `session.cd` (no `elevate`);
-   `everywhere` is gone. 56 examples, each a test in the gate and in
+   `everywhere` is gone. 57 examples, each a test in the gate and in
    `validate.py`.
 5. **Migration**: a version 2 document is refused with `unsupported version 2`
    and the model is shown that on its retry. The decision log is not versioned;
@@ -153,7 +153,7 @@ changes.
 
 ## Tests and the gate
 
-`./scripts/check.sh` runs 314 tests for `intent-shell`, none needing the
+`./scripts/check.sh` runs 315 tests for `intent-shell`, none needing the
 model (it was 246). `intent-shell/src/directories_tests.rs` holds the ones of
 this item; `host.rs` has the ones that need a real filesystem (links, the
 tree, the cap).
@@ -206,6 +206,7 @@ tests" (138 failures for version 3 read as version 2).
 | a read of what must ask runs before the question | 1 |
 | `cd` mixed with other steps accepted | 2 |
 | a `cd` leaks into the next session (a global) | 3 |
+| a path below a file is not "not found" | 1 |
 
 ## The live test
 
