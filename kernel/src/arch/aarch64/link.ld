@@ -6,6 +6,7 @@ SECTIONS
        (1 MiB) there, but only when the kernel image does not overlap it, so
        the kernel is linked 2 MiB above the start of RAM. */
     . = 0x40200000;
+    __image_start = .;
 
     .text : {
         KEEP(*(.text.boot))
@@ -31,6 +32,7 @@ SECTIONS
 
     /* 64 KiB boot stack; AArch64 requires a 16-byte aligned stack pointer. */
     . = ALIGN(16);
+    __stack_bottom = .;
     . += 0x10000;
     __stack_top = .;
 

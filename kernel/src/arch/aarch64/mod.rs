@@ -1,9 +1,31 @@
 use core::arch::{asm, global_asm};
+use core::ops::Range;
 
 global_asm!(include_str!("boot.s"));
 global_asm!(include_str!("exceptions.s"));
 
 mod exceptions;
+
+// Addresses the linker script defines; only their addresses mean anything.
+unsafe extern "C" {
+    safe static __image_start: u8;
+    safe static __stack_bottom: u8;
+    safe static __stack_top: u8;
+}
+
+fn address_of(symbol: &u8) -> usize {
+    core::ptr::from_ref(symbol) as usize
+}
+
+/// Physical addresses of the loaded kernel: code, data and `.bss`.
+pub fn kernel_image() -> Range<usize> {
+    address_of(&__image_start)..address_of(&__stack_bottom)
+}
+
+/// Physical addresses of the boot stack, which sits right after the image.
+pub fn boot_stack() -> Range<usize> {
+    address_of(&__stack_bottom)..address_of(&__stack_top)
+}
 
 #[cfg(feature = "selftest-compiler-trap")]
 pub use exceptions::raise_compiler_trap;

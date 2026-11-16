@@ -4,6 +4,7 @@
 mod arch;
 mod board;
 mod drivers;
+mod memory;
 mod memory_image;
 
 use core::fmt::Write;
@@ -37,6 +38,13 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         "workspace-os kernel: uart pl011 at {:#x}",
         board.uart.base
     );
+
+    let mut frames = match memory::init(&board) {
+        Ok(frames) => frames,
+        Err(error) => panic!("physical memory: {error}"),
+    };
+    memory::report(&frames, &board, &mut console);
+    memory::selftest(&mut frames, &board, &mut console);
 
     arch::run_selftest();
     let _ = writeln!(console, "workspace-os kernel: resumed after breakpoint");

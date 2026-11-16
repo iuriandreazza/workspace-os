@@ -14,8 +14,10 @@ context, is decoded from `ESR_EL1` and, for a breakpoint, returns to the
 interrupted code. Any other exception ends in a kernel panic that describes it, as long as
 the kernel stack is valid (guard pages come with the MMU).
 
-Next milestone: device tree, memory allocation and the MMU, the base for
-isolated processes. The full plan is in [docs/roadmap.md](docs/roadmap.md).
+The kernel reads the whole memory map and the reserved regions from the device
+tree and manages physical memory in 4 KiB frames.
+
+Next milestone: the MMU, the base for isolated processes. The full plan is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Requirements
 
@@ -52,6 +54,8 @@ passing.
 | `kernel/src/main.rs` | Kernel entry point and panic handler |
 | `kernel/src/arch/` | Architecture-specific code (boot assembly, exception vectors, linker script) |
 | `kernel/src/memory_image.rs` | Boot-time self-test of `.bss` and `.data` |
+| `kernel/src/memory.rs` | Builds the frame allocator from the device tree and the kernel layout; boot-time self-test |
+| `physmem/` | Allocation-free physical frame allocator with host unit tests |
 | `kernel/src/board.rs` | Reads memory and UART from the device tree; QEMU `virt` fallback location of the blob |
 | `devicetree/` | Minimal, allocation-free device tree reader with host unit tests |
 | `kernel/src/drivers/` | Device drivers that live in the kernel for now |

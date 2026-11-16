@@ -20,8 +20,12 @@ const UART_COMPATIBLE: &str = "arm,pl011";
 static CONSOLE_BASE: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Board {
+    /// The first region of the first memory node, for the banner.
     pub memory: Region,
     pub uart: Region,
+    /// Where the blob lives: the allocator must not hand it out.
+    pub device_tree: Region,
+    pub fdt: Fdt<'static>,
 }
 
 /// Reads the device tree and makes the console usable.
@@ -40,14 +44,20 @@ pub fn discover(boot_address: usize) -> Result<Board, Error> {
 
 fn read_device_tree(address: usize) -> Result<Board, Error> {
     // SAFETY: the address is either the loader's device tree pointer or the
-    // start of RAM on QEMU `virt`, where the blob lives. Nothing writes there
-    // during boot. The contents are validated by the reader; that the claimed
-    // size stays inside RAM is trusted from the loader, as the boot protocol
-    // requires.
+    // start of RAM on QEMU `virt`, where the blob lives. Nothing writes there:
+    // the kernel never does, and `memory::init` reserves the blob so that the
+    // frame allocator never hands it out. The contents are validated by the
+    // reader; that the claimed size stays inside RAM is trusted from the
+    // loader, as the boot protocol requires.
     let fdt = unsafe { Fdt::from_address(address) }?;
     Ok(Board {
         memory: fdt.memory()?,
         uart: fdt.device(UART_COMPATIBLE)?,
+        device_tree: Region {
+            base: address as u64,
+            size: fdt.size() as u64,
+        },
+        fdt,
     })
 }
 

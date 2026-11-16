@@ -6,10 +6,16 @@
 //! the bounds of the block it lives in before it is used.
 //!
 //! Only what the kernel asks for is supported: the first `reg` entry of the
-//! first usable memory node and of the first usable node with a given
-//! `compatible` string, among the direct children of the root node. `reg`
-//! values are taken as CPU physical addresses, which holds when the parent bus
-//! has no address translation; nodes below another bus are not looked at.
+//! first usable node with a given `compatible` string, among the direct
+//! children of the root node; every `reg` entry of every usable memory node;
+//! and the regions the tree reserves (`/memreserve/` and the children of
+//! `reserved-memory`). `reg` values are taken as CPU physical addresses, which
+//! holds when the parent bus has no address translation; nodes below another
+//! bus are not looked at.
+//!
+//! The memory and reservation walkers hand out raw ranges: a size of zero or a
+//! range that wraps the address space is passed on as found, because deciding
+//! what to do with a hostile range belongs to whoever uses it.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -44,6 +50,7 @@ pub enum Error {
     BadString,
     UnsupportedCells,
     MalformedReg,
+    UnsupportedRanges,
     NotFound,
 }
 
@@ -61,6 +68,7 @@ impl fmt::Display for Error {
             Self::BadString => "device tree holds an unterminated string",
             Self::UnsupportedCells => "device tree uses an unsupported cell count",
             Self::MalformedReg => "device tree reg property is malformed",
+            Self::UnsupportedRanges => "device tree reserved-memory translates addresses",
             Self::NotFound => "device tree has no matching node",
         };
         f.write_str(text)
@@ -74,7 +82,10 @@ pub struct Region {
     pub size: u64,
 }
 
+#[derive(Clone, Copy)]
 pub struct Fdt<'a> {
+    size: usize,
+    reserve_map: &'a [u8],
     structure: &'a [u8],
     strings: &'a [u8],
 }
@@ -136,6 +147,7 @@ impl<'a> Fdt<'a> {
             return Err(Error::UnsupportedVersion);
         }
 
+        let reserve_map_offset = to_usize(read_u32(blob, 16)?)?;
         let structure_offset = to_usize(read_u32(blob, 8)?)?;
         let strings_offset = to_usize(read_u32(blob, 12)?)?;
         let strings_size = to_usize(read_u32(blob, 32)?)?;
@@ -143,22 +155,105 @@ impl<'a> Fdt<'a> {
         if !structure_offset.is_multiple_of(4) || !structure_size.is_multiple_of(4) {
             return Err(Error::BadHeader);
         }
+        // The reservation map is a list of 16-byte entries, 8-byte aligned.
+        if !reserve_map_offset.is_multiple_of(8) {
+            return Err(Error::BadHeader);
+        }
         Ok(Fdt {
+            size: total_size,
+            reserve_map: blob.get(reserve_map_offset..).ok_or(Error::BadHeader)?,
             structure: sub_block(blob, structure_offset, structure_size)?,
             strings: sub_block(blob, strings_offset, strings_size)?,
         })
     }
 
+    /// Size in bytes the header claims for the whole blob.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Calls `visit` for every `reg` entry of every enabled node whose
+    /// `device_type` is `memory`, in tree order.
+    pub fn for_each_memory_region(&self, mut visit: impl FnMut(Region)) -> Result<(), Error> {
+        self.find_root_child(|node| {
+            if node.device_type == Some(b"memory\0") {
+                node.for_each_entry(&mut visit)?;
+            }
+            Ok(false)
+        })
+        .map(|_| ())
+    }
+
+    /// Calls `visit` for every range the tree marks as not available to the
+    /// kernel: the `/memreserve/` entries and each enabled child of
+    /// `reserved-memory` that has a `reg`. Children that only ask for a size
+    /// (dynamic allocation) reserve nothing yet and are skipped.
+    pub fn for_each_reserved_region(&self, mut visit: impl FnMut(Region)) -> Result<(), Error> {
+        self.for_each_memreserve(&mut visit)?;
+        self.for_each_reserved_memory_child(&mut visit)
+    }
+
+    fn for_each_memreserve(&self, visit: &mut impl FnMut(Region)) -> Result<(), Error> {
+        let mut offset = 0;
+        loop {
+            // A map with no terminating (0, 0) entry runs off the blob.
+            let base = read_u64(self.reserve_map, offset)?;
+            let size = read_u64(self.reserve_map, offset + 8)?;
+            if base == 0 && size == 0 {
+                return Ok(());
+            }
+            visit(Region { base, size });
+            offset += 16;
+        }
+    }
+
+    fn for_each_reserved_memory_child(&self, visit: &mut impl FnMut(Region)) -> Result<(), Error> {
+        let root = self.root_cells()?;
+        let mut cells = root;
+        let mut inside = false;
+        let mut child = Node::empty(root);
+        let mut tokens = Tokens::new(self);
+        while let Some(token) = tokens.next_token()? {
+            match token {
+                Token::BeginNode { name } if tokens.depth == 2 => {
+                    inside = name == b"reserved-memory";
+                    cells = root;
+                }
+                Token::Property { name, value } if inside && tokens.depth == 2 => match name {
+                    b"#address-cells" => cells.address = single_cell(value)?,
+                    b"#size-cells" => cells.size = single_cell(value)?,
+                    // An empty `ranges` is the identity; anything else
+                    // translates addresses, which is not supported.
+                    b"ranges" if !value.is_empty() => return Err(Error::UnsupportedRanges),
+                    _ => {}
+                },
+                Token::BeginNode { .. } if inside && tokens.depth == 3 => {
+                    child = Node::empty(cells);
+                }
+                Token::Property { name, value } if inside && tokens.depth == 3 => {
+                    child.record(name, value);
+                }
+                // `depth` already counts the node this token closes as closed.
+                Token::EndNode if inside && tokens.depth == 2 => {
+                    if child.is_enabled() && child.reg.is_some() {
+                        child.for_each_entry(&mut *visit)?;
+                    }
+                }
+                Token::EndNode if tokens.depth == 1 => inside = false,
+                Token::BeginNode { .. } | Token::Property { .. } | Token::EndNode => {}
+            }
+        }
+        Ok(())
+    }
+
     /// First region of the first enabled node whose `device_type` is `memory`.
     pub fn memory(&self) -> Result<Region, Error> {
-        let node = self.find_root_child(|node| node.device_type == Some(b"memory\0"))?;
-        node.region()
+        self.first_root_child_region(|node| node.device_type == Some(b"memory\0"))
     }
 
     /// First region of the first enabled node whose `compatible` list holds `compatible`.
     pub fn device(&self, compatible: &str) -> Result<Region, Error> {
-        let node = self.find_root_child(|node| node.is_compatible(compatible))?;
-        node.region()
+        self.first_root_child_region(|node| node.is_compatible(compatible))
     }
 
     fn root_cells(&self) -> Result<Cells, Error> {
@@ -171,34 +266,53 @@ impl<'a> Fdt<'a> {
         // time the first child starts.
         while let Some(token) = tokens.next_token()? {
             match token {
-                Token::BeginNode if tokens.depth > 1 => break,
+                Token::BeginNode { .. } if tokens.depth > 1 => break,
                 Token::Property { name, value } if tokens.depth == 1 => match name {
                     b"#address-cells" => cells.address = single_cell(value)?,
                     b"#size-cells" => cells.size = single_cell(value)?,
                     _ => {}
                 },
-                Token::BeginNode | Token::Property { .. } | Token::EndNode => {}
+                Token::BeginNode { .. } | Token::Property { .. } | Token::EndNode => {}
             }
         }
         Ok(cells)
     }
 
-    fn find_root_child(&self, wanted: impl Fn(&Node<'a>) -> bool) -> Result<Node<'a>, Error> {
+    fn first_root_child_region(&self, wanted: impl Fn(&Node<'a>) -> bool) -> Result<Region, Error> {
+        let mut region = Err(Error::NotFound);
+        self.find_root_child(|node| {
+            if !wanted(node) {
+                return Ok(false);
+            }
+            region = node.region();
+            Ok(true)
+        })?;
+        region
+    }
+
+    /// Calls `visit` for each enabled direct child of the root, once its
+    /// properties are known. `visit` returns `true` to stop the walk.
+    fn find_root_child(
+        &self,
+        mut visit: impl FnMut(&Node<'a>) -> Result<bool, Error>,
+    ) -> Result<(), Error> {
         let cells = self.root_cells()?;
         let mut tokens = Tokens::new(self);
         let mut current = Node::empty(cells);
         while let Some(token) = tokens.next_token()? {
             match token {
-                Token::BeginNode if tokens.depth == 2 => current = Node::empty(cells),
+                Token::BeginNode { .. } if tokens.depth == 2 => current = Node::empty(cells),
                 Token::Property { name, value } if tokens.depth == 2 => current.record(name, value),
                 // `depth` already counts the node this token closes as closed.
-                Token::EndNode if tokens.depth == 1 && current.is_enabled() && wanted(&current) => {
-                    return Ok(current);
+                Token::EndNode if tokens.depth == 1 && current.is_enabled() => {
+                    if visit(&current)? {
+                        return Ok(());
+                    }
                 }
-                Token::BeginNode | Token::Property { .. } | Token::EndNode => {}
+                Token::BeginNode { .. } | Token::Property { .. } | Token::EndNode => {}
             }
         }
-        Err(Error::NotFound)
+        Ok(())
     }
 }
 
@@ -255,7 +369,8 @@ impl<'a> Node<'a> {
                 .any(|entry| entry == wanted.as_bytes())
     }
 
-    fn region(&self) -> Result<Region, Error> {
+    /// The `reg` bytes with the sizes of one address and of one whole entry.
+    fn reg_layout(&self) -> Result<(&'a [u8], usize, usize), Error> {
         let reg = self.reg.ok_or(Error::MalformedReg)?;
         let (address_cells, size_cells) = (self.cells.address, self.cells.size);
         if !(1..=2).contains(&address_cells) || !(1..=2).contains(&size_cells) {
@@ -263,6 +378,27 @@ impl<'a> Node<'a> {
         }
         let address_bytes = to_usize(address_cells)? * 4;
         let entry_bytes = address_bytes + to_usize(size_cells)? * 4;
+        Ok((reg, address_bytes, entry_bytes))
+    }
+
+    /// Every entry of `reg`, unchecked beyond the layout: a trailing partial
+    /// entry is an error, but a size of zero or a wrapping range is passed on.
+    fn for_each_entry(&self, mut visit: impl FnMut(Region)) -> Result<(), Error> {
+        let (reg, address_bytes, entry_bytes) = self.reg_layout()?;
+        if !reg.len().is_multiple_of(entry_bytes) {
+            return Err(Error::MalformedReg);
+        }
+        for entry in reg.chunks_exact(entry_bytes) {
+            visit(Region {
+                base: read_cells(&entry[..address_bytes]),
+                size: read_cells(&entry[address_bytes..]),
+            });
+        }
+        Ok(())
+    }
+
+    fn region(&self) -> Result<Region, Error> {
+        let (reg, address_bytes, entry_bytes) = self.reg_layout()?;
         if reg.len() < entry_bytes {
             return Err(Error::MalformedReg);
         }
@@ -276,7 +412,7 @@ impl<'a> Node<'a> {
 }
 
 enum Token<'a> {
-    BeginNode,
+    BeginNode { name: &'a [u8] },
     Property { name: &'a [u8], value: &'a [u8] },
     EndNode,
 }
@@ -321,11 +457,10 @@ impl<'a> Tokens<'a> {
                     };
                 }
                 TOKEN_BEGIN_NODE => {
-                    // The name is only validated: nothing here needs it.
-                    let name = c_string(&structure[self.position..])?;
+                    let name = c_string(structure.get(self.position..).ok_or(Error::Truncated)?)?;
                     self.position = align4(self.position + name.len() + 1)?;
                     self.depth += 1;
-                    return Ok(Some(Token::BeginNode));
+                    return Ok(Some(Token::BeginNode { name }));
                 }
                 TOKEN_END_NODE => {
                     self.depth = self.depth.checked_sub(1).ok_or(Error::BadToken)?;
@@ -357,6 +492,12 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, Error> {
     let end = offset.checked_add(4).ok_or(Error::Truncated)?;
     let word = bytes.get(offset..end).ok_or(Error::Truncated)?;
     Ok(u32::from_be_bytes([word[0], word[1], word[2], word[3]]))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, Error> {
+    let end = offset.checked_add(8).ok_or(Error::Truncated)?;
+    let word = bytes.get(offset..end).ok_or(Error::Truncated)?;
+    Ok(read_cells(word))
 }
 
 fn to_usize(value: u32) -> Result<usize, Error> {
@@ -402,6 +543,7 @@ mod tests {
     struct Builder {
         structure: Vec<u8>,
         strings: Vec<u8>,
+        memreserve: Vec<(u64, u64)>,
     }
 
     impl Builder {
@@ -409,6 +551,7 @@ mod tests {
             Self {
                 structure: Vec::new(),
                 strings: Vec::new(),
+                memreserve: Vec::new(),
             }
         }
 
@@ -454,7 +597,7 @@ mod tests {
 
         fn finish(&mut self) -> Vec<u8> {
             self.word(TOKEN_END);
-            let structure_offset = HEADER_SIZE + 16;
+            let structure_offset = HEADER_SIZE + 16 * (self.memreserve.len() + 1);
             let strings_offset = structure_offset + self.structure.len();
             let total = strings_offset + self.strings.len();
             let mut blob = Vec::new();
@@ -471,6 +614,10 @@ mod tests {
                 self.structure.len() as u32,
             ] {
                 blob.extend_from_slice(&word.to_be_bytes());
+            }
+            for (base, size) in &self.memreserve {
+                blob.extend_from_slice(&base.to_be_bytes());
+                blob.extend_from_slice(&size.to_be_bytes());
             }
             blob.extend_from_slice(&[0; 16]);
             blob.extend_from_slice(&self.structure);
@@ -794,6 +941,261 @@ mod tests {
                 blob[index] ^= flip;
                 if let Ok(fdt) = Fdt::parse(&blob) {
                     let _ = (fdt.memory(), fdt.device("arm,pl011"));
+                }
+            }
+        }
+    }
+
+    fn memory_node(b: &mut Builder, name: &str, reg: &[u32]) {
+        b.begin(name)
+            .prop("device_type", b"memory\0")
+            .cells("reg", reg)
+            .end();
+    }
+
+    fn root(b: &mut Builder) {
+        b.begin("")
+            .cells("#address-cells", &[2])
+            .cells("#size-cells", &[2]);
+    }
+
+    fn memory_of(blob: &[u8]) -> Result<Vec<Region>, Error> {
+        let mut regions = Vec::new();
+        Fdt::parse(blob)?.for_each_memory_region(|r| regions.push(r))?;
+        Ok(regions)
+    }
+
+    fn reserved_of(blob: &[u8]) -> Result<Vec<Region>, Error> {
+        let mut regions = Vec::new();
+        Fdt::parse(blob)?.for_each_reserved_region(|r| regions.push(r))?;
+        Ok(regions)
+    }
+
+    fn region(base: u64, size: u64) -> Region {
+        Region { base, size }
+    }
+
+    #[test]
+    fn size_is_the_header_total() {
+        let blob = qemu_like(0x1000_0000, None);
+        assert_eq!(Fdt::parse(&blob).unwrap().size(), blob.len());
+    }
+
+    #[test]
+    fn every_memory_entry_of_every_node_is_visited() {
+        let mut b = Builder::new();
+        root(&mut b);
+        memory_node(
+            &mut b,
+            "memory@40000000",
+            &[0, 0x4000_0000, 0, 0x1000, 0, 0x8000_0000, 0, 0x2000],
+        );
+        memory_node(&mut b, "memory@c0000000", &[0, 0xc000_0000, 0, 0x3000]);
+        b.begin("memory@disabled")
+            .prop("device_type", b"memory\0")
+            .prop("status", b"disabled\0")
+            .cells("reg", &[0, 0x1_0000, 0, 0x1000])
+            .end();
+        b.begin("not-memory")
+            .cells("reg", &[0, 0x2_0000, 0, 0x1000])
+            .end();
+        b.end();
+        assert_eq!(
+            memory_of(&b.finish()),
+            Ok(vec![
+                region(0x4000_0000, 0x1000),
+                region(0x8000_0000, 0x2000),
+                region(0xc000_0000, 0x3000),
+            ])
+        );
+    }
+
+    #[test]
+    fn hostile_memory_entries_are_passed_on_as_found() {
+        let mut b = Builder::new();
+        root(&mut b);
+        memory_node(
+            &mut b,
+            "memory@0",
+            &[0, 0x1000, 0, 0, 0xffff_ffff, 0xffff_f000, 0, 0x2000],
+        );
+        b.end();
+        assert_eq!(
+            memory_of(&b.finish()),
+            Ok(vec![
+                region(0x1000, 0),
+                region(0xffff_ffff_ffff_f000, 0x2000)
+            ])
+        );
+    }
+
+    #[test]
+    fn memory_reg_with_a_partial_entry_is_rejected() {
+        let mut b = Builder::new();
+        root(&mut b);
+        memory_node(&mut b, "memory@0", &[0, 0x1000, 0, 0x1000, 0, 0x2000]);
+        b.end();
+        assert_eq!(memory_of(&b.finish()), Err(Error::MalformedReg));
+    }
+
+    #[test]
+    fn memory_node_without_reg_is_rejected() {
+        let mut b = Builder::new();
+        root(&mut b);
+        b.begin("memory").prop("device_type", b"memory\0").end();
+        b.end();
+        assert_eq!(memory_of(&b.finish()), Err(Error::MalformedReg));
+    }
+
+    #[test]
+    fn no_memory_node_visits_nothing() {
+        let mut b = Builder::new();
+        root(&mut b);
+        b.end();
+        assert_eq!(memory_of(&b.finish()), Ok(vec![]));
+    }
+
+    #[test]
+    fn memreserve_entries_are_reported() {
+        let mut b = Builder::new();
+        b.memreserve = vec![(0x4000_0000, 0x1000), (0x5000_0000, 0), (u64::MAX, 2)];
+        root(&mut b);
+        b.end();
+        assert_eq!(
+            reserved_of(&b.finish()),
+            Ok(vec![
+                region(0x4000_0000, 0x1000),
+                region(0x5000_0000, 0),
+                region(u64::MAX, 2)
+            ])
+        );
+    }
+
+    #[test]
+    fn memreserve_without_terminator_is_rejected() {
+        let mut b = Builder::new();
+        root(&mut b);
+        b.end();
+        let mut blob = b.finish();
+        // Point the reservation map at 8 trailing bytes: a lone half entry.
+        let at = blob.len().next_multiple_of(8);
+        blob.resize(at + 8, 0xff);
+        let total = blob.len() as u32;
+        patch(&mut blob, 4, total);
+        patch(&mut blob, 16, at as u32);
+        assert_eq!(reserved_of(&blob), Err(Error::Truncated));
+        // And past the end of the blob altogether.
+        let past = blob.len() as u32 + 8;
+        patch(&mut blob, 16, past);
+        assert_eq!(Fdt::parse(&blob).err(), Some(Error::BadHeader));
+        // Misaligned maps are refused.
+        patch(&mut blob, 16, 44);
+        assert_eq!(Fdt::parse(&blob).err(), Some(Error::BadHeader));
+    }
+
+    fn reserved_memory_tree(extra: impl FnOnce(&mut Builder)) -> Vec<u8> {
+        let mut b = Builder::new();
+        root(&mut b);
+        memory_node(&mut b, "memory@40000000", &[0, 0x4000_0000, 0, 0x1000_0000]);
+        b.begin("reserved-memory")
+            .cells("#address-cells", &[2])
+            .cells("#size-cells", &[2])
+            .prop("ranges", b"");
+        b.begin("fw@45000000")
+            .cells("reg", &[0, 0x4500_0000, 0, 0x1_0000])
+            .prop("no-map", b"")
+            .end();
+        b.begin("pool@46000000")
+            .cells(
+                "reg",
+                &[0, 0x4600_0000, 0, 0x2000, 0, 0x4700_0000, 0, 0x1000],
+            )
+            .end();
+        b.begin("dynamic").cells("size", &[0, 0x10_0000]).end();
+        b.begin("off")
+            .cells("reg", &[0, 0x4800_0000, 0, 0x1000])
+            .prop("status", b"disabled\0")
+            .end();
+        b.end();
+        extra(&mut b);
+        b.end();
+        b.finish()
+    }
+
+    #[test]
+    fn reserved_memory_children_are_reported() {
+        let blob = reserved_memory_tree(|_| {});
+        assert_eq!(
+            reserved_of(&blob),
+            Ok(vec![
+                region(0x4500_0000, 0x1_0000),
+                region(0x4600_0000, 0x2000),
+                region(0x4700_0000, 0x1000),
+            ])
+        );
+    }
+
+    #[test]
+    fn reserved_memory_uses_its_own_cell_counts() {
+        let mut b = Builder::new();
+        root(&mut b);
+        b.begin("reserved-memory")
+            .cells("#address-cells", &[1])
+            .cells("#size-cells", &[1]);
+        b.begin("fw").cells("reg", &[0x4500_0000, 0x1000]).end();
+        b.end().end();
+        assert_eq!(
+            reserved_of(&b.finish()),
+            Ok(vec![region(0x4500_0000, 0x1000)])
+        );
+    }
+
+    #[test]
+    fn reserved_memory_translation_is_refused() {
+        let mut b = Builder::new();
+        root(&mut b);
+        b.begin("reserved-memory")
+            .cells("ranges", &[0, 0, 0, 0, 0x1000]);
+        b.begin("fw").cells("reg", &[0, 0x100, 0, 0x1000]).end();
+        b.end().end();
+        assert_eq!(reserved_of(&b.finish()), Err(Error::UnsupportedRanges));
+    }
+
+    #[test]
+    fn reserved_memory_with_bad_reg_is_rejected() {
+        let mut b = Builder::new();
+        root(&mut b);
+        b.begin("reserved-memory");
+        b.begin("fw").cells("reg", &[0, 0x100, 0]).end();
+        b.end().end();
+        assert_eq!(reserved_of(&b.finish()), Err(Error::MalformedReg));
+    }
+
+    #[test]
+    fn nested_nodes_in_reserved_memory_do_not_confuse_the_walk() {
+        let blob = reserved_memory_tree(|b| {
+            // A second root child with a `reg`, and a node that merely has
+            // the same name below another parent.
+            b.begin("soc");
+            b.begin("reserved-memory");
+            b.begin("fw")
+                .cells("reg", &[0, 0x9000_0000, 0, 0x1000])
+                .end();
+            b.end().end();
+        });
+        assert_eq!(reserved_of(&blob).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn reservation_walkers_never_panic_on_corrupted_blobs() {
+        let good = reserved_memory_tree(|_| {});
+        for index in 0..good.len() {
+            for flip in [0x01, 0x80, 0xff] {
+                let mut blob = good.clone();
+                blob[index] ^= flip;
+                if let Ok(fdt) = Fdt::parse(&blob) {
+                    let _ = fdt.for_each_memory_region(|_| {});
+                    let _ = fdt.for_each_reserved_region(|_| {});
                 }
             }
         }

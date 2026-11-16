@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 devicetree = { path = "../devicetree" }
+physmem = { path = "../physmem" }
 
 # Each feature makes the kernel raise an exception nothing handles, so the boot
 # smoke test can check that it still ends in a kernel panic.
