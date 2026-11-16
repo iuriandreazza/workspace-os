@@ -94,6 +94,13 @@ impl Planner for ProgressPlanner<'_> {
     }
 }
 
+/// The channels between the worker and the interface.
+struct Wires {
+    requests: Receiver<String>,
+    events: Sender<Event>,
+    replies: Receiver<Reply>,
+}
+
 /// Runs the shell for each request until the interface closes the channel.
 /// Takes trait objects so a test can drive it without a model or a terminal.
 fn serve(
@@ -101,10 +108,14 @@ fn serve(
     host: &dyn Host,
     planner: &dyn Planner,
     log: &mut dyn DecisionLog,
-    requests: Receiver<String>,
-    events: Sender<Event>,
-    replies: Receiver<Reply>,
+    wires: Wires,
+    header: &dyn Fn(&str) -> String,
 ) {
+    let Wires {
+        requests,
+        events,
+        replies,
+    } = wires;
     let planner = ProgressPlanner {
         inner: planner,
         events: events.clone(),
@@ -125,6 +136,8 @@ fn serve(
         }
         .handle(&request)
         .render();
+        // A `cd` changes where the session is, which the header says.
+        let _ = events.send(Event::Header(header(&session.cwd_text(host))));
         if events.send(Event::Outcome(outcome)).is_err() {
             return;
         }
@@ -137,6 +150,7 @@ fn worker(
     events: Sender<Event>,
     replies: Receiver<Reply>,
 ) {
+    let header = setup.header_fn();
     let Setup {
         authority,
         host,
@@ -144,9 +158,12 @@ fn worker(
         mut log,
         ..
     } = setup;
-    serve(
-        &authority, &host, &planner, &mut log, requests, events, replies,
-    );
+    let wires = Wires {
+        requests,
+        events,
+        replies,
+    };
+    serve(&authority, &host, &planner, &mut log, wires, &header);
 }
 
 fn is_ctrl_c(key: &KeyEvent) -> bool {
@@ -442,9 +459,12 @@ mod tests {
             &files(),
             &ScriptedPlanner::new(&[DELETE_LARGEST]),
             &mut log,
-            requests,
-            events_tx,
-            replies,
+            Wires {
+                requests,
+                events: events_tx,
+                replies,
+            },
+            &|cwd| format!("header in {cwd}"),
         );
         let seen: Vec<Event> = events.try_iter().collect();
         assert!(seen.iter().any(|e| matches!(e, Event::AskPlan { .. })));

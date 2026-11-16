@@ -763,7 +763,7 @@ fn the_tree_lists_folders_first_then_names_ignoring_case_with_sizes_right_aligne
         " ├─ Zeta/",
         " │  └─ disk.img  900.0 MB",
         " ├─ A.txt            12 B",
-        " └─ b.txt            5 KB",
+        " └─ b.txt          5.0 KB",
     ]
     .join("\n");
     assert_eq!(shown, expected, "\n{shown}");
@@ -803,6 +803,14 @@ fn sizes_never_print_as_a_thousand_of_the_unit_below() {
     assert!(shown.contains("1.0 MB"), "{shown}");
     assert!(!shown.contains("1000"), "{shown}");
     assert!(shown.contains("999 B"), "{shown}");
+    let shown = default_tree(&[
+        file("/h/Downloads/a", 1_500),
+        file("/h/Downloads/b", 15_000),
+    ]);
+    assert!(
+        shown.contains("1.5 KB") && shown.contains("15 KB"),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -1016,7 +1024,7 @@ fn a_listing_prints_as_a_tree_and_a_large_result_marks_what_a_plan_asks_about() 
         "{shown}"
     );
     assert!(
-        shown.contains("old.mkv") && shown.contains("2 KB"),
+        shown.contains("old.mkv") && shown.contains("1.9 KB"),
         "{shown}"
     );
 }

@@ -59,6 +59,8 @@ pub enum Event {
         lines: Vec<ChoiceLine>,
     },
     Outcome(String),
+    /// The header with the directory the session is in now.
+    Header(String),
 }
 
 /// What the person answered, for the worker's `Confirm`.
@@ -216,6 +218,7 @@ impl State {
                 self.blocks.push(Block::Note(question));
                 self.mode = Mode::Choose { lines, selected: 0 };
             }
+            Event::Header(text) => self.header = text,
             Event::Outcome(text) => {
                 self.blocks.push(Block::Outcome(text));
                 self.mode = Mode::Input;
@@ -941,6 +944,13 @@ mod tests {
             "{:?}",
             state.blocks
         );
+    }
+
+    #[test]
+    fn the_header_follows_the_directory_the_session_is_in() {
+        let mut state = State::new("header in ~".to_owned());
+        state.on_event(Event::Header("header in ~/Downloads".to_owned()));
+        assert_eq!(state.header, "header in ~/Downloads");
     }
 
     #[test]

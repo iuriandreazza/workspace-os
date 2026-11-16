@@ -101,8 +101,16 @@ impl UnixHost {
                 && !is_hidden(Path::new(child.file_name().unwrap_or_default()));
             tree.push(entry);
             if opens && let Ok(below) = fs::read_dir(&child) {
-                let mut names: Vec<PathBuf> =
-                    below.filter_map(|e| e.ok().map(|e| e.path())).collect();
+                // At most what the cap can still take, so a huge folder is not read whole.
+                let room = cap.saturating_sub(tree.len() + pending.len()).max(1);
+                let mut names: Vec<PathBuf> = below
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .take(room + 1)
+                    .collect();
+                if names.len() > room {
+                    names.truncate(room);
+                    capped = true;
+                }
                 names.sort();
                 pending.extend(names.into_iter().map(|n| (n, level + 1)));
             }
@@ -110,7 +118,7 @@ impl UnixHost {
         let mut notes = Vec::new();
         if listing_cut {
             notes.push(format!(
-                "the listing stopped after {cap} entries: more exist"
+                "the listing stopped after {cap} entries, the first the system returned: more exist"
             ));
         } else if capped {
             notes.push(format!("the tree stopped after {cap} entries: more exist"));
@@ -1237,6 +1245,19 @@ mod tests {
         assert_eq!(rank(dir.clone()), [dir.join("plain")]);
         // Asking for the hidden folder itself is asked about by the broker, and shows it.
         assert_eq!(rank(dir.join(".ssh")), [dir.join(".ssh/id_rsa")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_huge_child_is_not_read_whole_for_the_tree() {
+        let dir = temp_dir("huge-child");
+        fs::create_dir(dir.join("big")).unwrap();
+        for n in 0..60 {
+            fs::write(dir.join(format!("big/f{n:02}")), "").unwrap();
+        }
+        let output = host().list_capped(&dir, 10).unwrap();
+        assert!(output.tree.len() <= 10, "{}", output.tree.len());
+        assert!(!output.notes.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

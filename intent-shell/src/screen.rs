@@ -31,7 +31,7 @@ pub struct Header<'a> {
     pub user: &'a str,
     pub administrator: bool,
     pub model: &'a str,
-    /// The directory the session started in, written as the person would (`~/Downloads`).
+    /// The directory the session is in, written as the person would (`~/Downloads`).
     pub cwd: &'a str,
     /// The file name only: the directory is in the details, not on the screen.
     pub log: &'a str,
@@ -45,7 +45,7 @@ pub fn header(h: &Header) -> String {
     };
     printable(
         &format!(
-            " intent shell ──────────────────────────────────────────────\n  user  {}{rank}   model  {}   log  {}\n  started in  {}\n ───────────────────────────────────────────────────────────────",
+            " intent shell ──────────────────────────────────────────────\n  user  {}{rank}   model  {}   log  {}\n  in  {}\n ───────────────────────────────────────────────────────────────",
             quoted(h.user),
             quoted(h.model),
             quoted(h.log),
@@ -477,7 +477,9 @@ fn size_text(bytes: u64) -> String {
         value /= 1000.0;
         unit += 1;
     }
-    if unit == 0 && value < 999.5 {
+    if unit == 0 && value < 9.95 {
+        format!("{value:.1} {}", UNITS[unit])
+    } else if unit == 0 && value < 999.5 {
         format!("{value:.0} {}", UNITS[unit])
     } else if unit == 0 {
         format!("{:.1} {}", value / 1000.0, UNITS[1])

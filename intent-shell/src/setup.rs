@@ -20,15 +20,27 @@ pub struct Setup {
 }
 
 impl Setup {
-    /// The header shows where the session started; each plan screen and each
-    /// `cd` says where it is now.
+    /// The header for the directory the session is in now.
     pub fn header(&self, session: &SessionState) -> String {
-        screen::header(&Header {
-            user: &self.authority.user.name,
-            administrator: self.authority.user.administrator,
-            model: &self.planner.address,
-            cwd: &session.cwd_text(&self.host),
-            log: &self.log_name,
-        })
+        self.header_fn()(&session.cwd_text(&self.host))
+    }
+
+    /// The header as a function of the directory, owning what it needs, so a
+    /// worker thread can rebuild it after a `cd`.
+    pub fn header_fn(&self) -> impl Fn(&str) -> String + use<> {
+        let (user, administrator) = (
+            self.authority.user.name.clone(),
+            self.authority.user.administrator,
+        );
+        let (model, log_name) = (self.planner.address.clone(), self.log_name.clone());
+        move |cwd| {
+            screen::header(&Header {
+                user: &user,
+                administrator,
+                model: &model,
+                cwd,
+                log: &log_name,
+            })
+        }
     }
 }
