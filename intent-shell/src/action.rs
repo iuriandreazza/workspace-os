@@ -167,7 +167,21 @@ pub fn printable(text: &str, block: bool) -> String {
 }
 
 fn escape_unsafe(c: char) -> String {
-    let formatting = matches!(c, '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}');
+    // The Unicode format (Cf) characters and the combining joiner: invisible,
+    // so two different paths could look the same.
+    let formatting = matches!(
+        c,
+        '\u{AD}'
+            | '\u{34F}'
+            | '\u{61C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}'
+    );
     if c.is_control() || formatting {
         format!("\\u{:04x}", c as u32)
     } else {
@@ -343,6 +357,12 @@ mod tests {
     fn quoting_escapes_what_json_leaves_alone() {
         let quoted = quoted("a\u{202e}b\u{9b}c\u{7f}d\u{2028}e\u{1b}f");
         assert_eq!(quoted, "\"a\\u202eb\\u009bc\\u007fd\\u2028e\\u001bf\"");
+    }
+
+    #[test]
+    fn quoting_escapes_invisible_format_characters() {
+        let quoted = quoted("a\u{e0041}\u{61c}\u{ad}b");
+        assert!(quoted.is_ascii(), "{quoted}");
     }
 
     #[test]

@@ -82,8 +82,9 @@ Behaviour worth knowing, all covered by tests that need no model:
   control character in a path or content cannot rewrite the terminal. The
   model's `summary` appears only labelled as the model's claim.
 - The shell runs nothing while the decision log cannot be written: the plan is
-  logged before the broker may read anything, and every action is logged
-  before it runs and after.
+  logged before the broker may read anything, each read that expands a
+  reference is logged just before it runs, and every action is logged before
+  it runs and after.
 - Inside one step that expands to several actions, each action is decided on
   its own: a refused path is labelled in the rendering and skipped, the others
   run once the plan is confirmed, and steps that depend on the step are
@@ -141,7 +142,7 @@ fakes for all four.
 
 ## Tests and the gate
 
-`./scripts/check.sh` now also runs clippy and 53 tests for `intent-shell`,
+`./scripts/check.sh` now also runs clippy and 58 tests for `intent-shell`,
 none needing the model. They include one test per refusal class (no
 capability, beyond the user's permissions, root without confirmation, a
 non-administrator elevating, malformed output, rule violations) and the 27
@@ -207,7 +208,13 @@ see first, which is the point of the broker; the quality is S4's problem.
 - Reads are capped (64 KiB for `fs.read`, 100,000 entries for
   `fs.find_largest`); `fs.read` refuses anything that is not a regular file,
   and `fs.list` has no cap on entries.
-- The log and its directory are private to the user (0600, 0700).
+- The log and its directory are private to the user (0600, 0700), also when
+  the log file already existed.
+- The parser is stricter than the schema in two harmless ways: it refuses
+  `3.0` where the schema's `integer` accepts it, and `"s1\n"` as a step id.
+- A step that depends on a read nobody references cannot itself be expanded
+  before confirmation, so a longer chain through such a step is refused
+  (`CannotExpand`) instead of run: strict, not unsafe.
 - The log records the user's name and the full request text, locally. It is
   not rotated.
 - S5 (typed commands into the same plan) and S4 (evaluation) are next.

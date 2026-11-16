@@ -1,11 +1,13 @@
 //! One request through the whole pipeline: model, checks, broker,
 //! confirmation, execution, with every decision logged.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::action::{Action, printable, quoted};
+use crate::action::{Access, Action, printable, quoted};
 use crate::broker::{Authority, Review, ReviewedAction, ReviewedStep, Verdict, review};
 use crate::plan::{Document, StepId, parse_checked};
 use crate::ports::{Confirm, DecisionLog, Host, Output, Planner, Retry};
@@ -93,9 +95,19 @@ impl Shell<'_> {
             Document::Plan(plan) => plan,
         };
         // Before the broker may read anything to expand a reference, the plan
-        // is on record: with no log, not even a read happens.
+        // is on record, and each read is logged just before it runs.
         self.record(json!({"event": "plan_accepted", "summary": plan.summary, "steps": plan.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>()}))?;
-        let reviewed = review(&plan, self.authority, self.host);
+        let reviewed = {
+            let log = RefCell::new(&mut *self.log);
+            review(
+                &plan,
+                self.authority,
+                &LoggedReads {
+                    inner: self.host,
+                    log: &log,
+                },
+            )
+        };
         self.record(json!({"event": "review", "review": review_json(&reviewed)}))?;
 
         let anything_runs = reviewed
@@ -225,9 +237,12 @@ impl Shell<'_> {
                 ItemResult::NotRun("root confirmation was not given".to_owned())
             }
             Verdict::Allowed | Verdict::NeedsRoot => {
-                self.record(
-                    json!({"event": "execute", "step": step.as_str(), "action": rendering}),
-                )?;
+                let event = if item.output.is_some() {
+                    "use_pre_run"
+                } else {
+                    "execute"
+                };
+                self.record(json!({"event": event, "step": step.as_str(), "action": rendering}))?;
                 match item
                     .output
                     .clone()
@@ -262,6 +277,31 @@ impl Shell<'_> {
     }
 }
 
+/// The host as the broker sees it while expanding references: every read it
+/// runs is logged first, and refused when the log cannot be written.
+struct LoggedReads<'a, 'b, 'c> {
+    inner: &'a dyn Host,
+    log: &'a RefCell<&'b mut (dyn DecisionLog + 'c)>,
+}
+
+impl Host for LoggedReads<'_, '_, '_> {
+    fn resolve(&self, path: &Path) -> PathBuf {
+        self.inner.resolve(path)
+    }
+
+    fn allows(&self, access: Access, path: &Path) -> bool {
+        self.inner.allows(access, path)
+    }
+
+    fn execute(&self, action: &Action) -> Result<Output, String> {
+        self.log
+            .borrow_mut()
+            .record(json!({"event": "pre_run", "action": action.describe()}))
+            .map_err(|e| format!("the decision log cannot be written: {e}"))?;
+        self.inner.execute(action)
+    }
+}
+
 fn review_json(reviewed: &Review) -> Value {
     let steps: Vec<Value> = reviewed
         .steps
@@ -292,6 +332,11 @@ fn review_json(reviewed: &Review) -> Value {
 impl Outcome {
     /// What to tell the person after the request ended.
     pub fn render(&self) -> String {
+        printable(&self.render_unsafe(), true)
+    }
+
+    /// Model and machine text is escaped once, over the whole outcome.
+    fn render_unsafe(&self) -> String {
         match self {
             Self::Clarify(question) => {
                 format!("The model asks: {}\nNothing ran.", quoted(question))
@@ -300,7 +345,7 @@ impl Outcome {
                 "Could not make a plan: {why}\nNothing ran. Use the deterministic shell instead."
             ),
             Self::AllRefused(review) => {
-                format!("{}Every step was refused. Nothing ran.", review.render())
+                format!("{}No step can run. Nothing ran.", review.render())
             }
             Self::Declined(_) => "Not confirmed. Nothing ran.".to_owned(),
             Self::Executed { steps, .. } => render_steps(steps),

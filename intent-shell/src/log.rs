@@ -1,8 +1,8 @@
 //! The decision log (ADR 0002): one JSON object per line, appended.
 
-use std::fs::{DirBuilder, File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,13 +20,14 @@ impl JsonlLog {
         if let Some(dir) = path.parent() {
             DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
         }
-        Ok(Self {
-            file: OpenOptions::new()
-                .create(true)
-                .append(true)
-                .mode(0o600)
-                .open(path)?,
-        })
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?;
+        // `mode` only applies to a new file; a log that already exists may be open to others.
+        file.set_permissions(Permissions::from_mode(0o600))?;
+        Ok(Self { file })
     }
 }
 
@@ -72,6 +73,22 @@ mod tests {
                 .mode()
                 & 0o777,
             0o700
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_existing_log_is_made_private_too() {
+        let dir = std::env::temp_dir().join(format!("intent-shell-oldlog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("decisions.jsonl");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, Permissions::from_mode(0o644)).unwrap();
+        JsonlLog::open(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -616,3 +616,63 @@ fn a_denied_path_with_control_characters_cannot_forge_report_lines() {
         0
     );
 }
+
+#[test]
+fn a_read_is_logged_before_it_runs_and_not_run_when_the_log_fails_there() {
+    // request, model_output and plan_accepted are accepted; the read's own event fails.
+    let host = files();
+    let (result, _) = run_with(
+        &[DELETE_LARGEST],
+        &host,
+        &Authority::full(user(false)),
+        Answers::yes(),
+        MemoryLog::failing_after(3),
+    );
+    assert!(matches!(result.outcome, Outcome::LogFailed { .. }));
+    assert!(host.executed.borrow().is_empty());
+
+    let ok = run(&[DELETE_LARGEST], &files(), false);
+    let names: Vec<_> = ok
+        .log
+        .events
+        .iter()
+        .map(|e| e["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        &names[..5],
+        [
+            "request",
+            "model_output",
+            "plan_accepted",
+            "pre_run",
+            "review"
+        ]
+    );
+}
+
+#[test]
+fn model_text_in_an_error_cannot_reach_the_terminal_raw() {
+    let hostile =
+        "{\"kind\":\"plan\",\"version\":1,\"summary\":\"x\",\"steps\":[],\"\\u001b[2J\\u202e\":1}";
+    let result = run(&[hostile, hostile], &files(), false);
+    let shown = result.outcome.render();
+    assert!(matches!(result.outcome, Outcome::NoPlan(_)));
+    assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'));
+}
+
+#[test]
+fn exactly_the_limit_of_paths_still_expands() {
+    let many: Vec<(String, u64)> = (0..MAX_EXPANDED_PATHS)
+        .map(|i| (format!("/big/{i:03}"), 1))
+        .collect();
+    let borrowed: Vec<(&str, u64)> = many.iter().map(|(p, s)| (p.as_str(), *s)).collect();
+    let host = FakeHost::with_files(&borrowed);
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.list","args":{"path":"/big"},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.stat","args":{"path":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#;
+    let result = run(&[text], &host, false);
+    assert_eq!(
+        reviewed(&result.outcome).steps[1].items.len(),
+        MAX_EXPANDED_PATHS
+    );
+}
