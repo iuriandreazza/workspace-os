@@ -45,7 +45,7 @@ The flags are the arguments of the schema with `_` written as `-`. References
 are `--in P` (a place), `--name N --in P [--kind ...]`, `--new-name N --in P`
 and `--from-step sN`. `--after sN` orders steps. Nothing is expanded (no `~`,
 globs or `$`), and a path cannot be written (ADR 0014). The two defaults are
-`--kind any` where an action only reads (`fs delete` and the source of `fs move` require `--kind`) and `--mode create`. The full grammar is in ADR 0022.
+`--kind any` where an action only reads (`fs write` on a name, `fs delete` and the source of `fs move` require `--kind`) and `--mode create`. The full grammar is in ADR 0022.
 
 ## What shares code with the model path
 
@@ -83,11 +83,10 @@ interface). `command_tests.rs`, none needing a model:
 - every action in the schema's `step` list has a command and no command is
   invented (the schema is read in the test), and `--elevate` is accepted exactly
   where the root rule says a step may ask for root;
-- quoting, escapes and about 35 malformed lines, each refused with the reason, and 19
-  lines that parse as words and are refused by the format's own rules (a count
-  of 0, a name with `..`, a group on `add`, a cycle). `elevate` on `user.manage`
-  and a 17th step are refused by the command layer first, and by the format
-  behind it;
+- quoting, escapes and about 35 malformed lines, each refused with the reason, and
+  19 more that are well formed as words and refused either by the command layer or,
+  behind it, by the format (a count of 0, a name with `..`, a group on `add`, a
+  cycle, `elevate` on `user.manage`, a 17th step);
 - the same scenario typed and as the model's document gives the same log events
   (apart from the author's), the same questions, the same root panels, the same
   executed actions and the same outcome: a read that runs without asking, a

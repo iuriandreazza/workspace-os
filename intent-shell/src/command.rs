@@ -80,8 +80,8 @@ impl Command {
 enum Form {
     Place,
     Named,
-    /// A name whose `--kind` must be written, for what removes or moves an
-    /// item: nothing here is left to a default, and the screen does not say
+    /// A name whose `--kind` must be written, for what writes, removes or moves
+    /// an item: nothing here is left to a default, and the screen does not say
     /// whether a match is a file or a folder.
     NamedKind,
     New,
@@ -92,7 +92,9 @@ impl Form {
     fn flags(self, prefix: &str) -> String {
         match self {
             Self::Place => format!("--{prefix}in PLACE"),
-            Self::Named => format!("--{prefix}name NAME --{prefix}in PLACE"),
+            Self::Named => {
+                format!("--{prefix}name NAME --{prefix}in PLACE [--{prefix}kind file|folder|any]")
+            }
             Self::NamedKind => {
                 format!("--{prefix}name NAME --{prefix}in PLACE --{prefix}kind file|folder|any")
             }
@@ -142,7 +144,7 @@ static COMMANDS: &[Command] = &[
         verb: "write",
         elevate: true,
         args: &[
-            Arg::Reference("target", &[Form::Named, Form::New]),
+            Arg::Reference("target", &[Form::NamedKind, Form::New]),
             Arg::Text("content"),
             Arg::Choice("mode", Some("create"), "create|overwrite|append"),
         ],
@@ -787,7 +789,7 @@ fn help() -> String {
         out.push('\n');
     }
     out.push_str(&format!(
-        "A name is --name NAME --in PLACE [--kind file|folder|any] (default any).\n\
+        "A kind left out means any, and is only left out where the line above shows it in brackets.\n\
          --from-step sN means what step sN found; flags after `--` belong to the program.\n\
          Places: {places}.\n\
          Steps are s1, s2, ... by position; --after sN makes a step wait for sN.\n\

@@ -34,6 +34,9 @@ last section says how this syntax grows with it.
 
 ## Decision
 
+ADR 0014 sketches `fs write --new-name notes.txt --in documents`. The schema
+requires `content`, so the typed line adds `--content`.
+
 ### 1. One path: a command line becomes a plan document
 
 ```text
@@ -93,10 +96,10 @@ Quoted and unquoted pieces next to each other make one token, and `""` is an
 empty token. An unterminated quote or a trailing `\` is an error.
 
 **Flags.** A flag is the name of an argument of the schema with `_` written as
-`-`, after `--`, followed by its value. A flag appears at most once. The
+`-`, after `--`, followed by its value. A flag appears at most once, except `--after`, which repeats and ignores a repeat of the same step. The
 schema's argument is the only source: an unknown flag, a missing required flag,
-a repeated flag or a value of the wrong type is an error naming the flag, and is
-never guessed. Flag values are always the next token. A value that starts with `--` must be
+a repeated flag or a value of the wrong type is an error naming the flag where the command layer sees it (the format's own
+message, which names the argument, otherwise), and is never guessed. Flag values are always the next token. A value that starts with `--` must be
 quoted or escaped (`'--x'`, `\--x`), or it is read as the next flag; a single `-`
 is an ordinary character (`--count -1` is refused by the number check, not by
 the tokenizer). `--elevate` takes no value. Nothing else is boolean.
@@ -122,7 +125,7 @@ propose_change` do not take it, as in the schema.
 | Flags | Reference |
 |---|---|
 | `--in downloads` | `{"place":"downloads"}` |
-| `--name big.iso --in downloads [--kind file\|folder\|any]` | `{"name":…,"in":…,"kind":…}`; `--kind` defaults to `any`, except for `fs delete` and the source of `fs move`, where it is required |
+| `--name big.iso --in downloads [--kind file\|folder\|any]` | `{"name":…,"in":…,"kind":…}`; `--kind` defaults to `any` where the action only reads; it is required for `fs write` on a name, `fs delete` and the source of `fs move` |
 | `--new-name notes.txt --in documents` | `{"new_name":…,"in":…}` |
 | `--from-step s1` | `{"from_step":"s1"}` |
 
@@ -176,7 +179,7 @@ the same documents, so the mechanical table stays the only definition.
 | Several steps | `;` inside one line | A script of one step per line: needs a line adapter with state ("more to come") and cannot work in the single-line input of the interface. Many independent requests are already many lines |
 | References between steps | `--from-step s1` | `$s1`: ADR 0011 hints at it, but `$` invites the expansion this shell must not have |
 | Elevation | Explicit `--elevate`, decided by the broker | Prompting for root on refusal: it would promote a refused step, which ADR 0011 forbids |
-| Defaults | `--mode create`, and `--kind any` only where an action reads | None: safer to read but unusable. `create` is the weakest mode (it refuses to overwrite). `any` is the widest kind, and the plan screen does not say whether a resolved name is a file or a folder, so a default there could make a folder delete look like a file delete. `fs delete` and the source of `fs move` therefore require `--kind` (ADR 0014's example writes it too); a name that only reads defaults to `any`, and an ambiguity is the person's choice |
+| Defaults | `--mode create`, and `--kind any` only where an action reads | None: safer to read but unusable. `create` is the weakest mode (it refuses to overwrite). `any` is the widest kind, and the plan screen does not say whether a resolved name is a file or a folder, so a default there could make a folder delete look like a file delete. `fs write` on a name, `fs delete` and the source of `fs move` therefore require `--kind` (ADR 0014's example writes it too); a name that only reads defaults to `any`, and an ambiguity is the person's choice |
 
 ## Consequences
 

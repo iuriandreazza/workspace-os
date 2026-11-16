@@ -115,6 +115,11 @@ fn serve(
         replies,
     };
     for request in requests {
+        if entry == Entry::Command {
+            // With no model nothing else says the shell is working, and leaving
+            // must wait for the step rather than abandon it.
+            let _ = events.send(Event::Busy("working"));
+        }
         let outcome = Shell {
             authority,
             host,
@@ -482,7 +487,17 @@ mod tests {
             replies,
         );
         let seen: Vec<Event> = events.try_iter().collect();
-        assert!(!seen.iter().any(|e| matches!(e, Event::Busy(_))));
+        assert!(
+            seen.iter()
+                .all(|e| !matches!(e, Event::Busy(label) if *label == "asking the model"))
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|e| matches!(e, Event::Busy("working")))
+                .count(),
+            2,
+            "each typed line starts as work, not as a wait for a model"
+        );
         let outcomes: Vec<&String> = seen
             .iter()
             .filter_map(|e| match e {

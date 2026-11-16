@@ -88,18 +88,18 @@ impl Confirm for TerminalConfirm {
     }
 }
 
+fn prompt(entry: Entry) -> &'static str {
+    match entry {
+        Entry::Command => "command> ",
+        Entry::Request => "intent> ",
+    }
+}
+
 pub fn run(mut setup: Setup) -> Result<(), String> {
     let mut confirm = TerminalConfirm;
     println!("{}", setup.header());
     loop {
-        print!(
-            "{}",
-            if setup.entry() == Entry::Command {
-                "command> "
-            } else {
-                "intent> "
-            }
-        );
+        print!("{}", prompt(setup.entry()));
         let _ = io::stdout().flush();
         let mut request = String::new();
         match io::stdin().read_line(&mut request) {
@@ -130,7 +130,13 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_details, is_yes, parse_choice};
+    use super::{Entry, is_details, is_yes, parse_choice, prompt};
+
+    #[test]
+    fn the_prompt_says_whether_a_model_is_listening() {
+        assert_eq!(prompt(Entry::Request), "intent> ");
+        assert_eq!(prompt(Entry::Command), "command> ");
+    }
 
     #[test]
     fn details_are_asked_for_with_d() {

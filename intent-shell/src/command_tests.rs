@@ -271,7 +271,7 @@ fn the_format_refuses_what_the_model_would_be_refused() {
         ("fs delete --in downloads", "not accepted here"),
         ("fs read --in downloads", "not accepted here"),
         (
-            "fs write --name a --in home --content x --mode wipe",
+            "fs write --name a --in home --kind file --content x --mode wipe",
             "wipe",
         ),
         ("fs write --in home --content x", "not accepted here"),
@@ -1106,6 +1106,7 @@ fn what_removes_or_moves_an_item_never_gets_a_default_kind() {
     for line in [
         "fs delete --name a --in home",
         "fs move --name a --in home --to-in documents",
+        "fs write --name a --in home --content x --mode overwrite",
     ] {
         let why = refused(line);
         assert!(
@@ -1168,6 +1169,7 @@ fn separators_flags_and_dependencies_are_read_exactly() {
     assert!(refused("fs list -in home").contains("unexpected"));
     // A carriage return separates like a space or a newline.
     plan_of("fs\rlist\r--in\rhome");
+    plan_of("fs\tlist\t--in\thome");
     // Naming a dependency twice, or once and again by a reference, is one dependency.
     let plan = plan_of("fs list --in home; fs stat --from-step s1 --after s1 --after s1");
     assert_eq!(plan.steps[1].depends_on.len(), 1);
