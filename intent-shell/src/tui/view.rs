@@ -10,6 +10,8 @@ use ratatui::widgets::{Block as Frame_, Clear, Paragraph};
 use super::state::{Kind, Mode, ROOT_KEYS, State};
 use super::wrap::{tail, text_width, wrap};
 
+const PLAN_KEYS: &str = "[y] run the steps marked ok   [d] details   [n] cancel";
+const CHOOSE_KEYS: &str = "↑/↓ select · Enter choose · Esc cancel";
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 fn style_of(kind: Kind) -> Style {
@@ -42,10 +44,11 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
             lines.push(Line::from(format!("{frame} {label}… {seconds}s")));
             lines.push(dim("PgUp/Dn scroll · ^C quit".to_owned()));
         }
-        Mode::Plan { .. } => lines.push(Line::styled(
-            "[y] run the steps marked ok   [d] details   [n] cancel",
-            Style::new().add_modifier(Modifier::BOLD),
-        )),
+        Mode::Plan { .. } => lines.extend(
+            wrap(PLAN_KEYS, width)
+                .into_iter()
+                .map(|row| Line::styled(row, Style::new().add_modifier(Modifier::BOLD))),
+        ),
         Mode::Choose { options, selected } => {
             lines.extend(option_lines(
                 options,
@@ -53,7 +56,7 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
                 width,
                 usize::from(state.height / 2).min(usize::from(state.height).saturating_sub(4)),
             ));
-            lines.push(dim("↑/↓ select · Enter choose · Esc cancel".to_owned()));
+            lines.extend(wrap(CHOOSE_KEYS, width).into_iter().map(dim));
         }
         Mode::Root { .. } => {}
     }
@@ -261,6 +264,21 @@ mod tests {
         let screen = render(&state, 60, 12);
         assert!(screen.iter().any(|l| l == "PLAN TABLE"));
         assert!(screen[11].contains("[y] run the steps marked ok   [d] details   [n] cancel"));
+    }
+
+    #[test]
+    fn the_key_bars_wrap_on_a_narrow_terminal_instead_of_being_cut() {
+        let mut state = state_with(&[]);
+        state.on_event(Event::AskPlan {
+            screen: "PLAN".to_owned(),
+            details: String::new(),
+        });
+        let screen = render(&state, 24, 12);
+        let all = screen.join(" ");
+        assert!(
+            all.contains("[y] run") && all.contains("[n] cancel"),
+            "{screen:#?}"
+        );
     }
 
     #[test]

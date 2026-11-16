@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as Input, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
+    Event as Input, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 
@@ -146,6 +146,10 @@ fn worker(
     );
 }
 
+fn is_ctrl_c(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
 /// Discard what was typed before a question was drawn, so a key meant for
 /// something else cannot answer it. A Ctrl-C among them is not discarded: it
 /// is reported, so wanting to leave is never lost.
@@ -153,8 +157,7 @@ fn discard_pending_keys() -> std::io::Result<bool> {
     let mut leave = false;
     while event::poll(Duration::ZERO)? {
         if let Input::Key(key) = event::read()? {
-            leave |=
-                key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+            leave |= is_ctrl_c(&key);
         }
     }
     Ok(leave)
@@ -312,7 +315,13 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
         && TERMINATIONS.load(Ordering::Relaxed) < 2
         && (TERMINATIONS.load(Ordering::Relaxed) == 0 || waiting_since.elapsed() < SIGNAL_PATIENCE)
     {
-        thread::sleep(Duration::from_millis(50));
+        // The loop has ended, so keys are read here: Ctrl-C stops the wait.
+        if event::poll(Duration::from_millis(50)).unwrap_or(false)
+            && let Ok(Input::Key(key)) = event::read()
+            && is_ctrl_c(&key)
+        {
+            break;
+        }
     }
     // What the worker finished while it was waited for belongs in the history.
     while let Ok(event) = events.try_recv() {
