@@ -54,7 +54,9 @@ serve() {
     done
     model_file="$1"
     # The server that answers must be the one just started, not another on the same port.
-    if ! curl -sf "http://127.0.0.1:$port/props" | grep -qF "$(basename "$1")"; then
+    local props
+    props="$(curl -sf "http://127.0.0.1:$port/props" || true)"
+    if ! grep -qF "$(basename "$1")" <<<"$props"; then
         echo "run-matrix: the server on port $port is not serving $(basename "$1")" >&2
         exit 1
     fi
@@ -137,7 +139,7 @@ if selected sampling && [ -n "${BONSAI_2_9B:-}" ]; then
     measure bonsai2-9b-grammar-vendor-nothink grammar --no-thinking --temperature 0.7 --sampling "$vendor"
 fi
 
-# Bonsai 2 9B as the vendor runs it by default, thinking on. Slow: thousands of tokens per request.
+# Bonsai 2 9B as the vendor runs it by default (thinking on), with its sampler and a 6,000-token limit.
 if selected thinking && [ -n "${BONSAI_2_9B:-}" ]; then
     serve "$BONSAI_2_9B" 16384
     vendor='{"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.0,"repeat_penalty":1.0,"repeat_last_n":64}'

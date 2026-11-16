@@ -279,6 +279,7 @@ class Reading(unittest.TestCase):
         return directory
 
     INTENTS = [{"id": "a", "category": "x", "accept": [{"plan": plan(step("s1", "fs.list", {"target": DOWNLOADS}))}]}]
+    GOOD = {"valid": True, "document": plan(step("s1", "fs.list", {"target": DOWNLOADS})), "level": 0, "overreach": []}
 
     def row(self, document, **more):
         return {"id": "a", "valid": True, "document": document, "level": 0, "overreach": [], **more}
@@ -316,6 +317,38 @@ class Reading(unittest.TestCase):
         rows = {"a": {"wall_s": 1.0, "retry": {"wall_s": 2.0}}, "b": {"wall_s": 1.0}}
         self.assertEqual(score.timing(rows)["median_s"], 2.0)
         self.assertIsNone(score.timing({"a": {}})["median_s"])
+
+    def intents_file_and_header(self, directory, **header):
+        import hashlib
+        import json
+        intents_file = Path(directory) / "intents.json"
+        intents_file.write_text(json.dumps({"intents": self.INTENTS}), encoding="utf-8")
+        base = {"label": "t", "intents": 1, "intents_sha256": hashlib.sha256(intents_file.read_bytes()).hexdigest()}
+        (directory / "header.json").write_text(json.dumps({**base, **header}), encoding="utf-8")
+        return intents_file
+
+    def test_a_run_with_every_answer_and_no_failed_request_is_complete(self):
+        directory = self.run_directory([{**self.GOOD, "id": "a"}])
+        intents_file = self.intents_file_and_header(directory)
+        self.assertTrue(score.complete(directory, intents_file))
+        self.assertNotIn("INCOMPLETE", score.table([directory], intents_file))
+
+    def test_a_run_of_another_set_or_of_a_subset_is_not_complete(self):
+        directory = self.run_directory([{**self.GOOD, "id": "a"}])
+        for change in ({"intents_sha256": "other"}, {"intents": 0}):
+            intents_file = self.intents_file_and_header(directory, **change)
+            self.assertFalse(score.complete(directory, intents_file), change)
+
+    def test_a_run_with_a_failed_request_is_not_complete(self):
+        failed = {"id": "a", "valid": False, "level": 0, "overreach": [], "errors": ["request failed: x"]}
+        directory = self.run_directory([failed])
+        self.assertFalse(score.complete(directory, self.intents_file_and_header(directory)))
+
+    def test_an_unfinished_run_says_so(self):
+        directory = self.run_directory([])
+        intents_file = self.intents_file_and_header(directory)
+        self.assertIn("(INCOMPLETE: 0 of 1)", score.table([directory], intents_file))
+        self.assertFalse(score.complete(directory, intents_file))
 
 
 class Summary(unittest.TestCase):

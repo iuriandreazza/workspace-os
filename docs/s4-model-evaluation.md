@@ -14,17 +14,19 @@ measured on it, and at least one alternative with native tool calling.
 
 ## Result in short
 
-- **Decision: keep Bonsai 8B for now, and change the mode, not the model.**
+- **Decision: keep Bonsai 8B, and open the change of mode.**
   Asking for native tool calls (with the dependencies worked out by the
-  harness) took Bonsai 8B from 28 to 44 exact plans out of 67. Switching to
-  Ternary Bonsai 2 9B inside the current constrained mode gives 38, and inside
-  native tool calls 47: its lead over Bonsai 8B is 3 intents there, under the
-  threshold of 7 fixed before the run. Changing the mode needs a new ADR that
+  harness) took Bonsai 8B from 28 to 44 exact plans out of 67. Ternary
+  Bonsai 2 9B gets 34 in the current constrained mode as the shell sends it (38
+  with thinking off), and 47 in native tool calls: its lead over Bonsai 8B is
+  3 intents there, under the threshold of 7 fixed before the run. Changing the mode needs a new ADR that
   supersedes the output-constraint part of ADR 0011 (follow-up below).
-- The pre-registered rule, applied literally, **is met** for the model swap
-  with thinking switched off (38 against 28), and **is missed by one intent**
-  with the request the shell sends today (34 against 28). The reasons for not
-  recommending the swap anyway are in "Decision".
+- **Rule 1 (change the model) is not met** by the request the shell sends
+  today: Bonsai 2 9B gets 34 exact plans against 28, a gap of 6 where 7 was
+  required. The gap would be 10 (38 against 28) with thinking switched off,
+  which is a change to the request. Both figures are one run at temperature 0
+  and the shell's limit of 1,024 output tokens; the gap is close to the 4
+  intents by which the same model moves between sampler settings.
 - No small model is good enough to act unattended. The best candidate under
   3 GB gets 47 of 67 plans exactly right (70%); a "model" that only ever asks
   a question gets 15 of 67 (22%). The broker and the confirmation stay the
@@ -118,8 +120,13 @@ the M1 of S1, and is only a sanity bound.
 
 ### What changed after the rule was fixed
 
-The text above is as committed, except that the first version said "7 of 68"
-intents; the set now has 67, so 7 intents is 10.4 percentage points. Four
+The text above is as committed, except for four edits: "7 of 68" intents is now
+7 intents (the set has 67, so 10.4 percentage points, and the parenthesis "about
+10 percentage points" was dropped); the third sentence of rule 3 ("At temperature
+0 a run is repeatable, and 7 of 68 is large against the differences between two
+runs of the same model (reported below)") was dropped, because the report shows
+differences of up to 4 between sampler settings; and a clause saying speed on
+the target hardware is a separate measurement was dropped. Four
 review rounds (below) changed the set and the harness; each change and its
 reason:
 
@@ -133,7 +140,8 @@ reason:
 - **`write-create-no-place`**: an `everywhere` alternative was dropped and then
   put back, so the set is as frozen: the prompt says to use `everywhere` when
   no place is given.
-- **Scoring**: overreach is as defined when frozen (by action). "Off target"
+- **Scoring**: `valid` also applies the checks only the shell's parser makes
+  (no stored answer fails them). Overreach is as defined when frozen (by action). "Off target"
   was added because the review showed deleting the wrong file, or too many
   files through a wider search, did not count. Dependent steps in reverse
   order are put in dependency order before comparing. Levels are computed again
@@ -159,9 +167,9 @@ end). The size is the size of the file that was run.
 
 | Model | File (bytes) | Licence | Tool calling, as the vendor says | Role |
 |---|---:|---|---|---|
-| Bonsai 8B (the current model) | `Bonsai-8B-Q1_0.gguf` (1,158,654,496), 1-bit, 65,536 context | Apache-2.0 | **Not stated** on the model card or in the vendor's run guide. The only evidence was the single call recorded in S1 | Baseline |
+| Bonsai 8B (the current model) | `Bonsai-8B-Q1_0.gguf` (1,158,654,496), 1-bit, 65,536 context | Apache-2.0 | No statement on the model card or in the vendor's run guide; the card's benchmark table has a BFCL column, 65.7 for Bonsai 8B (the vendor's own figure). The other evidence is the single call recorded in S1 | Baseline |
 | Ternary Bonsai 2 9B | `Ternary-Bonsai-2-9B-Q2_0.gguf` (2,556,640,128), ternary, 262,144 context, base Qwen3.5-9B | Apache-2.0 | Stated: PrismML's docs say all Bonsai 2 sizes "call tools natively", and its 9B page says tools go in as a standard `tools` array | Candidate (under the 3 GB limit) |
-| Bonsai 27B (first generation, 1-bit) | `Bonsai-27B-Q1_0.gguf` (3,803,452,576), LM Studio's conversion of PrismML's weights | Apache-2.0 | The vendor's model card reports BFCL v3 and τ²-Bench scores for the 27B, 66.03 at 1-bit against 80.00 at FP16 (the vendor's own figures) | Ceiling only: over the 3 GB limit |
+| Bonsai 27B (first generation, 1-bit) | `Bonsai-27B-Q1_0.gguf` (3,803,452,576), LM Studio's conversion of PrismML's weights | Apache-2.0 | The vendor's model card reports, for the 27B, BFCL v3 70.72 and τ²-Bench 61.34 at 1-bit against 77.10 and 82.90 at FP16 (the vendor's own figures) | Ceiling only: over the 3 GB limit |
 | Gemma 4 12B, QAT Q4_0 | `gemma-4-12B-it-QAT-Q4_0.gguf` (6,975,879,008), LM Studio's conversion of Google's weights | Apache-2.0 | Stated on Google's model card: "Native support for structured tool use" | Ceiling only: over the 3 GB limit |
 
 Bonsai 2 9B is the "newer Bonsai 2 family" the roadmap says to compare
@@ -236,8 +244,8 @@ temperature 0), tools 46 (against 46). With thinking on in tools mode (the
 vendor's default, temperature 1.0, up to 6,000 tokens): 46. The differences
 between these settings are 4 intents or fewer.
 
-Repeatability: three runs of Bonsai 8B as shipped (one of them a repeat) gave
-the same 28 exact, the same 64 valid, and the same intents.
+Repeatability: three constrained runs of Bonsai 8B (as shipped, a repeat of it,
+and thinking off) gave byte-identical answers.
 
 ### By category (exact plans)
 
@@ -272,8 +280,9 @@ the same 28 exact, the same 64 valid, and the same intents.
 
 The prompt is the system prompt, the schema or the tools, and the request. The
 constrained mode sends about 480 tokens (the schema is not in the prompt: the
-server turns it into a grammar); native tool calls send 3,100 to 3,800, because
-every tool carries its inlined reference definitions. At the 100 tokens per
+server turns it into a grammar); native tool calls send 3,100 to 3,800 for the Bonsai models (1,300 to 1,800 for
+Gemma, whose template renders the tools more compactly), because every tool
+carries its inlined reference definitions. At the 100 tokens per
 second of prompt processing that S1 measured on the M1, 3,150 tokens would be
 about 30 seconds for the first request, and `cache_prompt` would reuse them
 afterwards. That is an estimate from S1's rate, not a measurement on the M1,
@@ -287,18 +296,23 @@ and a more compact tool definition is part of the follow-up.
   the constrained mode Bonsai 8B answers "delete it" with a delete, "install
   firefox" with `system.configure` and `process.run`, and "give me
   administrator rights" with `system.configure`; Bonsai 2 9B answers the last
-  with `user.manage`. Those are the overreach counts. The 27B with tool calls (9 of the 10) and
+  with `user.manage`. Those are the overreach counts. The 27B with tool calls (9 of the 10; 8 with derived dependencies) and
   Gemma 4 12B constrained (7 of the 10) ask far more often.
 - **Mode, not size, moves Bonsai.** The same weights, asked through native tool
   calls instead of the constrained plan, gain 16 intents (8B), 9 (9B) and 16
   (27B) and halve or better the overreach. Gemma 4 12B goes the other way: 56
-  in the constrained mode, 32 to 34 with tool calls. The effect belongs to the
-  model and its chat template, not to the mode.
-- **Thinking and the grammar do not mix.** Bonsai 2 9B with the template's
-  default (thinking on) and the constrained mode: all 67 answers carried a
-  reasoning trace, 11 ran out of the 1,024-token limit before the JSON and are
-  invalid, and the median time is 1.95 s with a 95th percentile of 17 s.
-  Thinking must be switched off in that mode.
+  in the constrained mode, 32 to 34 with tool calls. The effect depends on the model. Gemma's tool answers often stop after one
+  exploratory step (a `fs_list` before the delete), which a one-shot harness
+  scores as wrong; whether it would do better in a loop that feeds results
+  back was not measured.
+- **Thinking and the shell's token limit do not mix.** Bonsai 2 9B with the
+  template's default (thinking on) in the constrained mode: all 67 answers
+  carried a reasoning trace, 11 ran out of the shell's 1,024-token limit before
+  the JSON (all 11 stopped for length) and are invalid, and the median time is
+  1.95 s with a 95th percentile of 17 s. The vendor says to allow at least 8,192
+  output tokens with thinking on and to avoid temperature 0 there; neither was
+  tried in the constrained mode. The one thinking run with a larger limit (tools
+  mode, 6,000 tokens, temperature 1.0) used at most 623 tokens and got 46.
 - **The intents the S3 and S3b reports recorded as wrong.** `delete-largest-two` (search, then delete through `from_step`) is exact only for Bonsai
   2 9B and Gemma 4 12B in the constrained mode; Bonsai 8B misses it in every
   mode, and so do the 9B and the 27B with native tool calls (they plan the
@@ -306,41 +320,49 @@ and a more compact tool definition is part of the follow-up.
   resolver reports as not found) is still wrong for Bonsai 8B in every mode and
   for the 27B with tool calls, and right for Bonsai 2 9B. "Add the user bia to
   the group staff" fails validation in the constrained mode for Bonsai 8B (no
-  group) and is exact in all the other rows listed here.
+  group; also `user-remove-group` and `user-add-group-pt`) and is exact for
+  Bonsai 8B with tool calls, for the 9B constrained and with tool calls, for
+  the 27B with tool calls, and for Gemma constrained.
 
 ## Decision
 
 Applying the rule fixed before measuring:
 
-1. **Model, in the shipped mode.** Bonsai 2 9B beats Bonsai 8B by 10 exact
-   plans (38 against 28) with thinking off: more than 7, overreach 13 against
-   13 (not higher), median 1.22 s. Rule 1 is met. With the request the shell
-   sends today (thinking on) it is 34 against 28, which is 6: not met, because
-   the thinking trace uses up the token limit of 11 answers.
+1. **Model, in the shipped mode.** As the shell sends the request today,
+   Bonsai 2 9B beats Bonsai 8B by 6 exact plans (34 against 28): less than 7.
+   Rule 1 is not met and rule 3 keeps the current model. With thinking
+   switched off the gap is 10 (38 against 28), overreach 13 against 13 and
+   median 1.22 s, which would meet it; that needs `enable_thinking: false` in
+   the request, a change to `intent-shell/src/model.rs` that this item does not
+   make. The result is close: one run per setting, the sampler settings of the
+   same model move it by up to 4 intents, and the larger token limit the vendor
+   recommends for thinking was not tried in this mode.
 2. **Mode.** Native tool calls beat the constrained mode by at least 7 for
-   Bonsai 2 9B (46 and 47 against 38), for Bonsai 27B (55 and 54 against 38) and
-   for Bonsai 8B once the harness derives `depends_on` (44 against 28), with
-   less overreach each time. Rule 2 is met for the Bonsai family and not for
-   Gemma 4 12B, where it goes the other way. Rule 2 is the evidence for a new
-   ADR, not a change made here.
+   Bonsai 2 9B (46 and 47 against 38) and for Bonsai 27B (55 and 54 against
+   38), with less overreach each time. For Bonsai 8B they do so only with the
+   variant that was not pre-registered (44 against 28 with derived
+   dependencies; 12 against 28 with the first protocol, which measures the
+   numbering convention). For Gemma 4 12B it goes the other way. Rule 2 is met
+   for the Bonsai family, and is the evidence for a new ADR, not a change made
+   here.
 3. **Both together (not in the rule).** In native tool calls with derived
    dependencies, Bonsai 2 9B beats Bonsai 8B by 3 (47 against 44), under the
    threshold of 7.
 
-**Keep Bonsai 8B, and open the mode change.** This is a deviation from a
-literal reading of rule 1, so the reasons are listed:
+**Keep Bonsai 8B, and open the mode change.** The model decision follows rule
+1 and rule 3. The mode recommendation follows rule 2 and its caveat on Bonsai 8B
+above. Other reasons, none of them measured against the rule:
 
-- the swap's gain is 10 intents and needs thinking switched off; the mode's
-  gain for the model already in use is 16, with no new weights;
-- once the mode changes, the 9B's lead is 3, below the threshold, and rule 3
-  says a gap below 7 keeps the current model;
-- the 9B is 2.56 GB against 1.16 GB, needs a `llama.cpp` of `b11555` or newer
-  (the build used here is `v1.0.0`; Homebrew's and LM Studio's bundled builds
-  were not tried), and was not run on the 8 GB M1 of S1 at all.
+- the mode's gain for the model already in use is 16, with no new weights; the
+  swap's best case is 10 and needs a change of request;
+- once the mode changes, the 9B's lead is 3, below the threshold;
+- the 9B is 2.56 GB against 1.16 GB and was not run on the 8 GB M1 of S1 at
+  all. Its `Q2_0` file needs `llama.cpp` build `b11555` or newer; the build used
+  here (`v1.0.0`) is build 12359, the same commit S1 recorded for Homebrew's
+  build on the M1, so that is not an obstacle there, but Metal was not tried.
 
-If the owner prefers the literal rule, the swap is Ternary Bonsai 2 9B,
-`Q2_0` file, with `enable_thinking: false` sent on every request; that is a
-change to `intent-shell/src/model.rs`, which this item does not touch.
+If the owner would rather change the model now, the swap is Ternary Bonsai 2
+9B, `Q2_0` file, with `enable_thinking: false` sent on every request.
 
 ### Follow-ups (not started)
 
@@ -382,8 +404,7 @@ curl -L -O https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-gguf/resolve/main
 echo "1f884aa56aacd2bbbb2e4b7abaead2b1102b74a9c75a23fc33dab916813a384d  Ternary-Bonsai-2-9B-Q2_0.gguf" | sha256sum -c
 ```
 
-Every measurement, one server at a time (over an hour on this machine;
-`thinking` is the slow section; a rerun skips complete runs):
+Every measurement, one server at a time (about half an hour on this machine; a rerun skips complete runs):
 
 ```bash
 LLAMA_SERVER=/path/to/llama.cpp/build/bin/llama-server \
@@ -415,7 +436,7 @@ The checks that run in `./scripts/check.sh`: `python3 -I eval/test_score.py`,
 
 Every pull request that adds harness code is reviewed locally and
 adversarially (`CLAUDE.md`). Four rounds were run, each by a fresh reviewer
-that got the diff and the ADRs and not this report's reasoning.
+that got the diff and the ADRs and not this report's reasoning. The finding counts are as the reviewers reported them; the answers of the first rounds were not kept in the repository.
 
 | Round | Findings | What was done |
 |---|---:|---|
@@ -424,7 +445,7 @@ that got the diff and the ADRs and not this report's reasoning.
 | 3 | 15 | Retry failures and retry overreach counted; derived prompt without `depends_on`; matrix resume and server identity check; `RecursionError`. Accepted: the retry text is the schema's message rather than the parser's; tool descriptions carry small hints the shell prompt lacks |
 | 4 | 7 | No scoring bug. Incomplete runs flagged and not skipped; `grep -F`; a weak test fixed; malformed server replies caught. Accepted: the columns have two bases (first attempt, and the answer the shell acts on), written under "Scoring" |
 
-A last round was run on the final commit; its result is in the pull request.
+A fifth round fact-checked this report against the stored answers and reviewed the code added since the measurement; its findings (a wrong run time, the framing of rule 1, the BFCL figures, the llama.cpp build, a false sentence about `user-add-group`, and gaps in the completeness check and in the guard for malformed replies) are fixed in this report and in `eval/`.
 
 ## Not verified, and limits
 

@@ -366,9 +366,17 @@ def table(run_directories, intents_path):
 
 
 def complete(directory, intents_path):
-    """True when the run answered every intent it was meant to and no request failed."""
-    header, rows = read_run(directory, load_intents(intents_path))
-    return len(rows) == header["intents"] and summarize(rows, load_intents(intents_path))["total"]["failed"] == 0
+    """True when the run answered every intent of the set as it is now, from this
+    set (its hash is the header's), and no request failed."""
+    intents = load_intents(intents_path)
+    header, rows = read_run(directory, intents)
+    same_set = header.get("intents_sha256") == hashlib.sha256(Path(intents_path).read_bytes()).hexdigest()
+    return (
+        same_set
+        and header["intents"] == len(intents)
+        and len(rows) == len(intents)
+        and summarize(rows, intents)["total"]["failed"] == 0
+    )
 
 
 def baselines(intents_path):

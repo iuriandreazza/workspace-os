@@ -126,9 +126,11 @@ class Runner:
             return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: {error}"], "output": None}
         try:
             message = reply["choices"][0]["message"]
+            if not isinstance(message, dict):
+                raise TypeError("the message is not an object")
         except (KeyError, IndexError, TypeError) as error:
             return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: reply without a message ({error!r})"], "output": None}
-        timings = reply.get("timings", {})
+        timings = reply.get("timings") or {}
         record = {
             "output": message.get("content") if self.args.mode == "grammar" else {"content": message.get("content"), "tool_calls": message.get("tool_calls")},
             "reasoning": bool(message.get("reasoning_content")),
