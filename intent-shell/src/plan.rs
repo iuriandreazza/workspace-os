@@ -734,6 +734,36 @@ mod tests {
     }
 
     #[test]
+    fn count_content_and_path_bounds_match_the_schema() {
+        let one = |action: &str, args: String| {
+            format!(
+                r#"{{"kind":"plan","version":1,"summary":"x","steps":[{{"id":"s1","action":"{action}","args":{args},"depends_on":[],"elevate":false}}]}}"#
+            )
+        };
+        let find = |count: u32| {
+            one(
+                "fs.find_largest",
+                format!(r#"{{"path":".","count":{count}}}"#),
+            )
+        };
+        assert!(parse(&find(1)).is_ok() && parse(&find(100)).is_ok());
+        assert!(parse(&find(0)).is_err() && parse(&find(101)).is_err());
+        let write = |n: usize| {
+            one(
+                "fs.write",
+                format!(
+                    r#"{{"path":"a","content":"{}","mode":"create"}}"#,
+                    "c".repeat(n)
+                ),
+            )
+        };
+        assert!(parse(&write(65536)).is_ok() && parse(&write(65537)).is_err());
+        let stat = |n: usize| one("fs.stat", format!(r#"{{"path":"{}"}}"#, "p".repeat(n)));
+        assert!(parse(&stat(1024)).is_ok() && parse(&stat(1025)).is_err());
+        assert!(parse(&stat(0)).is_err());
+    }
+
+    #[test]
     fn a_proposed_soul_text_is_bounded() {
         let soul = |n: usize| {
             format!(

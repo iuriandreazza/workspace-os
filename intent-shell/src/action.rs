@@ -514,4 +514,89 @@ mod tests {
             assert_eq!(action.root_rule(), rule, "{}", action.name());
         }
     }
+
+    #[test]
+    fn the_confirmation_text_shows_every_argument_of_every_action() {
+        let p = |s: &str| PathBuf::from(s);
+        let shown = [
+            (
+                Action::Move {
+                    from: p("/a"),
+                    to: p("/b"),
+                },
+                r#"fs.move from="/a" to="/b""#,
+            ),
+            (
+                Action::Write {
+                    path: p("/a"),
+                    content: "0123456789abcdef".into(),
+                    mode: WriteMode::Append,
+                },
+                r#"fs.write path="/a" mode=Append content="0123456789abcdef""#,
+            ),
+            (
+                Action::Run {
+                    program: "ls".into(),
+                    argv: vec!["-l".into(), "/x".into()],
+                },
+                r#"process.run program="ls" argv=["-l", "/x"]"#,
+            ),
+            (
+                Action::UserManage {
+                    operation: UserOperation::AddToGroup,
+                    user: "bia".into(),
+                    group: Some("staff".into()),
+                },
+                r#"user.manage operation=AddToGroup user="bia" group="staff""#,
+            ),
+            (
+                Action::SystemConfigure {
+                    key: "k".into(),
+                    value: "v".into(),
+                },
+                r#"system.configure key="k" value="v""#,
+            ),
+            (
+                Action::SoulProposeChange {
+                    rationale: "r".into(),
+                    new_text: "t".into(),
+                },
+                r#"soul.propose_change rationale="r" new_text="t""#,
+            ),
+            (
+                Action::FindLargest {
+                    path: p("/a"),
+                    count: 3,
+                },
+                r#"fs.find_largest path="/a" count=3"#,
+            ),
+        ];
+        for (action, text) in shown {
+            assert_eq!(action.describe(), text);
+        }
+    }
+
+    #[test]
+    fn a_reference_fills_the_source_of_a_move_and_the_target_of_the_rest() {
+        let moved = Action::Move {
+            from: PathBuf::new(),
+            to: PathBuf::from("/dest"),
+        }
+        .with_referenced_path(PathBuf::from("/src"));
+        assert_eq!(
+            moved,
+            Action::Move {
+                from: PathBuf::from("/src"),
+                to: PathBuf::from("/dest")
+            }
+        );
+        let mapped = moved.map_paths(&|p| p.join("x"));
+        assert_eq!(
+            mapped,
+            Action::Move {
+                from: PathBuf::from("/src/x"),
+                to: PathBuf::from("/dest/x")
+            }
+        );
+    }
 }

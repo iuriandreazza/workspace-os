@@ -142,7 +142,7 @@ fakes for all four.
 
 ## Tests and the gate
 
-`./scripts/check.sh` now also runs clippy and 88 tests for `intent-shell`,
+`./scripts/check.sh` now also runs clippy and 101 tests for `intent-shell`,
 none needing the model. They include one test per refusal class (no
 capability, beyond the user's permissions, root without confirmation, a
 non-administrator elevating, malformed output, rule violations) and the 27
@@ -213,7 +213,7 @@ see first, which is the point of the broker; the quality is S4's problem.
 - `fs.read` says so in a NOTE when it cut the file at its 64 KiB cap.
 - A path is shown byte-exact: a byte that is not UTF-8 appears as `\xNN`, so
   two different file names never show as the same action.
-- A search that could not look everywhere (unreadable directories, or the
+- A search that could not look everywhere (unreadable directories or files, or the
   100,000-entry cap) says so as a `NOTE` next to the plan and next to the
   result, because a reference expands from it.
 - Escaping covers the known invisible, blank and bidirectional characters, not

@@ -220,10 +220,11 @@ fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, 
             };
             if kind.is_dir() {
                 pending.push(entry.path());
-            } else if kind.is_file()
-                && let Ok(meta) = entry.metadata()
-            {
-                files.push((meta.len(), entry.path()));
+            } else if kind.is_file() {
+                match entry.metadata() {
+                    Ok(meta) => files.push((meta.len(), entry.path())),
+                    Err(_) => unreadable += 1,
+                }
             }
         }
         if truncated {
@@ -245,7 +246,7 @@ fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, 
     }
     if unreadable > 0 {
         notes.push(format!(
-            "{unreadable} directories could not be read: larger files may exist"
+            "{unreadable} entries could not be read: larger files may exist"
         ));
     }
     Ok(Output {
@@ -487,5 +488,26 @@ mod tests {
     #[test]
     fn the_root_is_never_a_target_even_for_root() {
         assert!(!host(Path::new("/work")).allows(Access::Write, Path::new("/")));
+    }
+
+    #[test]
+    fn files_in_a_directory_that_can_be_listed_but_not_entered_are_reported() {
+        let dir = temp_dir("listonly");
+        let sub = dir.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("huge"), vec![0; 5000]).unwrap();
+        fs::write(dir.join("small"), "x").unwrap();
+        set_mode(&sub, 0o444);
+        let output = host(&dir)
+            .execute(&Action::FindLargest {
+                path: dir.clone(),
+                count: 1,
+            })
+            .unwrap();
+        set_mode(&sub, 0o700);
+        if !is_root() {
+            assert_eq!(output.notes.len(), 1, "{output:?}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

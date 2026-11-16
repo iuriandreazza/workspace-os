@@ -921,3 +921,168 @@ fn paths_are_resolved_before_the_user_permissions_are_checked() {
     .handle("x");
     assert!(matches!(outcome, Outcome::AllRefused(_)), "{outcome:?}");
 }
+
+#[test]
+fn the_full_session_holds_every_capability() {
+    let authority = Authority::full(user(false));
+    assert_eq!(authority.capabilities.len(), Capability::ALL.len());
+    for capability in Capability::ALL {
+        assert!(authority.capabilities.contains(&capability), "{capability}");
+    }
+}
+
+#[test]
+fn the_real_hosts_resolution_is_what_the_broker_checks_and_shows() {
+    use crate::host::UnixHost;
+    let host = UnixHost::new(None, std::path::PathBuf::from("/work/sub"));
+    let text = plan(&[step("s1", "fs.delete", r#"{"path":"/tmp/.."}"#, "false")]);
+    let planner = ScriptedPlanner::new(&[&text]);
+    let mut answers = Answers::yes();
+    let mut log = MemoryLog::default();
+    let outcome = Shell {
+        authority: &Authority::full(user(false)),
+        host: &host,
+        planner: &planner,
+        confirm: &mut answers,
+        log: &mut log,
+    }
+    .handle("x");
+    let Outcome::AllRefused(review) = &outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(
+        review.steps[0].items[0].action.describe(),
+        r#"fs.delete path="/""#
+    );
+}
+
+#[test]
+fn a_move_from_a_single_reference_expands_with_the_destination_kept() {
+    let host = files();
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.find_largest","args":{"path":"/work","count":1},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.move","args":{"from":{"from_step":"s1"},"to":"/work/dest"},"depends_on":["s1"],"elevate":false}]}"#;
+    let result = run(&[text], &host, false);
+    let moves: Vec<_> = reviewed(&result.outcome).steps[1]
+        .items
+        .iter()
+        .map(|i| i.action.describe())
+        .collect();
+    assert_eq!(moves, [r#"fs.move from="/work/b" to="/work/dest""#]);
+}
+
+#[test]
+fn steps_listed_out_of_dependency_order_are_reviewed_in_dependency_order() {
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s2","action":"fs.stat","args":{"path":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false},
+      {"id":"s1","action":"fs.find_largest","args":{"path":"/work","count":1},"depends_on":[],"elevate":false}]}"#;
+    let result = run(&[text], &files(), false);
+    let ids: Vec<_> = reviewed(&result.outcome)
+        .steps
+        .iter()
+        .map(|s| s.id.as_str().to_owned())
+        .collect();
+    assert_eq!(ids, ["s1", "s2"]);
+}
+
+#[test]
+fn the_plan_prompt_marks_root_steps_and_empty_references() {
+    let host = files();
+    let elevated = plan(&[step("s1", "fs.delete", r#"{"path":"/work/a"}"#, "true")]);
+    let result = run(&[&elevated], &host, true);
+    assert!(
+        reviewed(&result.outcome)
+            .render()
+            .contains("ROOT, held for your confirmation")
+    );
+
+    let empty = FakeHost::with_files(&[]);
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.find_largest","args":{"path":"/none","count":1},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.delete","args":{"path":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#;
+    let result = run(&[text], &empty, false);
+    assert!(reviewed(&result.outcome).render().contains("nothing to do"));
+}
+
+#[test]
+fn blocked_steps_are_logged_and_reported_and_never_run_their_items() {
+    let host = files().failing("/work");
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.find_largest","args":{"path":"/work","count":2},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.delete","args":{"path":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false},
+      {"id":"s3","action":"fs.stat","args":{"path":"/work/a"},"depends_on":[],"elevate":false}]}"#;
+    let result = run(&[text], &host, false);
+    assert!(!events(&result, "step_not_run").is_empty());
+    let Outcome::Executed { steps, .. } = &result.outcome else {
+        panic!("{:?}", result.outcome)
+    };
+    assert!(steps[0].not_run.is_some() && steps[0].items.is_empty());
+    assert!(result.outcome.render().contains("s1 not run"));
+}
+
+#[test]
+fn the_log_names_the_user_the_question_and_the_steps() {
+    let result = run(
+        &[r#"{"kind":"clarify","version":1,"question":"Which?"}"#],
+        &files(),
+        false,
+    );
+    assert_eq!(events(&result, "request")[0]["user"], "ana");
+    assert_eq!(events(&result, "clarify")[0]["question"], "Which?");
+    let planned = run(&[DELETE_LARGEST], &files(), false);
+    assert_eq!(
+        events(&planned, "plan_accepted")[0]["steps"],
+        serde_json::json!(["s1", "s2"])
+    );
+}
+
+#[test]
+fn a_model_that_cannot_be_reached_is_logged_and_a_dead_log_stops_even_that() {
+    let planner = ScriptedPlanner::new(&[]);
+    let host = files();
+    let mut answers = Answers::yes();
+    let mut log = MemoryLog::default();
+    let authority = Authority::full(user(false));
+    let outcome = Shell {
+        authority: &authority,
+        host: &host,
+        planner: &planner,
+        confirm: &mut answers,
+        log: &mut log,
+    }
+    .handle("x");
+    assert!(matches!(outcome, Outcome::NoPlan(_)));
+    assert_eq!(
+        events(
+            &Run {
+                outcome,
+                log,
+                answers
+            },
+            "model_error"
+        )
+        .len(),
+        1
+    );
+
+    let planner = ScriptedPlanner::new(&[]);
+    let mut answers = Answers::yes();
+    let mut log = MemoryLog::failing_after(1);
+    let outcome = Shell {
+        authority: &authority,
+        host: &host,
+        planner: &planner,
+        confirm: &mut answers,
+        log: &mut log,
+    }
+    .handle("x");
+    assert!(matches!(outcome, Outcome::LogFailed { .. }));
+}
+
+#[test]
+fn what_a_read_prints_is_indented_so_it_cannot_pass_for_a_report_line() {
+    let text = plan(&[step("s1", "fs.read", r#"{"path":"/work/a"}"#, "false")]);
+    let result = run(&[&text], &files(), false);
+    let shown = result.outcome.render();
+    assert!(shown.lines().any(|l| l.starts_with("    xxxx")), "{shown}");
+}
