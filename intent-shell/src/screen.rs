@@ -282,7 +282,11 @@ pub fn root_panel(who: &str, step: &StepId, action: &Action, labels: &Labels) ->
 /// The question for a reference that matched several things, and the
 /// candidates in their parent context so the person tells them apart by where
 /// they sit. Only the candidates can be picked (ADR 0018).
-pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<ChoiceLine>) {
+///
+/// The candidates come back in the order the rows show them, and the lines
+/// number them in that order, so the numbers go down the screen and the
+/// arrows move down the tree.
+pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<ChoiceLine>, Vec<PathBuf>) {
     let entries: Vec<TreeEntry> = ambiguity
         .candidates
         .iter()
@@ -300,6 +304,21 @@ pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<ChoiceLi
         // A candidate that is cut off cannot be picked.
         max_lines: usize::MAX,
     };
+    let mut lines = tree(
+        &common_parent(&ambiguity.candidates),
+        &entries,
+        &ambiguity.candidates,
+        labels,
+        &TreeMarks::default(),
+        &options,
+    );
+    let mut shown_order: Vec<PathBuf> = Vec::new();
+    for line in &mut lines {
+        if let Some(index) = line.option {
+            shown_order.push(ambiguity.candidates[index].clone());
+            line.option = Some(shown_order.len() - 1);
+        }
+    }
     (
         printable(
             &format!(
@@ -308,14 +327,8 @@ pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<ChoiceLi
             ),
             false,
         ),
-        tree(
-            &common_parent(&ambiguity.candidates),
-            &entries,
-            &ambiguity.candidates,
-            labels,
-            &TreeMarks::default(),
-            &options,
-        ),
+        lines,
+        shown_order,
     )
 }
 

@@ -232,9 +232,9 @@ impl Shell<'_> {
             let Some(ambiguity) = reviewed.first_ambiguity().cloned() else {
                 return Ok(Ok(reviewed));
             };
-            let (question, lines) = screen::question(&ambiguity, &reviewed.labels);
+            let (question, lines, offered) = screen::question(&ambiguity, &reviewed.labels);
             let picked = self.confirm.choose(&question, &lines);
-            let chosen = picked.and_then(|i| ambiguity.candidates.get(i).cloned());
+            let chosen = picked.and_then(|i| offered.get(i).cloned());
             self.record(json!({
                 "event": "choice", "step": ambiguity.step.as_str(), "what": ambiguity.what,
                 "candidates": ambiguity.candidates.iter().map(|p| quoted_path(p)).collect::<Vec<_>>(),

@@ -1069,3 +1069,57 @@ fn what_a_listing_shows_below_its_children_never_feeds_a_from_step_reference() {
             .any(|e| e.path.ends_with("films/old.mkv"))
     );
 }
+
+#[test]
+fn a_move_into_a_link_to_a_folder_is_judged_where_the_file_lands() {
+    let host = home()
+        .link("/home/ana/Downloads/lnk", "/home/ana/.ssh")
+        .dir("/home/ana/.ssh");
+    let args = r#"{"from":{"path":"Documents/report.pdf"},"to":{"path":"Downloads/lnk"}}"#;
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.move", args),
+    );
+    assert_eq!(
+        exact(&run),
+        r#"fs.move from="/home/ana/Documents/report.pdf" to="/home/ana/.ssh/report.pdf""#
+    );
+    // It is a hidden location, so the plan asks.
+    assert!(
+        reviewed(&run.outcome).steps[0].items[0]
+            .action
+            .needs_confirmation()
+    );
+}
+
+#[test]
+fn the_candidates_are_numbered_in_the_order_the_rows_show_them() {
+    let host = FakeHost::with_files(&[
+        ("/home/ana/Zeta/r.pdf", 1),
+        ("/home/ana/alpha/r.pdf", 1),
+        ("/home/ana/Beta/r.pdf", 1),
+    ])
+    .dir("/home/ana/Zeta")
+    .dir("/home/ana/alpha")
+    .dir("/home/ana/Beta");
+    let text = one_step(
+        "fs.read",
+        r#"{"target":{"under_home":true,"name":"r.pdf","kind":"file"}}"#,
+    );
+    let mut answers = Answers::yes().picking(&[Some(1)]);
+    answers.plan = true;
+    let (run, _) = run_in(
+        &mut session_in("/home/ana"),
+        &[&text],
+        &host,
+        &Authority::full(user(false)),
+        answers,
+        MemoryLog::default(),
+    );
+    let lines = &run.answers.questions[0].1;
+    let numbers: Vec<usize> = lines.iter().filter_map(|l| l.option).collect();
+    assert_eq!(numbers, [0, 1, 2]);
+    // The second row down is Beta, and picking it chooses Beta's file.
+    assert_eq!(exact(&run), r#"fs.read path="/home/ana/Beta/r.pdf""#);
+}
