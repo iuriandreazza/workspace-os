@@ -76,7 +76,15 @@ sync_exception_entry:
     mrs  x0, far_el1
     str  x0, [sp, #FRAME_FAR]
 
+    // Scrub everything the frame holds, so that the restore below is the only
+    // source of the interrupted values and a missing restore cannot go unseen.
     mov  x0, sp
+.irp n, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29
+    mov  x\n, xzr
+.endr
+    msr  sp_el0, xzr
+    msr  spsr_el1, xzr
+    msr  elr_el1, xzr
     bl   handle_sync_exception
 
     // ELR and SPSR first: they need scratch registers that are reloaded after.
@@ -117,7 +125,7 @@ unhandled_exception_entry:
     b    unhandled_exception
 
 // Takes a breakpoint with distinct values in x0 to x30 and in the flags, then
-// checks that every one came back, and SP with them. Returns 0 on success.
+// checks that every one came back, with SP and SP_EL0. Returns 0 on success.
 .global exception_selftest
 exception_selftest:
     stp  x18, x19, [sp, #-112]!
@@ -135,6 +143,8 @@ exception_selftest:
     ldr  x\n, =(0x0123456789abcdef + \n * 0x1111111)
 .endr
     mov  x29, sp
+    ldr  x30, =0x0badc0ffee0ddf00
+    msr  sp_el0, x30
     mov  x30, sp
     brk  #0x1
 
@@ -146,6 +156,10 @@ exception_selftest:
     cmp  x30, x29
     b.ne .Lselftest_failed
     mov  x30, sp
+    cmp  x30, x29
+    b.ne .Lselftest_failed
+    mrs  x30, sp_el0
+    ldr  x29, =0x0badc0ffee0ddf00
     cmp  x30, x29
     b.ne .Lselftest_failed
 .irp n, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
