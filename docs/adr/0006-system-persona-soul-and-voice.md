@@ -37,7 +37,9 @@ How they are defined and kept:
    - formal and discreet: professional, speaks only when needed;
    - good-humoured: light, with a marked character, still precise.
 2. **One SOUL per machine.** The SOUL belongs to the system, not to a user
-   account: it is the same AI for every user of the machine.
+   account: it is the same AI for every user of the machine. The system has
+   a name of its own, the machine name, chosen at installation. That is the
+   name it uses on the login screen and when it speaks to several people.
 3. **A personality per user, built on the SOUL.** For each user the AI may
    have a personality: the way that one SOUL shows itself to that person. A
    personality uses the SOUL and cannot contradict it. Each user shapes
@@ -47,7 +49,8 @@ How they are defined and kept:
    - the spoken voice;
    - the language;
    - the level of detail of the answers;
-   - the name that user calls the AI by.
+   - the name that user calls the AI by, a nickname on top of the machine
+     name.
 4. **The AI may propose changes to its own SOUL, and only a user with root
    authority can approve them.** A change is a proposal shown in full and
    accepted or rejected. Every applied change is kept in a history and can be
@@ -95,8 +98,6 @@ The SOUL and the voice govern presentation. They never govern authority.
 
 ## Open questions
 
-- With a different name per user, what name the system itself goes by: in
-  the SOUL, on the login screen, and when it speaks to several people.
 - How the system knows which user is speaking, so that it answers with that
   user's personality and voice. The voiceprint enrolled for root confirmation
   (ADR 0007) is the natural candidate; recognising a speaker to pick a

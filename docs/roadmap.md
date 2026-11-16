@@ -50,6 +50,7 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K0 | Boot on QEMU `virt`, serial banner, parked cores, vector table that panics, check script, hooks, CI | Three boots: ELF, raw image over dirtied `.bss`, four cores | done |
 | K1 | Exception handling: save and restore context, decode the syndrome, report synchronous exceptions, enter EL1 when started at EL2 or EL3. Its adversarial review also covers what reached `main` without a clean round: the vector table, the raw and four-core boots, and the git hooks | A boot that takes a deliberate breakpoint and resumes; boots at EL2 and EL3 | next |
 | K2 | Device tree: keep the pointer from the boot protocol or find the blob at the start of RAM, read memory size and the UART node, stop hard-coding them in `board.rs` | Boots with two different memory sizes and prints each | blocked: K1 |
+| K2b | UEFI boot and a bootable disk image, so the kernel starts in VirtualBox on the ARM Mac and not only through QEMU's direct kernel loading (ADR 0004). Research first: what VirtualBox's ARM machine provides (firmware tables, serial device, memory layout) | The banner under QEMU with UEFI firmware, in the gate; the banner under VirtualBox, recorded by hand | blocked: K2 |
 | K3 | Physical frame allocator fed by the device tree memory map | Allocate, free and reuse frames at boot; exhausting memory is reported, not a hang | blocked: K2 |
 | K4 | MMU: kernel page tables, higher-half mapping, write-xor-execute | A write to kernel code and a jump into data each end in a reported fault | blocked: K3 |
 | K5 | Kernel heap allocator | Boot-time allocation stress test | blocked: K4 |
@@ -60,9 +61,9 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K10 | Move the UART driver out of the kernel into a userspace server | The banner is printed by the server; killing the server does not stop the kernel | blocked: K9 |
 | K11 | Multi-core bring-up through PSCI | Four cores run threads | later |
 | K12 | Filesystem server with an in-memory filesystem | A user program creates, reads and deletes a file through the server | blocked: K10 |
-| K13 | Users and permissions in the Linux model (ADR 0007): users, groups, owner and permission bits enforced by the filesystem server, a root user with no direct login, and `sudo`-style elevation for members of an administrators group | A user is refused a file they have no permission for; an administrator gets it after confirming with their own password; a user outside the group cannot elevate; the kernel holds no notion of a user | blocked: K12 |
+| K13 | Users and permissions in the Linux model (ADR 0007): users, groups, owner and permission bits enforced by the filesystem server, a root user with no direct login, `sudo`-style elevation for members of an administrators group, and a recovery mode from the boot menu that runs without the AI | A user is refused a file they have no permission for; an administrator gets it after confirming with their own password; a user outside the group cannot elevate; the kernel holds no notion of a user | blocked: K12 |
 | K14 | x86_64 port (ADR 0004): boot, serial console, exceptions, memory management and context switch behind `kernel/src/arch`, with the same gate running on both architectures | Every boot in the gate passes on aarch64 and on x86_64 | blocked: K10 |
-| K15 | First real hardware: boot on an x86_64 PC | The serial banner on a physical machine, recorded | blocked: K14 |
+| K15 | x86_64 under VirtualBox and QEMU on a PC | The banner in a VirtualBox x86_64 guest, recorded by hand | blocked: K14 |
 
 K10 is the point where the system is a microkernel in practice (ADR 0001).
 
@@ -186,5 +187,6 @@ Source: [Jev (AI model)](https://en.wikipedia.org/wiki/Jev_(AI_model)).
 
 - Legal review of the licence boundary for converted drivers and model
   weights (ADR 0005).
-- Which x86_64 PC is the first real machine (K15), and what it needs to boot:
-  firmware, serial port, storage.
+- Disk encryption by default with a recovery key (ADR 0007).
+- Physical hardware: not a target yet; the system runs in QEMU and
+  VirtualBox (ADR 0004).

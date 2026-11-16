@@ -99,6 +99,23 @@ Rules that follow:
 - Confirming by typing, with the second factor, always remains available, for
   people who cannot or do not want to use their voice, and for noisy places.
 
+## Recovery
+
+Recovery follows what Linux does. When no administrator can authenticate,
+the machine is recovered by someone with physical access to it:
+
+- the boot menu offers a recovery mode, or the machine is started from the
+  installation media;
+- that gives a root shell on the installed system, where a new administrator
+  password is set;
+- recovery mode runs the deterministic shell only. The AI, the SOUL and voice
+  confirmation are not loaded, so recovery never depends on a model.
+
+As on Linux, this means physical access to the machine is authority over it.
+The defence Linux uses is disk encryption with a recovery key, and a
+password on the boot menu: without the key the disk cannot be read from
+recovery mode or from other media.
+
 ## Alternatives considered
 
 | Option | For | Against |
@@ -118,7 +135,8 @@ Rules that follow:
 
 ## Open questions
 
-- How the machine is recovered when no administrator can authenticate, given
-  that nobody logs in as root directly.
+- Whether the disk is encrypted by default, with a recovery key created
+  during installation. Without it, recovery mode lets anyone with physical
+  access take over the machine and change the SOUL.
 - Which local speaker-verification model to use, its error rates, and its
   licence (ADR 0005).
