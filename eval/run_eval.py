@@ -130,7 +130,8 @@ class Runner:
                 raise TypeError("the message is not an object")
         except (KeyError, IndexError, TypeError) as error:
             return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: reply without a message ({error!r})"], "output": None}
-        timings = reply.get("timings") or {}
+        timings = reply.get("timings")
+        timings = timings if isinstance(timings, dict) else {}
         record = {
             "output": message.get("content") if self.args.mode == "grammar" else {"content": message.get("content"), "tool_calls": message.get("tool_calls")},
             "reasoning": bool(message.get("reasoning_content")),
@@ -139,7 +140,7 @@ class Runner:
             "prompt_n": timings.get("prompt_n"),
             "cache_n": timings.get("cache_n"),
             "predicted_n": timings.get("predicted_n"),
-            "predicted_per_second": round(timings["predicted_per_second"], 1) if timings.get("predicted_per_second") else None,
+            "predicted_per_second": round(timings["predicted_per_second"], 1) if isinstance(timings.get("predicted_per_second"), (int, float)) else None,
         }
         try:
             document, error = self.read(message)

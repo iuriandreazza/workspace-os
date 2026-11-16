@@ -21,12 +21,15 @@ measured on it, and at least one alternative with native tool calling.
   with thinking off), and 47 in native tool calls: its lead over Bonsai 8B is
   3 intents there, under the threshold of 7 fixed before the run. Changing the mode needs a new ADR that
   supersedes the output-constraint part of ADR 0011 (follow-up below).
-- **Rule 1 (change the model) is not met** by the request the shell sends
-  today: Bonsai 2 9B gets 34 exact plans against 28, a gap of 6 where 7 was
-  required. The gap would be 10 (38 against 28) with thinking switched off,
-  which is a change to the request. Both figures are one run at temperature 0
-  and the shell's limit of 1,024 output tokens; the gap is close to the 4
-  intents by which the same model moves between sampler settings.
+- **Rule 1 (change the model) is met or not depending on a choice the rule
+  does not make: whether thinking is part of the candidate's configuration.**
+  As the shell sends the request today (thinking on) Bonsai 2 9B gets 34 exact
+  plans against 28, a gap of 6 where 7 was required: not met. With thinking
+  switched off (a change to the request) it is 38 against 28, a gap of 10:
+  met. Both are one run at temperature 0 and the shell's limit of 1,024 output
+  tokens, and the same model moves by up to 4 intents between sampler settings.
+  Keeping Bonsai 8B is therefore a judgement, with the reasons under "Decision",
+  not something the rule forces.
 - No small model is good enough to act unattended. The best candidate under
   3 GB gets 47 of 67 plans exactly right (70%); a "model" that only ever asks
   a question gets 15 of 67 (22%). The broker and the confirmation stay the
@@ -120,13 +123,15 @@ the M1 of S1, and is only a sanity bound.
 
 ### What changed after the rule was fixed
 
-The text above is as committed, except for four edits: "7 of 68" intents is now
-7 intents (the set has 67, so 10.4 percentage points, and the parenthesis "about
-10 percentage points" was dropped); the third sentence of rule 3 ("At temperature
-0 a run is repeatable, and 7 of 68 is large against the differences between two
-runs of the same model (reported below)") was dropped, because the report shows
-differences of up to 4 between sampler settings; and a clause saying speed on
-the target hardware is a separate measurement was dropped. Four
+The text above is as committed, with four edits: the heading names the commit
+where the rule was frozen; "7 of 68" intents (about 10 percentage points) is
+now 7 intents, which is 10.4 percentage points of the 67 the set has; the third
+sentence of rule 3 ("At temperature 0 a run is repeatable, and 7 of 68 is large
+against the differences between two runs of the same model (reported below)")
+was dropped, because the report shows differences of up to 4 between sampler
+settings; and a clause saying speed on the target hardware is a separate
+measurement was dropped. The rule says nothing about whether thinking is part
+of a model's configuration; the report reads it both ways (Decision). Six
 review rounds (below) changed the set and the harness; each change and its
 reason:
 
@@ -290,13 +295,14 @@ and a more compact tool definition is part of the follow-up.
 
 ### What the models get wrong
 
-- **Asking and refusing.** The Bonsai models almost never ask: `clarify` and
+- **Asking and refusing.** With thinking off the Bonsai models almost never ask: `clarify` and
   `scope` together are 10 intents, and Bonsai 8B gets 0 of them in the
   constrained mode and 1 with native tool calls; Bonsai 2 9B gets 0 and 2. In
   the constrained mode Bonsai 8B answers "delete it" with a delete, "install
   firefox" with `system.configure` and `process.run`, and "give me
   administrator rights" with `system.configure`; Bonsai 2 9B answers the last
-  with `user.manage`. Those are the overreach counts. The 27B with tool calls (9 of the 10; 8 with derived dependencies) and
+  with `user.manage`. Those are the overreach counts. Bonsai 2 9B with thinking on asks far more
+  (clarify 5 of 5, scope 1 of 5; with thinking on in tools mode, 4 and 3). The 27B with tool calls (9 of the 10; 8 with derived dependencies) and
   Gemma 4 12B constrained (7 of the 10) ask far more often.
 - **Mode, not size, moves Bonsai.** The same weights, asked through native tool
   calls instead of the constrained plan, gain 16 intents (8B), 9 (9B) and 16
@@ -321,45 +327,54 @@ and a more compact tool definition is part of the follow-up.
   for the 27B with tool calls, and right for Bonsai 2 9B. "Add the user bia to
   the group staff" fails validation in the constrained mode for Bonsai 8B (no
   group; also `user-remove-group` and `user-add-group-pt`) and is exact for
-  Bonsai 8B with tool calls, for the 9B constrained and with tool calls, for
-  the 27B with tool calls, and for Gemma constrained.
+  Bonsai 8B with derived-dependency tool calls, for the 9B constrained (thinking
+  off) and with tool calls, for the 27B with tool calls, and for Gemma
+  constrained.
 
 ## Decision
 
 Applying the rule fixed before measuring:
 
-1. **Model, in the shipped mode.** As the shell sends the request today,
-   Bonsai 2 9B beats Bonsai 8B by 6 exact plans (34 against 28): less than 7.
-   Rule 1 is not met and rule 3 keeps the current model. With thinking
-   switched off the gap is 10 (38 against 28), overreach 13 against 13 and
-   median 1.22 s, which would meet it; that needs `enable_thinking: false` in
-   the request, a change to `intent-shell/src/model.rs` that this item does not
-   make. The result is close: one run per setting, the sampler settings of the
-   same model move it by up to 4 intents, and the larger token limit the vendor
-   recommends for thinking was not tried in this mode.
-2. **Mode.** Native tool calls beat the constrained mode by at least 7 for
-   Bonsai 2 9B (46 and 47 against 38) and for Bonsai 27B (55 and 54 against
-   38), with less overreach each time. For Bonsai 8B they do so only with the
-   variant that was not pre-registered (44 against 28 with derived
-   dependencies; 12 against 28 with the first protocol, which measures the
-   numbering convention). For Gemma 4 12B it goes the other way. Rule 2 is met
-   for the Bonsai family, and is the evidence for a new ADR, not a change made
-   here.
+1. **Model, in the shipped mode.** The rule fixes the headline "in the mode the
+   shell ships (output constrained by the JSON Schema)" and says nothing about
+   thinking, so there are two readings. As the shell sends the request today
+   (thinking on), Bonsai 2 9B beats Bonsai 8B by 6 exact plans (34 against
+   28): less than 7, rule 1 not met. With `enable_thinking: false` the gap is
+   10 (38 against 28), overreach 13 against 13, median 1.22 s: met. The two
+   rows are different profiles: with thinking on the 9B asks in all 5 `clarify`
+   intents and has an overreach of 5 against 13, but 11 answers run out of the
+   token limit and are invalid; with thinking off it almost never asks. The
+   result is close: one run per setting, the sampler settings of the same model
+   move it by up to 4 intents, and the larger token limit the vendor recommends
+   for thinking was not tried in this mode.
+2. **Mode.** Native tool calls beat the constrained mode by at least 7 for the
+   candidate, Bonsai 2 9B (46 and 47 against 38). Bonsai 27B (55 and 54 against
+   38) agrees, but it is a ceiling and cannot decide a rule. For Bonsai 8B, the
+   model being kept, the first protocol gives 12 against 28, and rule 3 (a gap
+   below 7 keeps the current model and mode) would keep the constrained mode;
+   44 against 28 needs the derived-dependencies variant, which was not
+   pre-registered. For Gemma 4 12B it goes the other way. So rule 2 is met for
+   the candidate, and for the model in use only through a variant chosen after
+   the fact.
 3. **Both together (not in the rule).** In native tool calls with derived
    dependencies, Bonsai 2 9B beats Bonsai 8B by 3 (47 against 44), under the
    threshold of 7.
 
-**Keep Bonsai 8B, and open the mode change.** The model decision follows rule
-1 and rule 3. The mode recommendation follows rule 2 and its caveat on Bonsai 8B
-above. Other reasons, none of them measured against the rule:
+**Keep Bonsai 8B, and open the mode change.** This is a judgement on the
+numbers, not the output of the rule: reading thinking-off as part of the
+candidate, rule 1 says change; and recommending the mode change for Bonsai 8B
+goes beyond rule 3, because its support is the variant added after the fact.
+The reasons:
 
 - the mode's gain for the model already in use is 16, with no new weights; the
   swap's best case is 10 and needs a change of request;
 - once the mode changes, the 9B's lead is 3, below the threshold;
 - the 9B is 2.56 GB against 1.16 GB and was not run on the 8 GB M1 of S1 at
-  all. Its `Q2_0` file needs `llama.cpp` build `b11555` or newer; the build used
-  here (`v1.0.0`) is build 12359, the same commit S1 recorded for Homebrew's
-  build on the M1, so that is not an obstacle there, but Metal was not tried.
+  all. Its `Q2_0` file needs `llama.cpp` build `b11555` (the vendor's docs) or
+  `b11556` (its model card) or newer. The build used here, `v1.0.0`, is
+  commit `b1b770d`, which S1 recorded as Homebrew build 12359 on the M1, so the
+  version is not an obstacle there; the vendor's Hadamard runtime on Metal is
+  the part that was not tried.
 
 If the owner would rather change the model now, the swap is Ternary Bonsai 2
 9B, `Q2_0` file, with `enable_thinking: false` sent on every request.
@@ -435,7 +450,7 @@ The checks that run in `./scripts/check.sh`: `python3 -I eval/test_score.py`,
 ## Review
 
 Every pull request that adds harness code is reviewed locally and
-adversarially (`CLAUDE.md`). Four rounds were run, each by a fresh reviewer
+adversarially (`CLAUDE.md`). Six rounds were run, each by a fresh reviewer
 that got the diff and the ADRs and not this report's reasoning. The finding counts are as the reviewers reported them; the answers of the first rounds were not kept in the repository.
 
 | Round | Findings | What was done |
@@ -445,7 +460,8 @@ that got the diff and the ADRs and not this report's reasoning. The finding coun
 | 3 | 15 | Retry failures and retry overreach counted; derived prompt without `depends_on`; matrix resume and server identity check; `RecursionError`. Accepted: the retry text is the schema's message rather than the parser's; tool descriptions carry small hints the shell prompt lacks |
 | 4 | 7 | No scoring bug. Incomplete runs flagged and not skipped; `grep -F`; a weak test fixed; malformed server replies caught. Accepted: the columns have two bases (first attempt, and the answer the shell acts on), written under "Scoring" |
 
-A fifth round fact-checked this report against the stored answers and reviewed the code added since the measurement; its findings (a wrong run time, the framing of rule 1, the BFCL figures, the llama.cpp build, a false sentence about `user-add-group`, and gaps in the completeness check and in the guard for malformed replies) are fixed in this report and in `eval/`.
+| 5 | fact-check and code | A wrong run time, the BFCL figures, the llama.cpp build, a false sentence about `user-add-group`, gaps in the completeness check and in the guard for malformed replies: fixed |
+| 6 | 7 (last commit) | The framing of rule 1 (it does not say whether thinking is part of the configuration: now stated both ways, and the decision called a judgement), the 9B's different behaviour with thinking on, an unsupported repeatability sentence, a wrong list for `user-add-group`, the `b11555`/`b11556` disagreement between two vendor pages, round counts, and the reply guard (fixed); the stale-set message of the matrix script (accepted) |
 
 ## Not verified, and limits
 
@@ -457,8 +473,8 @@ A fifth round fact-checked this report against the stored answers and reviewed t
   and 2B; Gemma 4's parameter count beyond its name; the licence review that
   ADR 0005 asks for the weights.
 - **The set:** 67 intents, one wording each, one run per setting at
-  temperature 0 (repeatable for the runs of the table; the two at 0.7 are one
-  sample). The `scope` intents measure a limit the shipped prompt does not state.
+  temperature 0 (only the three constrained Bonsai 8B runs were repeated, and
+  they were identical; the two at 0.7 are one sample each). The `scope` intents measure a limit the shipped prompt does not state.
   `config` and `soul` intents compare the action, not the key or the text.
   `elevate-read` reads `hosts` in `everywhere`, which resolves to the home
   folder on this host. A plain-text answer in tools mode is scored as invalid
