@@ -46,6 +46,7 @@ pub enum Refusal {
     NotAdministrator,
     ProgramNotRegistered(String),
     ConfigKeyNotAllowed(String),
+    ProtectedPath(PathBuf),
     DependencyRefused(StepId),
     CannotExpand(String),
     PreRunFailed(String),
@@ -66,6 +67,11 @@ impl fmt::Display for Refusal {
                 f.write_str("root authority needs an administrator, and you are not one")
             }
             Self::ProgramNotRegistered(p) => write!(f, "program {p:?} is not in the registry"),
+            Self::ProtectedPath(path) => write!(
+                f,
+                "{} cannot be written or removed, not even as root",
+                quoted_path(path)
+            ),
             Self::ConfigKeyNotAllowed(k) => write!(f, "configuration key {k:?} is not accepted"),
             Self::DependencyRefused(id) => {
                 write!(f, "step {id} did not pass, and this step depends on it")
@@ -256,6 +262,12 @@ fn judge(action: &Action, elevate: bool, authority: &Authority, host: &dyn Host)
             return Verdict::Refused(Refusal::ConfigKeyNotAllowed(key.clone()));
         }
         _ => {}
+    }
+    // No authority, root included, makes the filesystem root a target.
+    if let Some((_, path)) = action.accesses().into_iter().find(|(access, path)| {
+        matches!(access, Access::Write | Access::Delete) && path.parent().is_none()
+    }) {
+        return Verdict::Refused(Refusal::ProtectedPath(path.to_path_buf()));
     }
     if action.root_rule() == RootRule::Always || elevate {
         return if authority.user.administrator {

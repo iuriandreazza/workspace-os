@@ -1086,3 +1086,41 @@ fn what_a_read_prints_is_indented_so_it_cannot_pass_for_a_report_line() {
     let shown = result.outcome.render();
     assert!(shown.lines().any(|l| l.starts_with("    xxxx")), "{shown}");
 }
+
+#[test]
+fn the_filesystem_root_is_never_a_target_even_for_an_administrator_who_elevates() {
+    for (action, args) in [
+        ("fs.delete", r#"{"path":"/"}"#),
+        (
+            "fs.write",
+            r#"{"path":"/","content":"x","mode":"overwrite"}"#,
+        ),
+        ("fs.move", r#"{"from":"/","to":"/work/dest"}"#),
+        ("fs.move", r#"{"from":"/work/a","to":"/"}"#),
+    ] {
+        let text = plan(&[step("s1", action, args, "true")]);
+        let result = run(&[&text], &files(), true);
+        let Outcome::AllRefused(review) = &result.outcome else {
+            panic!("{action}: {:?}", result.outcome)
+        };
+        assert!(
+            matches!(
+                review.steps[0].items[0].verdict,
+                Verdict::Refused(Refusal::ProtectedPath(_))
+            ),
+            "{action}"
+        );
+        assert!(result.answers.root_asked.is_empty());
+    }
+}
+
+#[test]
+fn stat_is_judged_by_its_own_access_not_by_read() {
+    let host = files().forbid(Access::Read, "/work/a");
+    let text = plan(&[step("s1", "fs.stat", r#"{"path":"/work/a"}"#, "false")]);
+    let result = run(&[&text], &host, false);
+    assert!(matches!(result.outcome, Outcome::Executed { .. }));
+    let host = files().forbid(Access::Stat, "/work/a");
+    let result = run(&[&text], &host, false);
+    assert!(matches!(result.outcome, Outcome::AllRefused(_)));
+}

@@ -120,6 +120,8 @@ impl fmt::Display for Capability {
 /// What a user's own permissions must allow on one path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
+    /// Looking at an entry (`stat`) needs to reach it, not to read it.
+    Stat,
     Read,
     Write,
     /// Removing an entry needs write access to the directory that holds it.
@@ -129,6 +131,7 @@ pub enum Access {
 impl fmt::Display for Access {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::Stat => "stat",
             Self::Read => "read",
             Self::Write => "write",
             Self::Delete => "delete",
@@ -289,9 +292,8 @@ impl Action {
     /// What the user's own permissions must allow, path by path.
     pub fn accesses(&self) -> Vec<(Access, &Path)> {
         match self {
-            Self::List { path } | Self::Stat { path } | Self::Read { path } => {
-                vec![(Access::Read, path)]
-            }
+            Self::Stat { path } => vec![(Access::Stat, path)],
+            Self::List { path } | Self::Read { path } => vec![(Access::Read, path)],
             Self::FindLargest { path, .. } => vec![(Access::Read, path)],
             Self::Write { path, .. } => vec![(Access::Write, path)],
             Self::Move { from, to } => vec![(Access::Delete, from), (Access::Write, to)],

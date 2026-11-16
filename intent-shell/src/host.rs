@@ -83,6 +83,8 @@ impl Host for UnixHost {
         match access {
             // The root has no directory above it to remove it from, whoever asks.
             Access::Write | Access::Delete if path.parent().is_none() => false,
+            // Reaching an entry needs search permission on the directory that holds it.
+            Access::Stat => path.parent().is_none() || permitted(parent_of(path), libc::X_OK),
             Access::Read if path.is_dir() => permitted(path, libc::R_OK | libc::X_OK),
             Access::Read => permitted(path, libc::R_OK),
             Access::Write if path.exists() => permitted(path, libc::W_OK),
@@ -194,11 +196,14 @@ fn read(path: &Path, limit: u64) -> Result<Output, String> {
 }
 
 fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, String> {
+    use std::os::unix::fs::MetadataExt;
     let mut files: Vec<(u64, PathBuf)> = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     let mut walked = 0usize;
     let mut truncated = false;
     let mut unreadable = 0usize;
+    // Hard links name one file more than once; it counts once.
+    let mut linked: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
     while let Some(dir) = pending.pop() {
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -222,6 +227,7 @@ fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, 
                 pending.push(entry.path());
             } else if kind.is_file() {
                 match entry.metadata() {
+                    Ok(meta) if meta.nlink() > 1 && !linked.insert((meta.dev(), meta.ino())) => {}
                     Ok(meta) => files.push((meta.len(), entry.path())),
                     Err(_) => unreadable += 1,
                 }
@@ -508,6 +514,34 @@ mod tests {
         if !is_root() {
             assert_eq!(output.notes.len(), 1, "{output:?}");
         }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_hard_linked_file_counts_once_in_a_search() {
+        let dir = temp_dir("hardlink");
+        fs::write(dir.join("big"), vec![0; 500]).unwrap();
+        fs::hard_link(dir.join("big"), dir.join("big2")).unwrap();
+        fs::write(dir.join("small"), "x").unwrap();
+        let output = find_largest(&dir, 2, 100).unwrap();
+        assert_eq!(output.paths.len(), 2);
+        assert!(output.paths.contains(&dir.join("small")));
+    }
+
+    #[test]
+    fn stat_needs_to_reach_a_file_not_to_read_it() {
+        let dir = temp_dir("statperm");
+        let file = dir.join("f");
+        fs::write(&file, "x").unwrap();
+        set_mode(&file, 0o000);
+        assert!(host(&dir).allows(Access::Stat, &file));
+        assert!(host(&dir).allows(Access::Stat, &dir.join("missing")));
+        assert!(host(&dir).allows(Access::Stat, Path::new("/")));
+        set_mode(&dir, 0o600);
+        if !is_root() {
+            assert!(!host(&dir).allows(Access::Stat, &file));
+        }
+        set_mode(&dir, 0o700);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

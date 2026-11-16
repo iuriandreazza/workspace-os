@@ -142,7 +142,7 @@ fakes for all four.
 
 ## Tests and the gate
 
-`./scripts/check.sh` now also runs clippy and 101 tests for `intent-shell`,
+`./scripts/check.sh` now also runs clippy and 105 tests for `intent-shell`,
 none needing the model. They include one test per refusal class (no
 capability, beyond the user's permissions, root without confirmation, a
 non-administrator elevating, malformed output, rule violations) and the 27
@@ -206,11 +206,14 @@ see first, which is the point of the broker; the quality is S4's problem.
 - A path that does not exist is reported as "your permissions do not allow",
   because `access(2)` failing is all the check sees. Misleading, not unsafe.
 - `.` and `..` are resolved by name before a path is checked, shown or used,
-  and the filesystem root is never allowed as the target of a removal or write.
+  and the broker refuses the filesystem root as the target of a removal or write
+  whoever asks, an administrator who elevates included.
 - `..` is resolved by name, not through symlinks: `link/../x` means the
   parent of `link` as written, which may differ from what a shell would pick.
   The path shown is the path used, so it is not a way around a check.
 - `fs.read` says so in a NOTE when it cut the file at its 64 KiB cap.
+- `fs.stat` is judged by whether the entry can be reached, not read, and a
+  file with several hard links counts once in `fs.find_largest`.
 - A path is shown byte-exact: a byte that is not UTF-8 appears as `\xNN`, so
   two different file names never show as the same action.
 - A search that could not look everywhere (unreadable directories or files, or the
