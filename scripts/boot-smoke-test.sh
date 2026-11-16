@@ -14,6 +14,14 @@
 #   el3  started at EL3, which the boot code must leave for EL1
 #   el3-el2  started at EL3 with EL2 present: the boot code goes through EL2
 #
+# Two more normal boots give the machine a different amount of memory each. The
+# kernel must print the size the device tree holds, so a kernel that fixes the
+# size, or reads it from the wrong place, fails one of them. Every other boot
+# also checks the memory line, against the default size below.
+#
+#   mem-64   `-m 64M`
+#   mem-512  `-m 512M`
+#
 # Three more boots use kernels built to raise an exception nothing resumes
 # from, and must end in a kernel panic that names it:
 #
@@ -24,6 +32,9 @@
 set -euo pipefail
 
 readonly EXPECTED_BANNER="workspace-os kernel: booted on aarch64 in EL1"
+readonly DEFAULT_MEMORY_MIB=128
+readonly RAM_BASE="0x40000000"
+readonly UART_REPORT="workspace-os kernel: uart pl011 at 0x9000000"
 readonly BREAKPOINT_REPORT="exception: breakpoint #0x800 at"
 readonly RESUME_MARKER="workspace-os kernel: resumed after breakpoint"
 readonly PANIC_MARKER="kernel panic"
@@ -36,7 +47,7 @@ readonly KERNEL_ELF="$TARGET_DIR/aarch64-unknown-none-softfloat/debug/kernel"
 # Machine flags must match the cargo runner in .cargo/config.toml.
 # -nodefaults: the default virtio network card needs an option ROM that
 # minimal QEMU installs (such as the CI runner) do not ship.
-readonly QEMU_MACHINE=(-machine virt -cpu cortex-a72 -nodefaults -display none)
+readonly QEMU_MACHINE=(-machine virt -cpu cortex-a72 -nodefaults -display none -m "${DEFAULT_MEMORY_MIB}M")
 
 cd "$(dirname "$0")/.."
 cargo build --quiet --target-dir "$TARGET_DIR"
@@ -108,8 +119,22 @@ start_qemu() {
     qemu_pid=$!
 }
 
+# memory_mib_of QEMU_ARGS...: the size the last `-m` asks for, in MiB.
+memory_mib_of() {
+    local mib="$DEFAULT_MEMORY_MIB" previous=""
+    for arg in "$@"; do
+        if [[ "$previous" == "-m" ]]; then
+            mib="${arg%M}"
+        fi
+        previous="$arg"
+    done
+    echo "$mib"
+}
+
 # check_boot NAME QEMU_IMAGE_ARGS...
 check_boot() {
+    local expected_memory
+    expected_memory="workspace-os kernel: memory $(memory_mib_of "$@") MiB at $RAM_BASE"
     start_qemu "$@"
 
     wait_for_banner
@@ -121,6 +146,8 @@ check_boot() {
         fail "kernel panicked after the boot banner"
     fi
     expect_once "$EXPECTED_BANNER" "boot banner"
+    expect_once "$expected_memory" "memory report"
+    expect_once "$UART_REPORT" "UART report"
     expect_once "$BREAKPOINT_REPORT" "breakpoint report"
     expect_once "$RESUME_MARKER" "resume after the breakpoint"
 
@@ -188,6 +215,8 @@ check_boot elf -kernel "$KERNEL_ELF"
 check_boot raw \
     -device "loader,file=$raw_image,addr=$entry,cpu-num=0,force-raw=on" \
     -device "loader,file=$garbage,addr=$bss_start,force-raw=on"
+check_boot mem-64 -m 64M -kernel "$KERNEL_ELF"
+check_boot mem-512 -m 512M -kernel "$KERNEL_ELF"
 check_boot smp -machine secure=on -smp 4 -kernel "$KERNEL_ELF"
 check_boot el2 -machine virtualization=on -kernel "$KERNEL_ELF"
 check_boot el3 -machine secure=on -kernel "$KERNEL_ELF"

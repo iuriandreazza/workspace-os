@@ -7,6 +7,9 @@ license = "GPL-2.0-only"
 [lints]
 workspace = true
 
+[dependencies]
+devicetree = { path = "../devicetree" }
+
 # Each feature makes the kernel raise an exception nothing handles, so the boot
 # smoke test can check that it still ends in a kernel panic.
 [features]
