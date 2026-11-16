@@ -33,8 +33,6 @@ use uefi::{cstr16, guid};
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\KERNEL.ELF");
 const DEVICE_TREE_GUID: uefi::Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 const PL011_COMPATIBLE: &str = "arm,pl011";
-/// A device tree is capped at 2 MiB by the boot protocols; refuse a bigger one.
-const MAX_DEVICE_TREE: usize = 2 << 20;
 /// Room for the memory map the kernel receives. The firmware's has some
 /// dozens of entries.
 const MAP_CAPACITY: usize = 2048;
@@ -321,9 +319,6 @@ fn hand_over(plan: &elf::LoadPlan) -> Outcome<core::convert::Infallible> {
     let uart = fdt
         .device(PL011_COMPATIBLE)
         .map_err(|_| Failure::Message("the device tree names no PL011 console"))?;
-    if device_tree_size > MAX_DEVICE_TREE {
-        return Err(Failure::Message("the device tree is too large"));
-    }
     ui::ok(format_args!(
         "device tree at {device_tree:#x} ({device_tree_size} bytes), acpi rsdp {:#x}, pl011 at {:#x}",
         tables.rsdp, uart.base

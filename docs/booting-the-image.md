@@ -137,13 +137,17 @@ Things that matter, each found by running it:
 
 ## When the bootloader stops
 
-The bootloader says why on the serial console and returns to the firmware
-after five seconds. The messages the gate provokes:
+Before it leaves the boot services, the bootloader says why on the serial
+console and returns to the firmware after five seconds. A failure after that
+point (an invalid final memory map, an exhausted table pool) is written to the
+UART and the machine then waits: there is no console left to return to, so it
+needs a reset. The messages the gate provokes:
 
 | Message | Cause |
 |---|---|
 | `\KERNEL.ELF is not on the EFI system partition` | The image has no kernel at that path. |
 | `the kernel needs 0xA..0xB and the firmware refused it` | The firmware holds the kernel's load address (VirtualBox with 1024 MiB). The firmware's memory map is printed just before. |
+| `the kernel is linked at address 0` | The kernel image asks to be loaded at page zero. |
 | `the firmware offers ACPI only (rsdp 0x...)` | ACPI is on and no device tree is published: turn ACPI off. |
 
 ## What was not verified

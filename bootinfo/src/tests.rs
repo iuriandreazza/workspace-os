@@ -419,6 +419,9 @@ struct Walk {
     physical: u64,
     index: u64,
     execute_never: bool,
+    access_flag: bool,
+    /// Bits 9:8 of the descriptor: 3 inner shareable, 2 outer shareable.
+    shareability: u64,
     level: u8,
 }
 
@@ -442,6 +445,8 @@ fn translate(pool: &[Table], root: u64, bits: u8, address: u64) -> Option<Walk> 
                 physical: (descriptor & 0x0000_ffff_ffff_f000 & !mask) | (address & mask),
                 index: (descriptor >> 2) & 7,
                 execute_never: descriptor >> 53 & 3 == 3,
+                access_flag: descriptor & (1 << 10) != 0,
+                shareability: (descriptor >> 8) & 3,
                 level,
             });
         }
@@ -484,6 +489,14 @@ fn the_identity_map_maps_memory_normal_and_the_rest_device() {
                     "type at {address:#x}"
                 );
                 assert_eq!(walk.execute_never, !normal, "xn at {address:#x}");
+                // Without the access flag the first access faults; Normal
+                // memory is inner shareable, Device outer shareable.
+                assert!(walk.access_flag, "access flag at {address:#x}");
+                assert_eq!(
+                    walk.shareability,
+                    if normal { 3 } else { 2 },
+                    "shareability at {address:#x}"
+                );
             }
         }
         // Memory where no entry says so is Device, never unmapped, up to 512 GiB.
