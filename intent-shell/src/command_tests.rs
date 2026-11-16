@@ -1019,3 +1019,78 @@ fn the_shell_applies_the_formats_semantic_rules_to_a_typed_line() {
         assert_eq!(result.log.events[0]["accepted"], false, "{line}");
     }
 }
+
+#[test]
+fn the_words_of_each_enum_flag_are_the_schemas_and_each_one_can_be_typed() {
+    let schema: Value = serde_json::from_str(&docs("action-plan.schema.json")).unwrap();
+    let defs = &schema["$defs"];
+    let mut checked = 0;
+    for (def, action, key, flag) in [
+        ("fsWrite", "fs.write", "mode", "--mode"),
+        ("userManage", "user.manage", "operation", "--operation"),
+    ] {
+        let mut schema_words: Vec<String> =
+            defs[def]["properties"]["args"]["properties"][key]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| w.as_str().unwrap().to_owned())
+                .collect();
+        let mut ours: Vec<String> = command::choice_words(action)
+            .into_iter()
+            .find(|(k, _)| *k == key)
+            .unwrap()
+            .1
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        schema_words.sort();
+        ours.sort();
+        assert_eq!(schema_words, ours, "{action}");
+        for word in &schema_words {
+            let line = if action == "fs.write" {
+                format!("fs write --new-name n --in home --content c {flag} {word}")
+            } else if word.ends_with("group") || word.ends_with("_group") {
+                format!("user manage {flag} {word} --user bob --group staff")
+            } else {
+                format!("user manage {flag} {word} --user bob")
+            };
+            plan_of(&line);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 7);
+}
+
+#[test]
+fn errors_name_what_to_type_and_what_is_wrong() {
+    let why = refused("fs delete");
+    assert!(
+        why.contains("--name NAME --in PLACE or --from-step sN") && !why.contains("--new-name"),
+        "{why}"
+    );
+    let why = refused("fs find_largest --count 3");
+    assert!(
+        why.contains("--in PLACE") && !why.contains("--from-step"),
+        "{why}"
+    );
+    assert!(refused("fs write --content x").contains("--new-name NAME --in PLACE"));
+    assert!(refused("fs move --name a --in home").contains("--to-in PLACE"));
+    let why = refused("fs find_largest --in home --count 5000000000");
+    assert!(why.contains("--count") && why.contains("32 bits"), "{why}");
+    for line in [
+        "fs \"list\" --in home",
+        "\"fs\" list --in home",
+        "f\\s list --in home",
+    ] {
+        assert!(refused(line).contains("without quotes"), "{line}");
+    }
+}
+
+#[test]
+fn help_states_the_bound_the_code_enforces() {
+    let Ok(Parsed::Help(text)) = command::parse("help") else {
+        panic!("help")
+    };
+    assert!(text.contains(&format!("up to {} steps", crate::plan::MAX_STEPS)));
+}

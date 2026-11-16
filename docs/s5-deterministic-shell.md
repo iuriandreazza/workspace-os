@@ -69,7 +69,7 @@ model text ───────────────────────
   `model_output`. A typed command is never logged as a model decision. From
   `plan_accepted` on the events are the same.
 - `Setup.planner` is an `Option`: `None` is this shell. The conversational
-  interface runs it too (`State::without_model`: a submitted line is "working", not
+  interface runs it too (`State::for_entry`: a submitted line is "working", not
   "asking the model", so quitting waits for the step as for any other).
 
 ## Tests and the gate
@@ -84,8 +84,10 @@ interface). `command_tests.rs`, none needing a model:
   invented (the schema is read in the test), and `--elevate` is accepted exactly
   where the root rule says a step may ask for root;
 - quoting, escapes and about 35 malformed lines, each refused with the reason, and 19
-  lines that parse as words and are refused by the format's own rules (a place
-  to delete, a count of 0, a name with `..`, `elevate` on `user.manage`, 17 steps);
+  lines that parse as words and are refused by the format's own rules (a count
+  of 0, a name with `..`, a group on `add`, a cycle). `elevate` on `user.manage`
+  and a 17th step are refused by the command layer first, and by the format
+  behind it;
 - the same scenario typed and as the model's document gives the same log events
   (apart from the author's), the same questions, the same root panels, the same
   executed actions and the same outcome: a read that runs without asking, a

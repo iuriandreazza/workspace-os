@@ -44,8 +44,8 @@ typed line ─► command.rs ─► plan JSON, version 2 ─► plan::parse_chec
 
 The command parser emits the same JSON document the model would, as text, and
 that text goes through `parse_checked`. It never builds a plan value directly,
-so every structural and semantic rule (which reference an argument accepts, no
-`elevate` on `user.manage`, `count` 1 to 100, a name has no separator, bounds)
+so every structural and semantic rule (which reference an argument accepts, `count` 1 to 100, a name has no separator,
+dependencies and cycles, bounds)
 applies to a typed command exactly as to the model, and cannot drift. The shell
 from the document onward is one function shared by both entries: resolution,
 the person's choice of an ambiguous reference, the broker's verdict, the plan

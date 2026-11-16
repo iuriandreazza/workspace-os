@@ -117,6 +117,8 @@ pub struct State {
     /// What the shell is doing after a line is sent. With no model it never
     /// waits for one, and leaving then waits for the step like any other.
     submit_label: &'static str,
+    /// What the transcript writes before a line: the line adapter's prompt.
+    prompt: &'static str,
 }
 
 /// A key press meant as an answer: a fresh press (not a repeat or a release)
@@ -151,6 +153,7 @@ impl State {
             forced_quit: false,
             quit_warned_ms: 0,
             submit_label: "asking the model",
+            prompt: "intent> ",
         }
     }
 
@@ -160,6 +163,7 @@ impl State {
         let mut state = Self::new(header);
         if entry == Entry::Command {
             state.submit_label = "working";
+            state.prompt = "command> ";
         }
         state
     }
@@ -477,7 +481,7 @@ impl State {
         let mut out = String::new();
         for block in &self.blocks {
             match block {
-                Block::Request(text) => out.push_str(&format!("intent> {text}\n")),
+                Block::Request(text) => out.push_str(&format!("{}{text}\n", self.prompt)),
                 Block::Note(text) | Block::Plan(text) | Block::Root(text) => {
                     out.push_str(text);
                     out.push('\n');
@@ -983,5 +987,10 @@ mod tests {
         state.on_key(press(KeyCode::Enter));
         state.on_event(Event::Outcome("done\n".to_owned()));
         assert_eq!(state.transcript(), "intent> list downloads\ndone\n");
+        let mut commands = State::for_entry(String::new(), Entry::Command);
+        commands
+            .blocks
+            .push(Block::Request("fs list --in home".to_owned()));
+        assert_eq!(commands.transcript(), "command> fs list --in home\n");
     }
 }

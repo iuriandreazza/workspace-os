@@ -225,6 +225,24 @@ pub(crate) fn reference_forms(action: &str) -> Vec<(&'static str, Vec<&'static s
         .unwrap_or_default()
 }
 
+/// The words each enum flag takes, for the test that compares them with the schema.
+#[cfg(test)]
+pub(crate) fn choice_words(action: &str) -> Vec<(&'static str, Vec<&'static str>)> {
+    COMMANDS
+        .iter()
+        .find(|c| c.action() == action)
+        .map(|c| {
+            c.args
+                .iter()
+                .filter_map(|arg| match arg {
+                    Arg::Choice(key, _, words) => Some((*key, words.split('|').collect())),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The commands that take `--elevate`, for the test that compares them with the root rules.
 #[cfg(test)]
 pub(crate) fn takes_elevate(action: &str) -> Option<bool> {
@@ -427,9 +445,14 @@ fn parse_step(number: usize, words: &[Word]) -> Result<(&'static Command, Value)
             "a step is a group and an action, for example `fs list --in downloads`; try help",
         ));
     };
+    if group.quoted || verb.quoted {
+        return Err(CommandError::new(
+            "the group and the action are written plain, without quotes or backslashes",
+        ));
+    }
     let command = COMMANDS
         .iter()
-        .find(|c| !group.quoted && !verb.quoted && c.group == group.text && c.verb == verb.text)
+        .find(|c| c.group == group.text && c.verb == verb.text)
         .ok_or_else(|| {
             CommandError::new(format!(
                 "unknown command {} {}; try help",
@@ -521,9 +544,9 @@ fn build_arg(
         Arg::Text(key) => (*key, Value::String(required(flags, key)?)),
         Arg::Number(key) => {
             let text = required(flags, key)?;
-            let number: u64 = text.parse().map_err(|_| {
+            let number: u32 = text.parse().map_err(|_| {
                 CommandError::new(format!(
-                    "{name}: --{} must be a whole number",
+                    "{name}: --{} must be a whole number that fits in 32 bits",
                     flag_name(key)
                 ))
             })?;
@@ -568,7 +591,7 @@ fn reference(
     forms: &[Form],
     depends_on: &mut Vec<String>,
 ) -> Result<Value, CommandError> {
-    let value = reference_value(name, flags, prefix, depends_on)?;
+    let value = reference_value(name, flags, prefix, forms, depends_on)?;
     let form = match (
         value.get("place"),
         value.get("from_step"),
@@ -593,6 +616,7 @@ fn reference_value(
     name: &str,
     flags: &mut Flags,
     prefix: &str,
+    forms: &[Form],
     depends_on: &mut Vec<String>,
 ) -> Result<Value, CommandError> {
     let destination = !prefix.is_empty();
@@ -648,13 +672,12 @@ fn reference_value(
         }
         (None, None, None, Some(place), None) => Ok(json!({"place": place})),
         (None, None, None, None, None) => Err(CommandError::new(format!(
-            "{name} needs a reference: {}, {} with {}, {} with {}{}",
-            flag("in"),
-            flag("name"),
-            flag("in"),
-            flag("new-name"),
-            flag("in"),
-            if destination { "" } else { ", or --from-step" }
+            "{name} needs a reference: {}",
+            forms
+                .iter()
+                .map(|f| f.flags(prefix))
+                .collect::<Vec<_>>()
+                .join(" or ")
         ))),
         (None, None, None, _, Some(_)) => Err(CommandError::new(format!(
             "{name}: {} goes with {}",
@@ -728,7 +751,7 @@ fn help() -> String {
          --from-step sN means what step sN found; flags after `--` belong to the program.\n\
          Places: {places}.\n\
          Steps are s1, s2, ... by position; --after sN makes a step wait for sN.\n\
-         Quote with '...' or \"...\"; nothing is expanded. A line holds up to 16 steps.\n",
+         Quote with '...' or \"...\"; nothing is expanded. A line holds up to {MAX_STEPS} steps.\n",
         places = place_words()
     ));
     out
