@@ -6,34 +6,9 @@
 use std::io::{self, IsTerminal, Write};
 
 use crate::action::printable;
-use crate::broker::Authority;
-use crate::host::UnixHost;
-use crate::log::JsonlLog;
-use crate::model::LlamaPlanner;
 use crate::ports::{Confirm, User};
-use crate::screen::{self, Header};
 use crate::session::Shell;
-
-/// What both adapters need to run one session.
-pub struct Setup {
-    pub authority: Authority,
-    pub host: UnixHost,
-    pub planner: LlamaPlanner,
-    pub log: JsonlLog,
-    /// The decision log's file name, for the header (its directory is in the details).
-    pub log_name: String,
-}
-
-impl Setup {
-    pub fn header(&self) -> String {
-        screen::header(&Header {
-            user: &self.authority.user.name,
-            administrator: self.authority.user.administrator,
-            model: &self.planner.address,
-            log: &self.log_name,
-        })
-    }
-}
+use crate::setup::Setup;
 
 struct TerminalConfirm;
 

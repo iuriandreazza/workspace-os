@@ -151,7 +151,7 @@ Settled while implementing:
 - `ratatui` re-exports `crossterm`, so the crate has one direct dependency
   (`ratatui`) and uses the `crossterm` version it was built against, with no
   version skew. The licences are the same two.
-- Answer keys are ignored for 0.7 s after a question is drawn (a held or
+- Answer keys are ignored for 0.7 s after a question is drawn (2 s for a root action) (a held or
   double-tapped `y` must not confirm a root action not yet read), and Ctrl-,
   Alt- and repeated keys never answer.
 - Plain mode is also the default when `TERM` is unset or `dumb`.

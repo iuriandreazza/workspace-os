@@ -52,7 +52,7 @@ main thread: terminal, state, drawing        worker thread: Shell::handle
 - Keys typed before a question is drawn are discarded, so a keystroke meant for
   something else cannot answer it. Characters that `printable` would escape
   cannot be typed at all.
-- Answer keys are ignored for 0.7 s after a question is drawn, because a terminal
+- Answer keys are ignored for 0.7 s after a question is drawn (2 s for a root action), because a terminal
   without the kitty keyboard protocol reports a held or double-tapped \`y\` as
   fresh presses.
 - Pasted text only stays out of the answers if the terminal honours bracketed

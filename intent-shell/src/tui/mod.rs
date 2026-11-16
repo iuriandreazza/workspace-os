@@ -25,9 +25,9 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 
 use crate::broker::Authority;
-use crate::plain::Setup;
 use crate::ports::{Confirm, DecisionLog, Host, Planner, Retry, User};
 use crate::session::Shell;
+use crate::setup::Setup;
 use state::{Effect, Event, Mode, Reply, State};
 
 /// How long a step is waited for after a termination signal.
@@ -316,11 +316,17 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
         && (TERMINATIONS.load(Ordering::Relaxed) == 0 || waiting_since.elapsed() < SIGNAL_PATIENCE)
     {
         // The loop has ended, so keys are read here: Ctrl-C stops the wait.
-        if event::poll(Duration::from_millis(50)).unwrap_or(false)
-            && let Ok(Input::Key(key)) = event::read()
-            && is_ctrl_c(&key)
-        {
-            break;
+        match event::poll(Duration::from_millis(50)) {
+            Ok(true) => {
+                if let Ok(Input::Key(key)) = event::read()
+                    && is_ctrl_c(&key)
+                {
+                    break;
+                }
+            }
+            Ok(false) => {}
+            // A dead terminal fails at once; without this the loop would spin.
+            Err(_) => thread::sleep(Duration::from_millis(50)),
         }
     }
     // What the worker finished while it was waited for belongs in the history.

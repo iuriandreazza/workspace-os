@@ -11,8 +11,9 @@ use intent_shell::broker::Authority;
 use intent_shell::host::UnixHost;
 use intent_shell::log::JsonlLog;
 use intent_shell::model::LlamaPlanner;
-use intent_shell::plain::{self, Setup};
+use intent_shell::plain;
 use intent_shell::ports::User;
+use intent_shell::setup::Setup;
 
 const USAGE: &str = "usage: intent-shell [--model HOST:PORT] [--log FILE] [--administrator] [--plain] [--transcript FILE]";
 

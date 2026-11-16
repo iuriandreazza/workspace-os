@@ -18,6 +18,7 @@ pub mod reference;
 pub mod resolve;
 pub mod screen;
 pub mod session;
+pub mod setup;
 
 #[cfg(feature = "tui")]
 pub mod tui;

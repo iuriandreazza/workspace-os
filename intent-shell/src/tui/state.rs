@@ -80,6 +80,10 @@ pub enum Effect {
 /// fresh presses, and one of those must not answer a question not yet read.
 pub const DWELL_MS: u64 = 700;
 
+/// For a root action: longer than the slowest key-repeat delay of common
+/// systems (about 1.8 s on macOS), so a still-held `y` cannot confirm it.
+pub const ROOT_DWELL_MS: u64 = 2_000;
+
 pub const ROOT_KEYS: &str = "[y] confirm this exact action   [n] refuse";
 
 /// How a line of the history is drawn.
@@ -317,7 +321,12 @@ impl State {
     /// the last key. A held key keeps restarting the gap, so its auto-repeat
     /// (reported as fresh presses) cannot answer once the window passes.
     fn settled(&mut self) -> bool {
-        let quiet = self.clock_ms.saturating_sub(self.asked_ms) >= DWELL_MS;
+        let dwell = if matches!(self.mode, Mode::Root { .. }) {
+            ROOT_DWELL_MS
+        } else {
+            DWELL_MS
+        };
+        let quiet = self.clock_ms.saturating_sub(self.asked_ms) >= dwell;
         self.asked_ms = self.clock_ms;
         quiet
     }
@@ -503,7 +512,7 @@ mod tests {
         state.on_event(Event::AskRoot {
             panel: panel.to_owned(),
         });
-        state.clock_ms = DWELL_MS;
+        state.clock_ms = ROOT_DWELL_MS;
         state
     }
 
@@ -612,12 +621,12 @@ mod tests {
         state.on_event(Event::AskRoot {
             panel: "fs.delete the exact location".to_owned(),
         });
-        for after in [0, 100, DWELL_MS - 1] {
+        for after in [0, 100, ROOT_DWELL_MS - 1] {
             state.clock_ms = 5_000 + after;
             assert_eq!(state.on_key(press(KeyCode::Char('y'))), Effect::Nothing);
             assert!(state.is_asking());
         }
-        state.clock_ms = 5_000 + DWELL_MS - 1 + DWELL_MS;
+        state.clock_ms = 5_000 + ROOT_DWELL_MS - 1 + ROOT_DWELL_MS;
         assert_eq!(
             state.on_key(press(KeyCode::Char('y'))),
             Effect::Reply(Reply::Yes)
