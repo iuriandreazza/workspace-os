@@ -130,6 +130,7 @@ fn every_decision_is_logged_in_order() {
         [
             "request",
             "model_output",
+            "plan_accepted",
             "review",
             "plan_confirmation",
             "execute",
@@ -480,10 +481,7 @@ fn a_string_that_looks_like_a_reference_deletes_only_that_literal_path() {
 #[test]
 fn nothing_runs_while_the_log_cannot_be_written() {
     let host = files();
-    let log = MemoryLog {
-        fail: true,
-        ..MemoryLog::default()
-    };
+    let log = MemoryLog::failing_after(0);
     let (result, _) = run_with(
         &[LARGEST],
         &host,
@@ -505,4 +503,116 @@ fn the_rendering_shows_the_broker_action_and_labels_the_models_summary() {
     assert!(text.contains("The model says"));
     assert!(text.contains(r#"fs.delete path="/work/a\u001b[2J""#));
     assert!(!text.contains('\u{1b}'));
+}
+
+#[test]
+fn nothing_is_read_before_the_plan_is_on_record() {
+    // The log takes the request and the model output, then fails.
+    let host = files();
+    let (result, _) = run_with(
+        &[DELETE_LARGEST],
+        &host,
+        &Authority::full(user(false)),
+        Answers::yes(),
+        MemoryLog::failing_after(2),
+    );
+    assert!(matches!(result.outcome, Outcome::LogFailed { .. }));
+    assert!(host.executed.borrow().is_empty());
+}
+
+#[test]
+fn a_log_that_fails_mid_execution_stops_before_the_next_action_and_keeps_what_ran() {
+    let host = files();
+    let two = plan(&[
+        step("s1", "fs.stat", r#"{"path":"/work/a"}"#, "false"),
+        step("s2", "fs.stat", r#"{"path":"/work/b"}"#, "false"),
+    ]);
+    // request, model_output, plan_accepted, review, plan_confirmation, execute s1: then fail on its result.
+    let (result, _) = run_with(
+        &[&two],
+        &host,
+        &Authority::full(user(false)),
+        Answers::yes(),
+        MemoryLog::failing_after(6),
+    );
+    let Outcome::LogFailed { steps, .. } = &result.outcome else {
+        panic!("{:?}", result.outcome)
+    };
+    assert_eq!(host.executed.borrow().len(), 1);
+    assert_eq!(steps.len(), 1);
+}
+
+#[test]
+fn a_read_that_fails_before_confirmation_leaves_nothing_to_confirm() {
+    let host = files().failing("/work");
+    let result = run(&[DELETE_LARGEST], &host, false);
+    let Outcome::AllRefused(review) = &result.outcome else {
+        panic!("{:?}", result.outcome)
+    };
+    assert!(matches!(
+        review.steps[0].blocked,
+        Some(Refusal::PreRunFailed(_))
+    ));
+    assert!(matches!(
+        review.steps[1].blocked,
+        Some(Refusal::DependencyRefused(_))
+    ));
+    assert!(!review.render().contains("[ok]"));
+    assert!(events(&result, "plan_confirmation").is_empty());
+}
+
+#[test]
+fn references_chain_from_one_read_to_the_next() {
+    let host = files();
+    let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+      {"id":"s1","action":"fs.find_largest","args":{"path":"/work","count":2},"depends_on":[],"elevate":false},
+      {"id":"s2","action":"fs.list","args":{"path":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false},
+      {"id":"s3","action":"fs.delete","args":{"path":{"from_step":"s2"}},"depends_on":["s2"],"elevate":false}]}"#;
+    let result = run(&[text], &host, false);
+    let deletes: Vec<_> = reviewed(&result.outcome).steps[2]
+        .items
+        .iter()
+        .map(|i| i.action.describe())
+        .collect();
+    assert_eq!(
+        deletes,
+        [r#"fs.delete path="/work/b""#, r#"fs.delete path="/work/c""#]
+    );
+}
+
+#[test]
+fn a_refused_path_among_several_skips_only_that_action_and_the_rest_run() {
+    // Per-action decisions inside one step: the rendering labels the refused one,
+    // the person confirms the plan knowing it, and its dependents are blocked.
+    let host = files().forbid(Access::Delete, "/work/b");
+    let result = run(&[DELETE_LARGEST], &host, false);
+    let rendering = reviewed(&result.outcome).render();
+    assert!(rendering.contains(r#"fs.delete path="/work/b"  [REFUSED"#));
+    let executed: Vec<_> = host.executed.borrow().clone();
+    assert!(executed.contains(&r#"fs.delete path="/work/c""#.to_owned()));
+    assert!(!executed.contains(&r#"fs.delete path="/work/b""#.to_owned()));
+}
+
+#[test]
+fn a_denied_path_with_control_characters_cannot_forge_report_lines() {
+    let host = files().forbid(
+        Access::Write,
+        "/work/evil\n\u{1b}[2Jstep s9 ok [ok]\u{202e}",
+    );
+    let text = plan(&[step(
+        "s1",
+        "fs.write",
+        r#"{"path":"/work/evil\n\u001b[2Jstep s9 ok [ok]\u202e","content":"x","mode":"create"}"#,
+        "false",
+    )]);
+    let result = run(&[&text], &host, false);
+    let shown = result.outcome.render();
+    assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'));
+    assert_eq!(
+        shown
+            .lines()
+            .filter(|l| l.trim_start().starts_with("s9"))
+            .count(),
+        0
+    );
 }

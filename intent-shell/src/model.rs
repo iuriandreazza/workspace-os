@@ -95,7 +95,7 @@ fn parse_response(raw: &[u8]) -> Result<String, String> {
     let head = String::from_utf8_lossy(&raw[..split]).to_ascii_lowercase();
     let body = &raw[split + 4..];
     let status = head.lines().next().unwrap_or_default();
-    if !status.contains(" 200") {
+    if status.split_whitespace().nth(1) != Some("200") {
         return Err(format!(
             "server answered {status:?}: {}",
             String::from_utf8_lossy(body)
@@ -123,7 +123,7 @@ fn dechunk(mut body: &[u8]) -> Result<Vec<u8>, String> {
         if size == 0 {
             return Ok(out);
         }
-        if body.len() < size + 2 {
+        if size.checked_add(2).is_none_or(|needed| body.len() < needed) {
             return Err("truncated chunk".to_owned());
         }
         out.extend_from_slice(&body[..size]);
@@ -141,6 +141,16 @@ mod tests {
             dechunk(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n").unwrap(),
             b"hello world"
         );
+    }
+
+    #[test]
+    fn a_huge_chunk_size_is_an_error_not_a_panic() {
+        assert!(dechunk(b"ffffffffffffffff\r\nhi\r\n").is_err());
+    }
+
+    #[test]
+    fn only_the_status_code_counts_as_success() {
+        assert!(parse_response(b"HTTP/1.1 500 x 200\r\n\r\n{}").is_err());
     }
 
     #[test]

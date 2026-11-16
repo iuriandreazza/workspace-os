@@ -1,7 +1,8 @@
 //! The decision log (ADR 0002): one JSON object per line, appended.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,11 +16,16 @@ pub struct JsonlLog {
 
 impl JsonlLog {
     pub fn open(path: &Path) -> std::io::Result<Self> {
+        // The log holds requests, paths and file content: private to the user.
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
         }
         Ok(Self {
-            file: OpenOptions::new().create(true).append(true).open(path)?,
+            file: OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(path)?,
         })
     }
 }
@@ -39,5 +45,34 @@ impl DecisionLog for JsonlLog {
             .write_all(line.as_bytes())
             .and_then(|()| self.file.sync_data())
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn the_log_is_private_to_the_user() {
+        let dir = std::env::temp_dir().join(format!("intent-shell-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state/decisions.jsonl");
+        let mut log = JsonlLog::open(&path).unwrap();
+        log.record(serde_json::json!({"event": "x"})).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

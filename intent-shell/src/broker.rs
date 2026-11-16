@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::action::{Access, Action, Capability, RootRule};
+use crate::action::{Access, Action, Capability, RootRule, printable, quoted};
 use crate::plan::{Plan, StepId};
 use crate::ports::{Host, Output, User};
 
@@ -59,7 +59,7 @@ impl fmt::Display for Refusal {
                 write!(
                     f,
                     "your permissions do not allow {access} on {}",
-                    path.display()
+                    quoted(&path.to_string_lossy())
                 )
             }
             Self::NotAdministrator => {
@@ -279,7 +279,10 @@ impl Review {
     /// What the plan would do, from the broker's own data. The model's summary
     /// is shown only as a labelled claim, never as the description of an action.
     pub fn render(&self) -> String {
-        let mut out = format!("The model says: {:?}\nWhat would run:\n", self.summary);
+        let mut out = format!(
+            "The model says: {}\nWhat would run:\n",
+            quoted(&self.summary)
+        );
         for step in &self.steps {
             if let Some(why) = &step.blocked {
                 out.push_str(&format!("  {} REFUSED: {why}\n", step.id));
@@ -290,7 +293,13 @@ impl Review {
                     step.id
                 ));
             }
-            for item in &step.items {
+            // A step blocked after its read failed keeps its items, but none can run.
+            let shown = if step.blocked.is_some() {
+                &[][..]
+            } else {
+                &step.items[..]
+            };
+            for item in shown {
                 let mark = match &item.verdict {
                     Verdict::Allowed => "ok".to_owned(),
                     Verdict::NeedsRoot => "ROOT, held for your confirmation".to_owned(),
@@ -303,6 +312,6 @@ impl Review {
                 ));
             }
         }
-        out
+        printable(&out, true)
     }
 }

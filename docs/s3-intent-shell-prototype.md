@@ -81,7 +81,13 @@ Behaviour worth knowing, all covered by tests that need no model:
 - What is shown is the broker's rendering with every string JSON-quoted, so a
   control character in a path or content cannot rewrite the terminal. The
   model's `summary` appears only labelled as the model's claim.
-- The shell runs nothing while the decision log cannot be written.
+- The shell runs nothing while the decision log cannot be written: the plan is
+  logged before the broker may read anything, and every action is logged
+  before it runs and after.
+- Inside one step that expands to several actions, each action is decided on
+  its own: a refused path is labelled in the rendering and skipped, the others
+  run once the plan is confirmed, and steps that depend on the step are
+  blocked.
 
 ### What really executes
 
@@ -135,7 +141,7 @@ fakes for all four.
 
 ## Tests and the gate
 
-`./scripts/check.sh` now also runs clippy and 40 tests for `intent-shell`,
+`./scripts/check.sh` now also runs clippy and 53 tests for `intent-shell`,
 none needing the model. They include one test per refusal class (no
 capability, beyond the user's permissions, root without confirmation, a
 non-administrator elevating, malformed output, rule violations) and the 27
@@ -199,7 +205,9 @@ see first, which is the point of the broker; the quality is S4's problem.
 - A path that does not exist is reported as "your permissions do not allow",
   because `access(2)` failing is all the check sees. Misleading, not unsafe.
 - Reads are capped (64 KiB for `fs.read`, 100,000 entries for
-  `fs.find_largest`).
+  `fs.find_largest`); `fs.read` refuses anything that is not a regular file,
+  and `fs.list` has no cap on entries.
+- The log and its directory are private to the user (0600, 0700).
 - The log records the user's name and the full request text, locally. It is
   not rotated.
 - S5 (typed commands into the same plan) and S4 (evaluation) are next.

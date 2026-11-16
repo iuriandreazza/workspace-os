@@ -144,9 +144,35 @@ pub enum RootRule {
     Never,
 }
 
-/// `text` as a JSON string, so control characters show as escapes.
+/// `text` as a JSON string with every character that could change what a
+/// terminal shows escaped too: JSON leaves DEL, the C1 controls (U+009B is a
+/// CSI), bidirectional overrides and line separators as they are.
 pub fn quoted(text: &str) -> String {
-    serde_json::to_string(text).unwrap_or_default()
+    let json = serde_json::to_string(text).unwrap_or_default();
+    json.chars().map(escape_unsafe).collect()
+}
+
+/// Make text from the model or the machine safe to print: control and
+/// formatting characters become escapes, except newline and tab when `block`.
+pub fn printable(text: &str, block: bool) -> String {
+    text.chars()
+        .map(|c| {
+            if block && (c == '\n' || c == '\t') {
+                c.to_string()
+            } else {
+                escape_unsafe(c)
+            }
+        })
+        .collect()
+}
+
+fn escape_unsafe(c: char) -> String {
+    let formatting = matches!(c, '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}');
+    if c.is_control() || formatting {
+        format!("\\u{:04x}", c as u32)
+    } else {
+        c.to_string()
+    }
 }
 
 impl Action {
@@ -306,5 +332,22 @@ impl Action {
                 format!("{name} rationale={} new_text={}", q(rationale), q(new_text))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoting_escapes_what_json_leaves_alone() {
+        let quoted = quoted("a\u{202e}b\u{9b}c\u{7f}d\u{2028}e\u{1b}f");
+        assert_eq!(quoted, "\"a\\u202eb\\u009bc\\u007fd\\u2028e\\u001bf\"");
+    }
+
+    #[test]
+    fn printable_keeps_newlines_only_in_blocks() {
+        assert_eq!(printable("a\nb\u{1b}", true), "a\nb\\u001b");
+        assert_eq!(printable("a\nb", false), "a\\u000ab");
     }
 }

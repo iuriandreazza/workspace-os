@@ -14,6 +14,8 @@ use crate::ports::{Confirm, DecisionLog, Host, Output, Planner, Retry, User};
 pub struct FakeHost {
     pub files: HashMap<PathBuf, u64>,
     pub forbidden: Vec<(Access, PathBuf)>,
+    /// Reads of these paths fail, as when the directory vanishes after the check.
+    pub failing: Vec<PathBuf>,
     pub executed: RefCell<Vec<String>>,
 }
 
@@ -23,6 +25,11 @@ impl FakeHost {
             files: files.iter().map(|(p, s)| (PathBuf::from(p), *s)).collect(),
             ..Self::default()
         }
+    }
+
+    pub fn failing(mut self, path: &str) -> Self {
+        self.failing.push(PathBuf::from(path));
+        self
     }
 
     pub fn forbid(mut self, access: Access, path: &str) -> Self {
@@ -45,6 +52,11 @@ impl Host for FakeHost {
 
     fn execute(&self, action: &Action) -> Result<Output, String> {
         self.executed.borrow_mut().push(action.describe());
+        if let Action::FindLargest { path, .. } | Action::List { path } = action
+            && self.failing.contains(path)
+        {
+            return Err("input/output error".to_owned());
+        }
         match action {
             Action::FindLargest { path, count } => {
                 let mut found: Vec<_> = self
@@ -138,12 +150,22 @@ impl Confirm for Answers {
 #[derive(Default)]
 pub struct MemoryLog {
     pub events: Vec<Value>,
-    pub fail: bool,
+    /// The log accepts this many events, then fails every one after.
+    pub accept: Option<usize>,
+}
+
+impl MemoryLog {
+    pub fn failing_after(accept: usize) -> Self {
+        Self {
+            events: Vec::new(),
+            accept: Some(accept),
+        }
+    }
 }
 
 impl DecisionLog for MemoryLog {
     fn record(&mut self, event: Value) -> Result<(), String> {
-        if self.fail {
+        if self.accept.is_some_and(|n| self.events.len() >= n) {
             return Err("disk full".to_owned());
         }
         self.events.push(event);

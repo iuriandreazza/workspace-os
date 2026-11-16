@@ -145,6 +145,7 @@ struct RawStep {
     action: String,
     args: Value,
     depends_on: Vec<String>,
+    #[serde(default, deserialize_with = "present_bool")]
     elevate: Option<bool>,
 }
 
@@ -260,6 +261,11 @@ impl PathArg {
 fn literal_path(field: &str, text: String) -> Result<PathBuf, PlanError> {
     bounded(field, &text, 1, MAX_PATH_CHARS)?;
     Ok(PathBuf::from(text))
+}
+
+/// A key that is there must hold a boolean: `null` is not the same as absent.
+fn present_bool<'de, D: Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(d).map(Some)
 }
 
 fn nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
@@ -603,6 +609,13 @@ mod tests {
             }
         );
         assert_eq!(plan.steps[0].reference, None);
+    }
+
+    #[test]
+    fn a_null_elevate_is_not_the_same_as_no_elevate() {
+        let text = r#"{"kind":"plan","version":1,"summary":"x","steps":[
+            {"id":"s1","action":"user.manage","args":{"operation":"add","user":"bob","group":null},"depends_on":[],"elevate":null}]}"#;
+        assert!(parse(text).is_err());
     }
 
     #[test]

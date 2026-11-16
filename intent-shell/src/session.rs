@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use serde_json::{Value, json};
 
-use crate::action::{Action, quoted};
+use crate::action::{Action, printable, quoted};
 use crate::broker::{Authority, Review, ReviewedAction, ReviewedStep, Verdict, review};
 use crate::plan::{Document, StepId, parse_checked};
 use crate::ports::{Confirm, DecisionLog, Host, Output, Planner, Retry};
@@ -92,12 +92,16 @@ impl Shell<'_> {
             }
             Document::Plan(plan) => plan,
         };
+        // Before the broker may read anything to expand a reference, the plan
+        // is on record: with no log, not even a read happens.
+        self.record(json!({"event": "plan_accepted", "summary": plan.summary, "steps": plan.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>()}))?;
         let reviewed = review(&plan, self.authority, self.host);
         self.record(json!({"event": "review", "review": review_json(&reviewed)}))?;
 
         let anything_runs = reviewed
             .steps
             .iter()
+            .filter(|s| s.blocked.is_none())
             .flat_map(|s| &s.items)
             .any(|i| !matches!(i.verdict, Verdict::Refused(_)));
         if !anything_runs {
@@ -272,7 +276,11 @@ fn review_json(reviewed: &Review) -> Value {
                         Verdict::NeedsRoot => "needs_root".to_owned(),
                         Verdict::Refused(why) => format!("refused: {why}"),
                     };
-                    json!({"action": item.action.describe(), "verdict": verdict})
+                    let pre_run = item.output.as_ref().map(|o| match o {
+                        Ok(_) => "ok".to_owned(),
+                        Err(why) => format!("failed: {why}"),
+                    });
+                    json!({"action": item.action.describe(), "verdict": verdict, "pre_run": pre_run})
                 })
                 .collect();
             json!({"step": step.id.as_str(), "blocked": step.blocked.as_ref().map(ToString::to_string), "items": items})
@@ -323,10 +331,11 @@ fn render_steps(steps: &[ExecutedStep]) -> String {
                 step.id,
                 item.action.describe()
             ));
-            if !text.is_empty() {
-                out.push_str(&format!("{text}\n"));
+            // Indented, so output cannot pass for a line of the report.
+            for line in text.lines() {
+                out.push_str(&format!("    {line}\n"));
             }
         }
     }
-    out
+    printable(&out, true)
 }

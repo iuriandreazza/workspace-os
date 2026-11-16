@@ -124,6 +124,13 @@ fn stat(path: &Path) -> Result<Output, String> {
 }
 
 fn read(path: &Path) -> Result<Output, String> {
+    // Opening a named pipe or a device can block forever, so only regular files.
+    if !fs::metadata(path).map_err(|e| io_error(path, e))?.is_file() {
+        return Err(format!(
+            "{} is not a regular file",
+            quoted(&path.to_string_lossy())
+        ));
+    }
     let mut bytes = Vec::new();
     fs::File::open(path)
         .and_then(|file| file.take(MAX_READ_BYTES).read_to_end(&mut bytes))
@@ -243,6 +250,17 @@ mod tests {
         assert!(output.paths.is_empty());
         fs::remove_dir_all(&dir).unwrap();
         fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn reading_a_named_pipe_is_refused_instead_of_blocking() {
+        let dir = temp_dir("fifo");
+        let fifo = dir.join("pipe");
+        let c_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c_path` is a valid NUL-terminated string that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        assert!(host(&dir).execute(&Action::Read { path: fifo }).is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
