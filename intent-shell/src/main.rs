@@ -157,12 +157,15 @@ fn run() -> Result<(), String> {
         print!("intent> ");
         let _ = io::stdout().flush();
         let mut request = String::new();
-        if io::stdin()
-            .read_line(&mut request)
-            .map_err(|e| e.to_string())?
-            == 0
-        {
-            return Ok(());
+        match io::stdin().read_line(&mut request) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            // One bad paste must not end the session.
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                println!("  that line is not valid text; try again");
+                continue;
+            }
+            Err(e) => return Err(e.to_string()),
         }
         let request = request.trim();
         if request.is_empty() {

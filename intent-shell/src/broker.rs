@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::action::{Access, Action, Capability, RootRule, quoted_path};
+use crate::action::{Access, Action, Capability, RootRule, WriteMode, quoted_path};
 use crate::label::Labels;
 use crate::plan::{Plan, Step, StepId};
 use crate::ports::{Host, Output, User};
@@ -96,7 +96,7 @@ impl fmt::Display for Refusal {
             }
             Self::DestinationTaken(path) => write!(
                 f,
-                "{} already exists and a move would replace it",
+                "{} already exists and would be replaced",
                 quoted_path(path)
             ),
             Self::ConflictsWithStep(step, path) => write!(
@@ -137,10 +137,9 @@ impl Refusal {
             Self::MoveIntoItself(path) => {
                 format!("{} cannot be moved onto or into itself", labels.of(path))
             }
-            Self::DestinationTaken(path) => format!(
-                "{} already exists and a move would replace it",
-                labels.of(path)
-            ),
+            Self::DestinationTaken(path) => {
+                format!("{} already exists and would be replaced", labels.of(path))
+            }
             Self::ConflictsWithStep(step, path) => format!(
                 "step {step} already removes, moves or replaces {}",
                 labels.of(path)
@@ -281,11 +280,21 @@ pub fn review(plan: &Plan, authority: &Authority, host: &dyn Host, choices: &Cho
                         .into_iter()
                         .map(|action| {
                             let mut verdict = judge(&action, step.elevate, authority, host);
-                            if let Action::Move { to, .. } = &action
+                            // Creating and moving never replace what is already there.
+                            let creates = match &action {
+                                Action::Move { to, .. } => Some(to),
+                                Action::Write {
+                                    path,
+                                    mode: WriteMode::Create,
+                                    ..
+                                } => Some(path),
+                                _ => None,
+                            };
+                            if let Some(taken) = creates.filter(|p| host.exists(p))
                                 && !matches!(verdict, Verdict::Refused(_))
-                                && host.exists(to)
                             {
-                                verdict = Verdict::Refused(Refusal::DestinationTaken(to.clone()));
+                                verdict =
+                                    Verdict::Refused(Refusal::DestinationTaken(taken.clone()));
                             }
                             if !matches!(verdict, Verdict::Refused(_)) {
                                 for path in changed_locations(&action) {

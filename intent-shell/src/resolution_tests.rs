@@ -872,3 +872,36 @@ fn two_steps_naming_one_file_in_different_case_conflict() {
         Verdict::Refused(Refusal::ConflictsWithStep(..))
     ));
 }
+
+#[test]
+fn creating_a_file_over_an_existing_one_is_refused_but_overwriting_is_not() {
+    let host = FakeHost::with_files(&[("/work/a.txt", 1)]);
+    let write = |mode: &str| {
+        format!(
+            r#"{{"target":{{"name":"a.txt","in":"downloads","kind":"file"}},"content":"x","mode":"{mode}"}}"#
+        )
+    };
+    let created = run(
+        &[&plan(&[step("s1", "fs.write", &write("create"), "false")])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&created.outcome).steps[0].items[0].verdict,
+        Verdict::Refused(Refusal::DestinationTaken(_))
+    ));
+    let replaced = run(
+        &[&plan(&[step(
+            "s1",
+            "fs.write",
+            &write("overwrite"),
+            "false",
+        )])],
+        &host,
+        false,
+    );
+    assert_eq!(
+        reviewed(&replaced.outcome).steps[0].items[0].verdict,
+        Verdict::Allowed
+    );
+}
