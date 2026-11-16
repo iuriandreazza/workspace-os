@@ -1,5 +1,6 @@
 """Unit tests for the decision logic of check-licences.py (no network, no cargo)."""
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,8 @@ spec = importlib.util.spec_from_file_location(
 )
 lic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lic)
+
+sys.dont_write_bytecode = True  # the gate must not leave untracked files
 
 MPL = {("ucs2", "0.3.3")}
 
@@ -63,10 +66,14 @@ class Refused(unittest.TestCase):
 
 
 class Table(unittest.TestCase):
-    ADR = "text\n\nMPL-2.0 dependencies accepted so far:\n\n| Crate | Version |\n|---|---|\n| `ucs2` | 0.3.3 | `bootloader` |\n"
+    ADR = "text\n\nMPL-2.0 dependencies accepted so far:\n\n| Crate | Version |\n|---|---|\n| `ucs2` | 0.3.3 | `bootloader` | `uefi` 0.41.0 | absent |\n"
 
     def test_reads_rows(self):
         self.assertEqual(lic.mpl_table(self.ADR), {("ucs2", "0.3.3")})
+
+    def test_rows_outside_the_table_or_with_exhibit_b_are_not_accepted(self):
+        adr = self.ADR + "| `present` | 1.0.0 | `bootloader` | `x` | present |\n\nlater\n\n| `evil` | 1.0.0 | `a` | `b` | absent |\n"
+        self.assertEqual(lic.mpl_table(adr), {("ucs2", "0.3.3")})
 
     def test_missing_marker_or_rows_is_an_error(self):
         with self.assertRaises(ValueError):
@@ -76,6 +83,13 @@ class Table(unittest.TestCase):
 
     def test_the_real_adr_lists_ucs2(self):
         self.assertIn(("ucs2", "0.3.3"), lic.mpl_table(lic.MPL_ADR.read_text()))
+
+
+class TreeAgainstMetadata(unittest.TestCase):
+    def test_tree_entries_unknown_to_metadata_are_reported(self):
+        packages = [{"name": "a", "version": "1.0.0"}]
+        self.assertEqual(lic.unknown_to_metadata(packages, {("a", "1.0.0")}), [])
+        self.assertEqual(lic.unknown_to_metadata(packages, {("b", "2.0.0")}), [("b", "2.0.0")])
 
 
 class Violations(unittest.TestCase):

@@ -2,3 +2,4 @@ target/
 .claude/worktrees/
 .claude/session-files.log
 .DS_Store
+__pycache__/

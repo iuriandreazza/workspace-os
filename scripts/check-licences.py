@@ -129,23 +129,42 @@ def verdict(name, version, licence, mpl_accepted):
         f"{who}: licence `{licence}` is not allowed by ADR 0005 "
         "(allowed: permissive licences compatible with GPL-2.0, GPL-2.0 itself, and "
         "an OR expression with one allowed side; Apache-2.0 alone, GPL-3.0 and "
-        "AGPL-3.0 cannot be linked in)."
+        "AGPL-3.0 cannot be linked in). To allow a new licence, decide it against "
+        "ADR 0005 and add it to ACCEPTED in scripts/check-licences.py."
     )
 
 
 def mpl_table(adr_text):
-    """(crate, version) pairs from the ADR 0017 table of accepted dependencies."""
+    """(crate, version) pairs from the ADR 0017 table of accepted dependencies.
+
+    Only the rows of the table right after the marker count, and a row whose
+    Exhibit B column is not `absent` is not accepted (ADR 0017, condition 2).
+    """
     marker = "MPL-2.0 dependencies accepted so far:"
     if marker not in adr_text:
         raise ValueError(f"ADR 0017 has no line `{marker}`")
-    rows = re.findall(
-        r"^\|\s*`([^`]+)`\s*\|\s*([^|\s]+)\s*\|",
-        adr_text.split(marker, 1)[1],
-        re.MULTILINE,
-    )
-    if not rows:
-        raise ValueError("the table of accepted MPL-2.0 dependencies in ADR 0017 has no rows")
-    return set(rows)
+    accepted = set()
+    in_table = False
+    for line in adr_text.split(marker, 1)[1].splitlines():
+        if line.startswith("|"):
+            in_table = True
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            match = re.fullmatch(r"`([^`]+)`", cells[0])
+            if match and len(cells) == 5 and cells[4] == "absent":
+                accepted.add((match.group(1), cells[1]))
+        elif in_table:
+            break
+    if not accepted:
+        raise ValueError("the table of accepted MPL-2.0 dependencies in ADR 0017 has no usable rows")
+    return accepted
+
+
+def unknown_to_metadata(packages, built):
+    """Entries of the cargo tree that cargo metadata does not list. The tree is
+    parsed from text, so if its format ever changes this must fail loudly
+    instead of letting the check pass on an empty set."""
+    listed = {(p["name"], p["version"]) for p in packages}
+    return sorted(built - listed)
 
 
 def third_party_built(packages, members, built):
@@ -188,6 +207,9 @@ def main():
         sys.exit(f"licences: {error}")
     metadata = json.loads(run("cargo", "metadata", "--locked", "--format-version", "1"))
     built = built_packages()
+    unknown = unknown_to_metadata(metadata["packages"], built)
+    if not built or unknown:
+        sys.exit(f"licences: could not match the output of `cargo tree` to `cargo metadata` (unmatched: {unknown}); the parser needs an update")
     packages = third_party_built(metadata["packages"], set(metadata["workspace_members"]), built)
     found = violations(packages, mpl_accepted)
     for message in found:
