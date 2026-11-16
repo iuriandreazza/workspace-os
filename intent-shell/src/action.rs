@@ -167,6 +167,8 @@ pub fn printable(text: &str, block: bool) -> String {
 }
 
 fn escape_unsafe(c: char) -> String {
+    // Blanks other than the plain space let two different names look alike.
+    let blank = c.is_whitespace() && c != ' ';
     // The Unicode format (Cf) characters and the combining joiner: invisible,
     // so two different paths could look the same.
     let formatting = matches!(
@@ -181,8 +183,21 @@ fn escape_unsafe(c: char) -> String {
             | '\u{FEFF}'
             | '\u{FFF9}'..='\u{FFFB}'
             | '\u{E0000}'..='\u{E007F}'
+            | '\u{600}'..='\u{605}'
+            | '\u{6DD}'
+            | '\u{70F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FFA0}'
+            | '\u{E0100}'..='\u{E01EF}'
     );
-    if c.is_control() || formatting {
+    if c.is_control() || formatting || blank {
         format!("\\u{:04x}", c as u32)
     } else {
         c.to_string()
@@ -361,7 +376,7 @@ mod tests {
 
     #[test]
     fn quoting_escapes_invisible_format_characters() {
-        let quoted = quoted("a\u{e0041}\u{61c}\u{ad}b");
+        let quoted = quoted("a\u{e0041}\u{61c}\u{ad}\u{3164}\u{2800}\u{3000}\u{a0}\u{fe0f}b");
         assert!(quoted.is_ascii(), "{quoted}");
     }
 

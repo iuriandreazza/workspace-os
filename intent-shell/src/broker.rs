@@ -294,6 +294,13 @@ impl Review {
                 ));
             }
             // A step blocked after its read failed keeps its items, but none can run.
+            for item in &step.items {
+                if let Some(Ok(output)) = &item.output {
+                    for note in &output.notes {
+                        out.push_str(&format!("  {} NOTE: {note}\n", step.id));
+                    }
+                }
+            }
             let shown = if step.blocked.is_some() {
                 &[][..]
             } else {

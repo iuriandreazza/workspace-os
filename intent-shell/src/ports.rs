@@ -22,6 +22,9 @@ pub struct User {
 pub struct Output {
     pub text: String,
     pub paths: Vec<PathBuf>,
+    /// What the person must know about how complete the result is. Shown
+    /// with the plan, because a reference expands from it.
+    pub notes: Vec<String>,
 }
 
 pub trait Host {

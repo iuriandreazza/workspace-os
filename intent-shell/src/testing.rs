@@ -16,6 +16,8 @@ pub struct FakeHost {
     pub forbidden: Vec<(Access, PathBuf)>,
     /// Reads of these paths fail, as when the directory vanishes after the check.
     pub failing: Vec<PathBuf>,
+    /// Attached to what a search returns, as when part of the tree was unreadable.
+    pub note: Option<String>,
     pub executed: RefCell<Vec<String>>,
 }
 
@@ -25,6 +27,11 @@ impl FakeHost {
             files: files.iter().map(|(p, s)| (PathBuf::from(p), *s)).collect(),
             ..Self::default()
         }
+    }
+
+    pub fn with_note(mut self, note: &str) -> Self {
+        self.note = Some(note.to_owned());
+        self
     }
 
     pub fn failing(mut self, path: &str) -> Self {
@@ -73,6 +80,7 @@ impl Host for FakeHost {
                 Ok(Output {
                     text: format!("{} files", paths.len()),
                     paths,
+                    notes: self.note.clone().into_iter().collect(),
                 })
             }
             Action::List { path } => {
@@ -86,6 +94,7 @@ impl Host for FakeHost {
                 Ok(Output {
                     text: String::new(),
                     paths,
+                    ..Output::default()
                 })
             }
             _ => Ok(Output::default()),

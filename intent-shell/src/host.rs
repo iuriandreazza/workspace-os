@@ -97,7 +97,11 @@ fn list(path: &Path) -> Result<Output, String> {
         .map(|p| quoted(&p.to_string_lossy()))
         .collect::<Vec<_>>()
         .join("\n");
-    Ok(Output { text, paths })
+    Ok(Output {
+        text,
+        paths,
+        ..Output::default()
+    })
 }
 
 fn stat(path: &Path) -> Result<Output, String> {
@@ -120,6 +124,7 @@ fn stat(path: &Path) -> Result<Output, String> {
     Ok(Output {
         text,
         paths: Vec::new(),
+        ..Output::default()
     })
 }
 
@@ -149,6 +154,7 @@ fn read(path: &Path) -> Result<Output, String> {
     Ok(Output {
         text,
         paths: Vec::new(),
+        ..Output::default()
     })
 }
 
@@ -157,11 +163,15 @@ fn find_largest(root: &Path, count: usize) -> Result<Output, String> {
     let mut pending = vec![root.to_path_buf()];
     let mut walked = 0usize;
     let mut truncated = false;
+    let mut unreadable = 0usize;
     while let Some(dir) = pending.pop() {
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) if dir == root => return Err(io_error(&dir, e)),
-            Err(_) => continue,
+            Err(_) => {
+                unreadable += 1;
+                continue;
+            }
         };
         for entry in entries.flatten() {
             walked += 1;
@@ -187,19 +197,26 @@ fn find_largest(root: &Path, count: usize) -> Result<Output, String> {
     }
     files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     files.truncate(count);
-    let mut text = files
+    let text = files
         .iter()
         .map(|(size, p)| format!("{size} {}", quoted(&p.to_string_lossy())))
         .collect::<Vec<_>>()
         .join("\n");
+    let mut notes = Vec::new();
     if truncated {
-        text.push_str(&format!(
-            "\n(stopped after {MAX_WALKED_ENTRIES} entries: the result may miss larger files)"
+        notes.push(format!(
+            "stopped after {MAX_WALKED_ENTRIES} entries: larger files may exist"
+        ));
+    }
+    if unreadable > 0 {
+        notes.push(format!(
+            "{unreadable} directories could not be read: larger files may exist"
         ));
     }
     Ok(Output {
         text,
         paths: files.into_iter().map(|(_, p)| p).collect(),
+        notes,
     })
 }
 
@@ -232,6 +249,28 @@ mod tests {
             })
             .unwrap();
         assert_eq!(output.paths, vec![dir.join("sub/big"), dir.join("medium")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_subdirectory_is_reported_not_silently_skipped() {
+        let dir = temp_dir("locked");
+        let locked = dir.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("big"), vec![0; 500]).unwrap();
+        fs::write(dir.join("small"), "x").unwrap();
+        fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o0)).unwrap();
+        let output = host(&dir)
+            .execute(&Action::FindLargest {
+                path: dir.clone(),
+                count: 1,
+            })
+            .unwrap();
+        fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(output.notes.len(), 1, "{output:?}");
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -676,3 +676,21 @@ fn exactly_the_limit_of_paths_still_expands() {
         MAX_EXPANDED_PATHS
     );
 }
+
+#[test]
+fn an_incomplete_search_says_so_where_the_person_confirms_and_where_results_are_shown() {
+    let host = files().with_note("2 directories could not be read: larger files may exist");
+    let with_reference = run(&[DELETE_LARGEST], &host, false);
+    assert!(
+        reviewed(&with_reference.outcome)
+            .render()
+            .contains("NOTE: 2 directories could not be read")
+    );
+    let plain = run(&[LARGEST], &host, false);
+    assert!(
+        plain
+            .outcome
+            .render()
+            .contains("NOTE: 2 directories could not be read")
+    );
+}

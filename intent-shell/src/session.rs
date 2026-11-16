@@ -376,6 +376,11 @@ fn render_steps(steps: &[ExecutedStep]) -> String {
                 step.id,
                 item.action.describe()
             ));
+            if let ItemResult::Done(output) = &item.result {
+                for note in &output.notes {
+                    out.push_str(&format!("{} NOTE: {note}\n", step.id));
+                }
+            }
             // Indented, so output cannot pass for a line of the report.
             for line in text.lines() {
                 out.push_str(&format!("    {line}\n"));
