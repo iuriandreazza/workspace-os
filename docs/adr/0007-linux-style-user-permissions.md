@@ -116,6 +116,12 @@ The defence Linux uses is disk encryption with a recovery key, and a
 password on the boot menu: without the key the disk cannot be read from
 recovery mode or from other media.
 
+Disk encryption is optional and chosen during installation. The installer
+offers it, explains what it protects, and creates the recovery key when it
+is accepted. On a machine installed without it, anyone with physical access
+can enter recovery mode, become root and change the SOUL; the installer says
+so in plain words before the choice is made.
+
 ## Alternatives considered
 
 | Option | For | Against |
@@ -135,8 +141,7 @@ recovery mode or from other media.
 
 ## Open questions
 
-- Whether the disk is encrypted by default, with a recovery key created
-  during installation. Without it, recovery mode lets anyone with physical
-  access take over the machine and change the SOUL.
+- Where the recovery key is kept when encryption is chosen, and what happens
+  when it is lost.
 - Which local speaker-verification model to use, its error rates, and its
   licence (ADR 0005).

@@ -187,6 +187,7 @@ Source: [Jev (AI model)](https://en.wikipedia.org/wiki/Jev_(AI_model)).
 
 - Legal review of the licence boundary for converted drivers and model
   weights (ADR 0005).
-- Disk encryption by default with a recovery key (ADR 0007).
+- Disk encryption is optional at installation (ADR 0007). It has no roadmap
+  item yet: it needs a block device driver and the installer first.
 - Physical hardware: not a target yet; the system runs in QEMU and
   VirtualBox (ADR 0004).
