@@ -37,6 +37,8 @@ cargo clippy --all-targets -p devicetree -p physmem -p bootinfo --target "$host_
 # bare-metal kernel target nor the host can build. It is not a default member
 # of the workspace, so a bare `cargo build` never tries.
 cargo clippy --all-targets -p bootloader --target aarch64-unknown-uefi -- -D warnings
+cargo clippy --all-targets -p bootloader --target aarch64-unknown-uefi --features selftest-unknown-boot-info-version -- -D warnings
+cargo clippy --all-targets -p bootloader --target aarch64-unknown-uefi --features selftest-retry-after-failure -- -D warnings
 # The intent shell is host code (std, sockets, the real filesystem), so like the
 # device tree reader it is built for the host. Its tests never need the model.
 cargo clippy --all-targets -p intent-shell --target "$host_target" -- -D warnings

@@ -13,9 +13,11 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod elf;
+mod handoff;
 mod memmap;
 mod paging;
 
+pub use handoff::{Handoff, HandoffError, Rejected, check, select_rsdp, usable_console};
 pub use memmap::{BuildError, EfiDescriptor, build_memory_map, carve_kernel, kind_from_efi};
 pub use paging::{PAGE_SIZE, PageError, Table, TableAttributes, build_identity_map, tables_needed};
 
@@ -394,6 +396,15 @@ impl MemoryKind {
             Self::Kernel => "kernel",
             Self::ReservedMapped => "reserved-mapped",
         }
+    }
+
+    /// RAM that something owns or may own later. Firmware regions that are not
+    /// RAM (runtime services, MMIO, reserved) stay out of the kernel's map.
+    pub fn is_ram(self) -> bool {
+        matches!(
+            self,
+            Self::Usable | Self::BootloaderReclaimable | Self::AcpiReclaimable | Self::Kernel
+        )
     }
 
     /// RAM that holds something the kernel may read or write, so the identity

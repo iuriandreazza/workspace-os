@@ -45,10 +45,23 @@
 #   uefi-768  768 MiB: the kernel sizes memory from the bootloader's map, so
 #             the amount it reports follows
 #   uefi-acpi-only  ACPI left on: no device tree is published, so the
-#             bootloader must refuse and the kernel must not start
+#             bootloader must refuse and the kernel must not start. The refusal
+#             shows the ACPI root pointer, the only non-zero `rsdp` a boot here
+#             can show: QEMU's firmware never offers a device tree and ACPI
+#             together (tried: acpi=on with -dtb, acpi=auto, gic-version=3)
 #   uefi-el2-high  EL2 with 3.5 GiB: RAM and the page tables lie above 4 GiB,
 #             which only works if the physical address size reaches EL1's
 #             translation registers
+#   uefi-no-kernel  the partition holds no `\KERNEL.ELF`: the bootloader must
+#             say that file is missing
+#   uefi-retry  the first run fails after loading the kernel, the second boots
+#   uefi-load-at-zero  a kernel linked at address 0
+#   uefi-load-beyond-ram  a kernel linked past the end of RAM
+#   uefi-load-busy  a kernel linked where the firmware keeps its own memory
+#             (the case of VirtualBox with 1024 MiB, which reserves
+#             0x40200000): the refusal names the range
+#   uefi-unknown-version  a bootloader that hands over boot info version 2.0:
+#             the kernel must refuse it on the console the header names
 #   uefi-el2  the firmware runs the bootloader at EL2, which the bootloader
 #             must leave for EL1 itself before the kernel starts
 #
@@ -419,7 +432,9 @@ check_uefi_boot() {
     # The kernel runs on the bootloader's own tables, not the firmware's (the
     # root is the pool the bootloader printed), and what the tables map holds up
     # at the kernel, the UART and the boot info.
-    expect_once "mapping: runtime services 0xff" "memory type of the runtime services regions"
+    # The probe prints -1 as 0xffffffff when it finds nothing, so the line ends here.
+    [[ "$(plain_log | grep -cE 'mapping: runtime services 0xff$')" -eq 1 ]] \
+        || fail "memory type of the runtime services regions is not Normal write-back (0xff)"
     # SCTLR_EL1: MMU (bit 0), data cache (2) and instruction cache (12) on;
     # alignment check (1) and write-implies-execute-never (19) off.
     local sctlr
@@ -450,20 +465,39 @@ check_uefi_boot() {
     echo "PASS ($boot_name): kernel booted through the bootloader and stayed up"
 }
 
-# check_uefi_refusal NAME: with ACPI on, the firmware publishes no device tree
-# and the bootloader must say so and not start the kernel.
+# check_uefi_refusal NAME IMAGE MESSAGE QEMU_MACHINE_ARGS...: the bootloader must
+# stop the boot with MESSAGE on the serial console and the kernel must not start.
 check_uefi_refusal() {
+    local image="$2" message="$3"
     BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
-    start_qemu "$1" -machine virt -m 256M -bios "$uefi_firmware" \
-        -drive "file=$disk_image,format=raw,if=virtio"
-    wait_for_line "the firmware offers ACPI only"
+    start_qemu "$1" "${@:4}" -m 256M -bios "$uefi_firmware" \
+        -drive "file=$image,format=raw,if=virtio"
+    wait_for_line "$message"
     sleep "$SETTLE_SECONDS"
     if grep -qF "booted on aarch64" "$serial_log"; then
-        fail "the kernel started on a machine that offers ACPI only"
+        fail "the kernel started although the bootloader refused: $message"
     fi
     BOOT_TIMEOUT_SECONDS=10
     stop_qemu
-    echo "PASS ($boot_name): the bootloader refused an ACPI-only machine"
+    echo "PASS ($boot_name): the bootloader refused with '$message'"
+}
+
+# check_uefi_retry NAME IMAGE: a bootloader whose first run fails after it
+# loaded the kernel must give the load range back, so that the second run loads
+# the kernel at the same address and the kernel boots.
+check_uefi_retry() {
+    BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+    start_qemu "$1" -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
+        -drive "file=$2,format=raw,if=virtio"
+    wait_for_line "forced failure of the first run"
+    wait_for_banner
+    wait_for_line "$RESUME_MARKER"
+    expect_once "$EXPECTED_BANNER" "boot banner"
+    [[ "$(grep -cF "started at EL1" "$serial_log")" -eq 2 && "$(grep -cF "kernel loaded at 0x" "$serial_log")" -eq 1 ]] \
+        || fail "expected two runs of the bootloader and one completed load"
+    BOOT_TIMEOUT_SECONDS=10
+    stop_qemu
+    echo "PASS ($boot_name): the second run loaded the kernel again after the first failed"
 }
 
 # build_with_feature FEATURE DESTINATION: builds the kernel with a self-test
@@ -551,13 +585,66 @@ check_boot memreserve -dtb "$memreserve_dtb" -kernel "$KERNEL_ELF"
 extra_reserved_frames=0
 extra_reserved_ranges=0
 uefi_firmware="$(find_uefi_firmware)"
+# A bootloader built to hand over a boot info of an unknown version, kept before
+# the plain one is built again.
+cargo build --quiet --target-dir "$TARGET_DIR" -p bootloader --target aarch64-unknown-uefi \
+    --features selftest-unknown-boot-info-version
+unknown_version_image="$work_dir/unknown-version.img"
+python3 -I scripts/make-disk-image.py "$unknown_version_image" \
+    target/aarch64-unknown-uefi/debug/bootloader.efi "$KERNEL_ELF"
+cargo build --quiet --target-dir "$TARGET_DIR" -p bootloader --target aarch64-unknown-uefi \
+    --features selftest-retry-after-failure
+retry_image="$work_dir/retry.img"
+python3 -I scripts/make-disk-image.py "$retry_image" \
+    target/aarch64-unknown-uefi/debug/bootloader.efi "$KERNEL_ELF"
 disk_image="$work_dir/disk.img"
 ./scripts/build-disk-image.sh "$disk_image" > /dev/null
 check_uefi_boot uefi 256 1
 check_uefi_boot uefi-768 768 1
 check_uefi_boot uefi-el2 256 2 -machine virtualization=on
 check_uefi_boot uefi-el2-high 3584 2 -machine virtualization=on
-check_uefi_refusal uefi-acpi-only
+check_uefi_retry uefi-retry "$retry_image"
+check_uefi_refusal uefi-acpi-only "$disk_image" "the firmware offers ACPI only (rsdp 0x" -machine virt
+# The root pointer is the one non-zero `rsdp` any boot here can show: QEMU's
+# firmware never publishes ACPI together with a device tree.
+acpi_rsdp="$(plain_log | sed -n 's/.*offers ACPI only (rsdp \(0x[0-9a-f]*\)).*/\1/p' | head -1)"
+[[ -n "$acpi_rsdp" && "$acpi_rsdp" != 0x0 ]] || fail "the ACPI-only refusal shows no ACPI root pointer"
+
+# The kernel must refuse a boot info of a major version it does not know, and
+# say so on the console that header names.
+check_uefi_refusal uefi-unknown-version "$unknown_version_image" \
+    "unsupported boot info version 2.0" -machine virt,acpi=off
+
+# The kernel file is not on the partition: the message names it.
+no_kernel_image="$work_dir/no-kernel.img"
+python3 -I scripts/make-disk-image.py "$no_kernel_image" \
+    target/aarch64-unknown-uefi/debug/bootloader.efi > /dev/null
+check_uefi_refusal uefi-no-kernel "$no_kernel_image" \
+    '\KERNEL.ELF is not on the EFI system partition' -machine virt,acpi=off
+
+# The kernel's load address is not free: first an address past the end of RAM,
+# whose refusal prints the firmware's memory map, then the start of a firmware
+# region taken from that map (the layout depends on the firmware, so it is read
+# and not written down here).
+relocated_image() {
+    python3 -I scripts/relocate-elf.py "$KERNEL_ELF" "$work_dir/relocated.elf" "$1"
+    python3 -I scripts/make-disk-image.py "$work_dir/relocated.img" \
+        target/aarch64-unknown-uefi/debug/bootloader.efi "$work_dir/relocated.elf"
+}
+relocated_image 0
+check_uefi_refusal uefi-load-at-zero "$work_dir/relocated.img" \
+    "the kernel is linked at address 0" -machine virt,acpi=off
+relocated_image 0x7ff00000
+check_uefi_refusal uefi-load-beyond-ram "$work_dir/relocated.img" \
+    "the kernel's load address is not free RAM" -machine virt,acpi=off
+firmware_region="$(plain_log | sed -n 's/^  boot  info  memory map: \(0x[0-9a-f]*\)\.\.0x[0-9a-f]* RUNTIME_SERVICES_CODE$/\1/p' | head -1)"
+span="$(plain_log | sed -n 's/.*the kernel needs 0x[0-9a-f]*\.\.\(0x[0-9a-f]*\) and.*/\1/p' | head -1)"
+[[ -n "$firmware_region" && -n "$span" ]] || fail "the refusal printed no firmware region to use"
+span=$((span - 0x7ff00000))
+relocated_image "$firmware_region"
+check_uefi_refusal uefi-load-busy "$work_dir/relocated.img" \
+    "the kernel needs $firmware_region..$(printf '%#x' $((firmware_region + span))) and the firmware refused it" \
+    -machine virt,acpi=off
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"
