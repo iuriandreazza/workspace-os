@@ -100,6 +100,35 @@ pub(crate) fn run_in(
     )
 }
 
+/// `run_in` for a host that is not a `FakeHost`, with a yes to everything.
+pub(crate) fn run_in_host(
+    session: &mut SessionState,
+    outputs: &[&str],
+    host: &dyn crate::ports::Host,
+    authority: &Authority,
+) -> (Run, ScriptedPlanner) {
+    let planner = ScriptedPlanner::new(outputs);
+    let mut answers = Answers::yes();
+    let mut log = MemoryLog::default();
+    let outcome = Shell {
+        session,
+        authority,
+        host,
+        planner: &planner,
+        confirm: &mut answers,
+        log: &mut log,
+    }
+    .handle("do it");
+    (
+        Run {
+            outcome,
+            log,
+            answers,
+        },
+        planner,
+    )
+}
+
 pub(crate) fn run(outputs: &[&str], host: &FakeHost, administrator: bool) -> Run {
     run_with(
         outputs,

@@ -52,6 +52,8 @@ def semantic_errors(doc):
             has_group = s["args"]["group"] is not None
             if has_group != (s["args"]["operation"] in GROUP_OPERATIONS):
                 errors.append(f"{s['id']}: group must be set exactly for group operations")
+    if len(steps) > 1 and any(s["action"] == "session.cd" for s in steps):
+        errors.append("session.cd must be a plan of its own")
     if not errors and has_cycle(by_id):
         errors.append("dependency cycle")
     return errors

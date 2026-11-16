@@ -66,17 +66,22 @@ impl UnixHost {
     /// The direct children, which `from_step` may use, and what lies below
     /// them down to the tree's depth, which only the display may use.
     fn list(&self, path: &Path) -> Result<Output, String> {
+        self.list_capped(path, MAX_TREE_ENTRIES)
+    }
+
+    fn list_capped(&self, path: &Path, cap: usize) -> Result<Output, String> {
         let mut children: Vec<PathBuf> = fs::read_dir(path)
             .map_err(|e| io_error(path, e))?
             .filter_map(|entry| entry.ok().map(|e| e.path()))
             .collect();
         children.sort();
         let mut tree = Vec::new();
-        let mut pending: Vec<(PathBuf, usize)> = children.iter().map(|c| (c.clone(), 1)).collect();
-        pending.reverse();
+        // Level by level, so a huge first folder cannot crowd out its siblings.
+        let mut pending: std::collections::VecDeque<(PathBuf, usize)> =
+            children.iter().map(|c| (c.clone(), 1)).collect();
         let mut capped = false;
-        while let Some((child, level)) = pending.pop() {
-            if tree.len() >= MAX_TREE_ENTRIES {
+        while let Some((child, level)) = pending.pop_front() {
+            if tree.len() >= cap {
                 capped = true;
                 break;
             }
@@ -94,13 +99,11 @@ impl UnixHost {
                 let mut names: Vec<PathBuf> =
                     below.filter_map(|e| e.ok().map(|e| e.path())).collect();
                 names.sort();
-                pending.extend(names.into_iter().rev().map(|n| (n, level + 1)));
+                pending.extend(names.into_iter().map(|n| (n, level + 1)));
             }
         }
         let notes = if capped {
-            vec![format!(
-                "the tree stopped after {MAX_TREE_ENTRIES} entries: more exist"
-            )]
+            vec![format!("the tree stopped after {cap} entries: more exist")]
         } else {
             Vec::new()
         };
@@ -1041,5 +1044,21 @@ mod tests {
         );
         assert!(host.is_protected(Path::new("/")));
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_huge_first_folder_does_not_crowd_the_other_top_level_entries_out_of_the_tree() {
+        let dir = temp_dir("bfs");
+        fs::create_dir(dir.join("a-big")).unwrap();
+        for n in 0..30 {
+            fs::write(dir.join(format!("a-big/f{n}")), "").unwrap();
+        }
+        fs::create_dir(dir.join("z-last")).unwrap();
+        fs::write(dir.join("z-last/file"), "x").unwrap();
+        let output = host().list_capped(&dir, 10).unwrap();
+        let has = |p: PathBuf| output.tree.iter().any(|e| e.path == p);
+        assert!(has(dir.join("a-big")) && has(dir.join("z-last")));
+        assert_eq!(output.notes.len(), 1, "{:?}", output.notes);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -356,6 +356,16 @@ impl Shell<'_> {
             (Verdict::NeedsRoot, _) if !self.confirm_root(step, &item.action, labels)? => {
                 ItemResult::NotRun("root confirmation was not given".to_owned())
             }
+            // The directory was judged at review; what the person waited for
+            // may have changed since, and a session never enters what is not one.
+            (Verdict::Allowed, Some(path))
+                if !self.host.is_dir(path) || !self.host.allows(Access::Read, path) =>
+            {
+                ItemResult::NotRun(format!(
+                    "{} is no longer a directory you can enter",
+                    labels.of(path)
+                ))
+            }
             (Verdict::Allowed, Some(path)) => {
                 self.record(json!({"event": "cd", "step": step.as_str(), "from": quoted_path(&self.session.cwd), "to": quoted_path(path)}))?;
                 self.session.cwd = path.clone();

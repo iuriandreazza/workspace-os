@@ -750,6 +750,13 @@ pub fn check_rules(plan: &Plan) -> Result<(), PlanError> {
             )));
         }
     }
+    // A plan resolves against the directory it was made under, so a step after
+    // a `cd` would not mean what the person expects.
+    if plan.steps.len() > 1 && plan.steps.iter().any(|s| matches!(s.spec, Spec::Cd { .. })) {
+        return Err(PlanError::new(
+            "session.cd must be a plan of its own: its directory applies to the next request",
+        ));
+    }
     if plan.execution_order().len() != plan.steps.len() {
         return Err(PlanError::new("dependency cycle"));
     }

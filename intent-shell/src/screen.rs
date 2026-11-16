@@ -297,7 +297,8 @@ pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<ChoiceLi
     let options = TreeOptions {
         depth: usize::MAX,
         show_hidden: true,
-        ..TreeOptions::default()
+        // A candidate that is cut off cannot be picked.
+        max_lines: usize::MAX,
     };
     (
         printable(
@@ -454,12 +455,15 @@ fn size_text(bytes: u64) -> String {
     }
     let mut value = bytes as f64 / 1000.0;
     let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
+    // 999.96 KB prints as 1000.0: it is 1.0 MB.
+    while value >= 999.95 && unit + 1 < UNITS.len() {
         value /= 1000.0;
         unit += 1;
     }
-    if unit == 0 {
+    if unit == 0 && value < 999.5 {
         format!("{value:.0} {}", UNITS[unit])
+    } else if unit == 0 {
+        format!("{:.1} {}", value / 1000.0, UNITS[1])
     } else {
         format!("{value:.1} {}", UNITS[unit])
     }

@@ -131,7 +131,15 @@ impl FakeHost {
             else {
                 break;
             };
-            path = to.join(path.strip_prefix(from).unwrap_or(Path::new("")));
+            let rest = path
+                .strip_prefix(from)
+                .unwrap_or(Path::new(""))
+                .to_path_buf();
+            path = if rest.as_os_str().is_empty() {
+                to.clone()
+            } else {
+                to.join(rest)
+            };
         }
         path
     }

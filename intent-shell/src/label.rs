@@ -38,7 +38,12 @@ impl Labels {
             return PathBuf::from(".");
         }
         if let Ok(inside) = path.strip_prefix(&self.cwd) {
-            return inside.to_path_buf();
+            // A folder called `~` inside the directory must not read as the home.
+            return if inside.starts_with("~") {
+                Path::new(".").join(inside)
+            } else {
+                inside.to_path_buf()
+            };
         }
         match self.home.as_deref().map(|home| path.strip_prefix(home)) {
             Some(Ok(inside)) if inside.as_os_str().is_empty() => PathBuf::from("~"),
@@ -135,6 +140,19 @@ mod tests {
         assert_eq!(
             labels.of(Path::new("/home/anabel/x")),
             r#""/home/anabel/x""#
+        );
+    }
+
+    #[test]
+    fn a_folder_called_tilde_inside_the_directory_does_not_read_as_the_home() {
+        let labels = labels();
+        assert_eq!(
+            labels.of(Path::new("/home/ana/Downloads/~/x")),
+            r#""./~/x""#
+        );
+        assert_ne!(
+            labels.of(Path::new("/home/ana/Downloads/~/x")),
+            labels.of(Path::new("/home/ana/x"))
         );
     }
 

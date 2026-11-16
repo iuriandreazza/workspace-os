@@ -10,7 +10,7 @@ use crate::broker::{Authority, Refusal, Verdict};
 use crate::label::Labels;
 use crate::pipeline_tests::{Run, events, plan, reviewed, run_in, run_with, step};
 use crate::plan::parse_checked;
-use crate::ports::{EntryKind, TreeEntry};
+use crate::ports::{EntryKind, Host, TreeEntry};
 use crate::reference::Place;
 use crate::resolve::{ResolveError, Scope, resolve_path};
 use crate::screen::{self, TreeMarks, TreeOptions, View};
@@ -442,21 +442,130 @@ fn a_session_starts_at_home_or_at_the_root_when_there_is_none() {
 }
 
 #[test]
-fn the_steps_of_one_plan_resolve_against_the_directory_the_plan_was_made_in() {
-    let host = home();
-    let mut session = session_in("/home/ana");
+fn a_cd_must_be_a_plan_of_its_own_because_its_directory_applies_to_the_next_request() {
     let text = plan(&[
         step_of("s1", "session.cd", &path_args("Downloads")),
         step("s2", "fs.list", &path_args("Downloads"), "false"),
     ]);
-    let run = ask(&host, &mut session, &text);
-    let review = reviewed(&run.outcome);
-    assert_eq!(
-        review.steps[1].items[0].action.describe(),
-        r#"fs.list path="/home/ana/Downloads""#
+    let error = parse_checked(&text).unwrap_err().to_string();
+    assert!(
+        error.contains("session.cd must be a plan of its own"),
+        "{error}"
     );
-    // The cd takes effect for the next request.
-    assert_eq!(session.cwd, PathBuf::from("/home/ana/Downloads"));
+    let host = home();
+    let mut session = session_in("/home/ana");
+    let run = ask(&host, &mut session, &text);
+    assert!(matches!(run.outcome, Outcome::NoPlan(_)));
+    assert_eq!(session.cwd, PathBuf::from("/home/ana"));
+}
+
+/// A directory that stops being one after the review, as when it is replaced
+/// while the person is deciding.
+struct Vanishing {
+    inner: FakeHost,
+    asked: std::cell::Cell<usize>,
+}
+
+impl Host for Vanishing {
+    fn place_roots(&self, place: Place) -> Vec<PathBuf> {
+        self.inner.place_roots(place)
+    }
+    fn home(&self) -> Option<PathBuf> {
+        self.inner.home()
+    }
+    fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf {
+        self.inner.canonicalize(path, follow_last)
+    }
+    fn is_dir(&self, path: &Path) -> bool {
+        let first = self.asked.get() == 0;
+        self.asked.set(self.asked.get() + 1);
+        first && self.inner.is_dir(path)
+    }
+    fn same(&self, a: &Path, b: &Path) -> bool {
+        self.inner.same(a, b)
+    }
+    fn exists(&self, path: &Path) -> bool {
+        self.inner.exists(path)
+    }
+    fn search(&self, roots: &[PathBuf], needle: &str) -> Result<crate::ports::Search, String> {
+        self.inner.search(roots, needle)
+    }
+    fn allows(&self, access: Access, path: &Path) -> bool {
+        self.inner.allows(access, path)
+    }
+    fn execute(&self, action: &Action) -> Result<crate::ports::Output, String> {
+        self.inner.execute(action)
+    }
+}
+
+#[test]
+fn a_cd_is_checked_again_when_it_runs_and_never_enters_what_is_no_longer_a_directory() {
+    let host = Vanishing {
+        inner: home(),
+        asked: std::cell::Cell::new(0),
+    };
+    let mut session = session_in("/home/ana");
+    let text = one_step("session.cd", &path_args("Downloads"));
+    let (run, _) = crate::pipeline_tests::run_in_host(
+        &mut session,
+        &[&text],
+        &host,
+        &Authority::full(user(false)),
+    );
+    assert_eq!(session.cwd, PathBuf::from("/home/ana"));
+    assert!(
+        run.outcome.render().contains("no longer a directory"),
+        "{}",
+        run.outcome.render()
+    );
+}
+
+#[test]
+fn looking_at_a_link_means_where_it_leads_so_a_hidden_target_still_asks() {
+    let host = home()
+        .link("/home/ana/Downloads/x", "/home/ana/.ssh")
+        .dir("/home/ana/.ssh");
+    let mut answers = Answers::yes();
+    answers.plan = false;
+    let (run, _) = run_in(
+        &mut session_in("/home/ana"),
+        &[&one_step("fs.list", &path_args("Downloads/x"))],
+        &host,
+        &Authority::full(user(false)),
+        answers,
+        MemoryLog::default(),
+    );
+    assert_eq!(exact(&run), r#"fs.list path="/home/ana/.ssh""#);
+    assert!(
+        matches!(run.outcome, Outcome::Declined(_)),
+        "{:?}",
+        run.outcome
+    );
+    // Removing it still names the link.
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.delete", &path_args("Downloads/x")),
+    );
+    assert_eq!(exact(&run), r#"fs.delete path="/home/ana/Downloads/x""#);
+}
+
+#[test]
+fn every_ambiguous_candidate_can_be_picked_however_deep_it_sits() {
+    let names: Vec<String> = (0..20)
+        .map(|n| format!("/home/ana/p{n}/a/b/c/d/e/f/g/h/i/j/k/l/m/index.js"))
+        .collect();
+    let files: Vec<(&str, u64)> = names.iter().map(|n| (n.as_str(), 1)).collect();
+    let host = FakeHost::with_files(&files);
+    let text = one_step(
+        "fs.read",
+        r#"{"target":{"under_home":true,"name":"index.js","kind":"file"}}"#,
+    );
+    let run = ask(&host, &mut session_in("/home/ana"), &text);
+    let lines = &run.answers.questions[0].1;
+    let picks: Vec<usize> = lines.iter().filter_map(|l| l.option).collect();
+    assert_eq!(picks, (0..20).collect::<Vec<_>>());
+    assert!(!lines.iter().any(|l| l.text.contains("more (")));
 }
 
 #[test]
@@ -682,6 +791,14 @@ fn the_tree_stops_at_depth_two_and_says_that_folders_may_hold_more() {
     );
     assert!(shown.contains("c.txt"), "{shown}");
     assert!(!shown.contains("may hold more"), "{shown}");
+}
+
+#[test]
+fn sizes_never_print_as_a_thousand_of_the_unit_below() {
+    let shown = default_tree(&[file("/h/Downloads/a", 999_999), file("/h/Downloads/b", 999)]);
+    assert!(shown.contains("1.0 MB"), "{shown}");
+    assert!(!shown.contains("1000"), "{shown}");
+    assert!(shown.contains("999 B"), "{shown}");
 }
 
 #[test]
