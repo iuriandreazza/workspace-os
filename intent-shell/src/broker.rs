@@ -84,7 +84,11 @@ impl fmt::Display for Refusal {
                 quoted_path(path)
             ),
             Self::MoveIntoItself(path) => {
-                write!(f, "{} cannot be moved into itself", quoted_path(path))
+                write!(
+                    f,
+                    "{} cannot be moved onto or into itself",
+                    quoted_path(path)
+                )
             }
             Self::PlaceRoot(path) => write!(
                 f,
@@ -117,7 +121,7 @@ impl Refusal {
                 labels.of(path)
             ),
             Self::MoveIntoItself(path) => {
-                format!("{} cannot be moved into itself", labels.of(path))
+                format!("{} cannot be moved onto or into itself", labels.of(path))
             }
             Self::PlaceRoot(path) => format!(
                 "{} is a whole place and cannot be removed, moved or overwritten",
@@ -382,7 +386,12 @@ fn from_step(
     Ok(paths)
 }
 
-fn judge(action: &Action, elevate: bool, authority: &Authority, host: &dyn Host) -> Verdict {
+pub(crate) fn judge(
+    action: &Action,
+    elevate: bool,
+    authority: &Authority,
+    host: &dyn Host,
+) -> Verdict {
     let capability = action.capability();
     if !authority.capabilities.contains(&capability) {
         return Verdict::Refused(Refusal::CapabilityNotGranted(capability));

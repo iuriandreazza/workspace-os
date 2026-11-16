@@ -99,8 +99,17 @@ impl Confirm for TerminalConfirm {
         for (index, option) in options.iter().enumerate() {
             println!("   {}. {option}", index + 1);
         }
-        print!("  number, or Enter to cancel > ");
-        parse_choice(&read_line()?, options.len())
+        loop {
+            print!("  number, or Enter to cancel > ");
+            let answer = read_line()?;
+            if answer.trim().is_empty() {
+                return None;
+            }
+            match parse_choice(&answer, options.len()) {
+                Some(index) => return Some(index),
+                None => println!("  not one of the options"),
+            }
+        }
     }
 }
 

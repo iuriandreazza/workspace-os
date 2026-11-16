@@ -121,13 +121,21 @@ impl Host for FakeHost {
         let needle = needle.to_lowercase();
         let mut seen: Vec<PathBuf> = self.dirs.clone();
         seen.extend(self.files.keys().cloned());
-        let entries = seen
+        // One walk per root, so overlapping roots report an item once for each.
+        let mut found: Vec<PathBuf> = Vec::new();
+        for root in roots {
+            for path in &seen {
+                let inside = path.starts_with(root) && path != root;
+                let named = path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().to_lowercase().contains(&needle));
+                if inside && named {
+                    found.push(path.clone());
+                }
+            }
+        }
+        let entries = found
             .into_iter()
-            .filter(|p| roots.iter().any(|r| p.starts_with(r) && p != r))
-            .filter(|p| {
-                p.file_name()
-                    .is_some_and(|n| n.to_string_lossy().to_lowercase().contains(&needle))
-            })
             .map(|path| Entry {
                 is_dir: self.is_dir(&path),
                 path,

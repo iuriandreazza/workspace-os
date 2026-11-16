@@ -207,7 +207,7 @@ The user chose option A in all three, and approved the screen above.
   resolves and the broker refuses it, saying so.
 - The S3 report's ten intents are the comparison set for this item, because
   the S4 set does not exist yet. S4 reuses them.
-- The log gains `resolution` and `choice` events.
+- The log gains `search` and `choice` events.
 
 ## Open questions
 

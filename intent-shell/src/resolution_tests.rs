@@ -634,3 +634,101 @@ fn a_multibyte_name_over_the_byte_limit_is_refused_at_parse() {
     let text = plan(&[step("s1", "fs.read", &args, "false")]);
     assert!(crate::plan::parse(&text).is_err());
 }
+
+#[test]
+fn a_place_is_refused_as_a_write_target_by_the_broker_itself() {
+    let host = FakeHost::default().place(Place::Downloads, "/h/Dl");
+    let write = crate::action::Action::Write {
+        path: PathBuf::from("/h/Dl"),
+        content: String::new(),
+        mode: crate::action::WriteMode::Overwrite,
+    };
+    let verdict = crate::broker::judge(&write, true, &Authority::full(user(true)), &host);
+    assert!(
+        matches!(verdict, Verdict::Refused(Refusal::PlaceRoot(_))),
+        "{verdict:?}"
+    );
+}
+
+#[test]
+fn a_folder_reference_does_not_match_a_file_and_a_file_reference_does_not_match_a_folder() {
+    let host = FakeHost::with_files(&[("/work/thing", 1)]).dir("/work/thing-dir");
+    assert!(
+        matches!(located(&host, "thing", Kind::Folder), Ok(p) if p == [PathBuf::from("/work/thing-dir")])
+    );
+    assert!(
+        matches!(located(&host, "thing", Kind::File), Ok(p) if p == [PathBuf::from("/work/thing")])
+    );
+}
+
+#[test]
+fn naming_a_place_does_not_find_it() {
+    let host = FakeHost::default()
+        .place(Place::Home, "/h")
+        .place(Place::Downloads, "/h/Downloads")
+        .dir("/h/Downloads");
+    let step_id = crate::plan::StepId::parse("s1").unwrap();
+    let direct = Direct::Named {
+        name: "Downloads".into(),
+        within: Place::Home,
+        kind: Kind::Any,
+    };
+    assert!(matches!(
+        locate(&host, &Choices::default(), &step_id, Slot::Primary, &direct),
+        Err(ResolveError::NotFound(_))
+    ));
+}
+
+#[test]
+fn the_search_note_survives_a_choice_and_reaches_the_screen() {
+    let host = FakeHost::with_files(&[("/work/report-1", 1), ("/work/report-2", 2)])
+        .with_note("1 folders could not be searched");
+    let (result, _) = run_picking(&host, &[Some(0)]);
+    let review = reviewed(&result.outcome);
+    assert!(
+        review.steps[0]
+            .notes
+            .iter()
+            .any(|n| n.contains("could not be searched"))
+    );
+    assert!(crate::screen::plan_screen(review, crate::screen::View::Friendly).contains("Notes"));
+}
+
+#[test]
+fn overlapping_roots_do_not_offer_a_candidate_twice() {
+    let mut host = FakeHost::with_files(&[("/work/report", 1)]);
+    host.places.insert(
+        Place::Everywhere,
+        vec![PathBuf::from("/work"), PathBuf::from("/work")],
+    );
+    let step_id = crate::plan::StepId::parse("s1").unwrap();
+    let direct = Direct::Named {
+        name: "report".into(),
+        within: Place::Everywhere,
+        kind: Kind::File,
+    };
+    let found = locate(&host, &Choices::default(), &step_id, Slot::Primary, &direct);
+    assert!(found.is_ok(), "{found:?}");
+}
+
+#[test]
+fn the_name_limit_counts_bytes() {
+    assert!(crate::reference::is_single_name(&"a".repeat(255)));
+    assert!(!crate::reference::is_single_name(&"ã".repeat(128)));
+}
+
+#[test]
+fn moving_a_file_into_the_folder_it_is_in_is_refused_with_an_honest_reason() {
+    let host = files();
+    let args = r#"{"from":{"name":"a","in":"downloads","kind":"file"},"to":{"place":"downloads"}}"#;
+    let result = run(
+        &[&plan(&[step("s1", "fs.move", args, "false")])],
+        &host,
+        false,
+    );
+    let why = match &reviewed(&result.outcome).steps[0].items[0].verdict {
+        Verdict::Refused(why) => why.to_string(),
+        other => panic!("{other:?}"),
+    };
+    assert!(why.contains("onto or into itself"), "{why}");
+}

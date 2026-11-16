@@ -70,11 +70,6 @@ impl Labels {
             .cloned()
             .unwrap_or_else(|| format!("{} (elsewhere)", quoted_name(path)))
     }
-
-    /// Label and real location together, for the details view and root panels.
-    pub fn with_location(&self, path: &Path) -> String {
-        format!("{}  {}", self.of(path), quoted_path(path))
-    }
 }
 
 fn roots(host: &dyn Host) -> Vec<Root> {
@@ -215,16 +210,5 @@ mod tests {
         let host = host();
         let labels = Labels::build(&host, [a.as_path(), b.as_path()]);
         assert_ne!(labels.of(&a), labels.of(&b));
-    }
-
-    #[test]
-    fn the_details_view_adds_the_real_location() {
-        let host = host();
-        let path = Path::new("/home/ana/Downloads/big.iso");
-        let labels = Labels::build(&host, [path]);
-        assert_eq!(
-            labels.with_location(path),
-            r#""big.iso" (Downloads)  "/home/ana/Downloads/big.iso""#
-        );
     }
 }

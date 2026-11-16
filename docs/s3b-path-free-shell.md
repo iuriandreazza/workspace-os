@@ -71,7 +71,7 @@ request ─► model (output constrained by the schema, version 2)
 
 ## Tests and the gate
 
-`./scripts/check.sh` runs 151 tests for `intent-shell`, none needing the model,
+`./scripts/check.sh` runs 157 tests for `intent-shell`, none needing the model,
 including ambiguity (the person picks, cancels, a pick outside the candidates),
 a name that matches nothing, more than 20 matches, a visible file the user
 may not read or delete, a reference that tries to reach what a direct path
@@ -79,7 +79,7 @@ would be refused, names with separators or `..`, a host that lies about
 matches, the search logged before it runs, and the screen.
 
 Mutation check, by hand: each change was applied, the whole suite run, the
-source restored. Every mutant was killed.
+source restored and its timestamp refreshed (a stale timestamp makes the next build reuse the mutant). Every mutant was killed. Two of them were also run through `./scripts/check.sh`: it stopped at "unit tests" with the failing tests.
 
 | Mutation | Failing tests |
 |---|---|
@@ -99,6 +99,16 @@ source restored. Every mutant was killed.
 | the root panel hides the exact action | 3 |
 | the plan screen shows real locations | 2 |
 | labels that collide are not separated | 1 |
+| a `folder` reference matches files | 1 |
+| a place is found by naming it | 1 |
+| the search note is dropped | 1 |
+| matches are not deduplicated | 1 |
+| the name limit counts characters, not bytes | 1 |
+| a place may be overwritten | 1 |
+| a place may be removed or moved | 2 |
+| a folder may be moved into itself | 2 |
+| a new item may take an existing name | 1 |
+| an unfinished search resolves silently | 1 |
 
 ## What the model did (for S4, not fixed here)
 
@@ -136,6 +146,9 @@ Every output was valid and none held a path.
 - Names that differ only by Unicode normalisation (NFC and NFD) or look-alike
   letters can look the same in a choice list; the details view has the real
   locations.
+- A name stored in a different Unicode normalisation than the model wrote it
+  (NFD against NFC, common for downloaded files on macOS) is not found: telling
+  them apart needs a normalisation table, which is a dependency this item did not add.
 - A move into a folder that already holds an item of that name is not checked.
 - The schema is compared with the examples by `validate.py` by hand, not in the
   gate (ADR 0011); the Rust parser is stricter than the schema for `2.0`.
