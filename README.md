@@ -34,7 +34,7 @@ cargo build                           # build the kernel
 cargo run                             # boot it in QEMU (exit with Ctrl-A then X)
 ./scripts/check.sh                    # format, lint, unit tests and boot smoke test
 ./scripts/build-disk-image.sh         # bootable UEFI disk image; see docs/booting-the-image.md
-./scripts/intent-shell.sh             # the intent shell prototype, on the host (needs llama-server)
+./scripts/intent-shell.sh             # the intent shell, on the host (needs llama-server); --plain for the line adapter
 ```
 
 ## Checks
@@ -79,6 +79,7 @@ passing.
 - [ADR 0009: A small model in the bootloader detects and decides how to load kernels](docs/adr/0009-boot-model-detects-kernels.md)
 - [ADR 0010: Own minimal device tree reader, with no allocation](docs/adr/0010-own-device-tree-reader.md)
 - [ADR 0013: Boot handoff structure between the bootloader and the kernel](docs/adr/0013-boot-handoff-structure.md)
+- [ADR 0017: MPL-2.0 dependencies in a GPL-2.0-only system](docs/adr/0017-mpl2-dependencies.md)
 
 ## Licence
 

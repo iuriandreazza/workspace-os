@@ -8,7 +8,14 @@ description = "Host prototype of the intent shell: natural language to a validat
 [lints]
 workspace = true
 
+[features]
+# The conversational interface (ADR 0015). The deterministic shell and the
+# recovery mode build without it.
+default = ["tui"]
+tui = ["dep:ratatui"]
+
 [dependencies]
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

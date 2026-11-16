@@ -36,7 +36,7 @@ listed), `later` (not designed yet).
 | Track | What | Can start |
 |---|---|---|
 | K | Kernel and bootloader | now, one item at a time |
-| B | Boot model | after K2c |
+| B | Boot model | research (B1-1) now, in parallel; the rest after K2c |
 | S | Intent shell with a local SLM | now, in parallel with K, on the host |
 | R | Research and articles | now, in parallel |
 | P | Policy plane (purpose-trained models) | after K7 |
@@ -87,8 +87,9 @@ them (ADR 0009). It builds on the bootloader items of track K.
 
 | Item | Session | Done when | Status |
 |---|---|---|---|
-| B1 | Research, then ADR: language model or purpose-trained classifier and its size; the inputs it reads and the typed decision it returns; how inference runs in the UEFI environment; licences | ADR accepted, with a measured estimate of inference time in UEFI | blocked: K2c |
-| B2 | Corpus and training, offline: disk layouts and kernel images from several systems, the training run, and an evaluation harness on the host | Accuracy on a held-out part of the corpus, recorded in `docs/` | blocked: B1 |
+| B1-1 | Research, documentation only: language model or purpose-trained classifier and its size; the inputs it can read from a disk and the typed decision it returns; how inference can run in the UEFI environment (memory, floating point, no operating system); licences of candidate models and runtimes (ADR 0005, ADR 0017). Touches no code, so it runs in parallel with track K | Every claim has a source that was actually read; what could not be verified is listed. Result: `docs/b1-boot-model-research.md` | next |
+| B1-2 | ADR from the research of B1-1, with inference time measured in the UEFI environment under QEMU | ADR accepted, with the measured estimate and the exact commands | blocked: B1-1, K2c |
+| B2 | Corpus and training, offline: disk layouts and kernel images from several systems, the training run, and an evaluation harness on the host | Accuracy on a held-out part of the corpus, recorded in `docs/` | blocked: B1-2 |
 | B3 | Inference in the bootloader: the model decides, decisions are stored with a fingerprint of the disk, the last successful decisions are the fallback, and the loader checks the format before jumping | With the model: Linux and our kernel are found on a disk with no hand-written entries. Without the model: our kernel still boots. A deliberately wrong decision ends in an error on the menu | blocked: B2, K2d |
 | B4 | Integrity of the model's weights at boot | Replaced weights are refused | blocked: B3 |
 
@@ -104,7 +105,7 @@ runtime before it has userspace, memory management and a filesystem.
 | S2 | Action plan format. ADR first: the structured actions the model may emit (including proposing a SOUL change, ADR 0006), the capability each one needs, which ones need root and so a per-action confirmation (ADR 0007), and how output is constrained to the format | ADR accepted; a schema file exists | done |
 | S3 | Shell prototype on the host: natural language to plan, deterministic capability broker that validates it against the user's permissions and the action's capability, never more than both allow (ADR 0007), dry-run and confirmation, a log of every model decision (ADR 0002) | A session can turn "list the largest files here" into a validated plan and run it. Report: `docs/s3-intent-shell-prototype.md` | done |
 | S3b | Terminal screen and path-free resources. ADR first, superseding the path-based parts of ADR 0011: the person never navigates the filesystem and does not see userspace or system space. The model names things by description or query, a deterministic resolver turns them into concrete resources before the broker, and the broker still checks real resources. The default view shows names; the real paths sit behind a details view that stays mandatory before any root confirmation (ADR 0007). Then the screen: header with user, model and log, a per-step table with the verdict and capability of each action, notes on incomplete results, a summary line, a separate panel for each root action | The same intents as S4 give the same validated actions with no path in the default view; a root confirmation still shows the exact action; the ADR is accepted. Report: `docs/s3b-path-free-shell.md` | done |
-| S3c | Conversational terminal interface with `ratatui`, in the style of a chat session: input line at the bottom, progress while the model generates, the plan as a growing block, confirmations and the choice of an ambiguous reference by selection, a scrollable history. ADR first: the library and its licence (ADR 0005), what stays text-only so the deterministic shell (S5) and the recovery mode (ADR 0007) work without it, and how the screens of ADR 0014 map onto it. Only the terminal adapter changes: `screen.rs`, the resolver and the broker stay as they are | The same plans, choices and root confirmations as S3b, driven through the new interface; the screen content is still tested as text; the ADR is accepted | blocked: S3b merged |
+| S3c | Conversational terminal interface with `ratatui`, in the style of a chat session: input line at the bottom, progress while the model generates, the plan as a growing block, confirmations and the choice of an ambiguous reference by selection, a scrollable history. ADR first: the library and its licence (ADR 0005), what stays text-only so the deterministic shell (S5) and the recovery mode (ADR 0007) work without it, and how the screens of ADR 0014 map onto it. Only the terminal adapter changes: `screen.rs`, the resolver and the broker stay as they are | The same plans, choices and root confirmations as S3b, driven through the new interface; the screen content is still tested as text; the ADR is accepted. Report: `docs/s3c-conversational-interface.md` | done |
 | S4 | Evaluation set: intents with expected plans. Measure Bonsai 8B, and compare with at least one alternative that has native tool calling | Accuracy table in `docs/`; decision to keep or change the model | next |
 | S5 | Deterministic fallback shell: the same actions typed as commands, with no model loaded | Every action in the format is reachable without the model | next |
 | S6 | Bridge into the OS: the shell runs on the host and talks to the kernel over a virtual serial channel | A plan produced on the host is executed by a user program in the OS | blocked: S5, K10 |
@@ -209,7 +210,8 @@ Source: [Jev (AI model)](https://en.wikipedia.org/wiki/Jev_(AI_model)).
 ## Open items outside the sessions
 
 - Legal review of the licence boundary for converted drivers and model
-  weights (ADR 0005).
+  weights (ADR 0005), and of the reading of MPL-2.0 that lets `ucs2` be linked
+  into the bootloader (ADR 0017).
 - Disk encryption is optional at installation (ADR 0007). It has no roadmap
   item yet: it needs a block device driver and the installer first.
 - Physical hardware: not a target yet; the system runs in QEMU and
