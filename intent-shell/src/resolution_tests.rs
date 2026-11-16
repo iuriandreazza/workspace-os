@@ -272,6 +272,10 @@ impl Host for Lying {
         self.0.place_roots(place)
     }
 
+    fn same(&self, a: &Path, b: &Path) -> bool {
+        self.0.same(a, b)
+    }
+
     fn exists(&self, path: &Path) -> bool {
         self.0.exists(path)
     }
@@ -740,4 +744,32 @@ fn a_model_error_with_a_newline_cannot_forge_a_report_line() {
     let shown = result.outcome.render();
     assert!(shown.starts_with("Could not make a plan"), "{shown}");
     assert!(!shown.lines().any(|l| l.starts_with("OK s1")), "{shown}");
+}
+
+#[test]
+fn a_place_under_another_spelling_is_still_a_place() {
+    // On a case-insensitive filesystem `downloads` and `Downloads` are one folder.
+    let host = FakeHost::default()
+        .place(Place::Home, "/h")
+        .place(Place::Downloads, "/h/Downloads")
+        .dir("/h/downloads")
+        .alias("/h/Downloads", "/h/downloads");
+    let args = r#"{"target":{"name":"downloads","in":"home","kind":"folder"}}"#;
+    let result = run(
+        &[&plan(&[step("s1", "fs.delete", args, "false")])],
+        &host,
+        true,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[0].blocked,
+        Some(Refusal::Unresolved(ResolveError::NotFound(_)))
+    ));
+    let direct = crate::action::Action::Delete {
+        path: PathBuf::from("/h/downloads"),
+    };
+    let verdict = crate::broker::judge(&direct, false, &Authority::full(user(true)), &host);
+    assert!(
+        matches!(verdict, Verdict::Refused(Refusal::PlaceRoot(_))),
+        "{verdict:?}"
+    );
 }

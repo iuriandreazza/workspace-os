@@ -61,6 +61,9 @@ pub trait Host {
     /// Where a place lives on this machine, if it has one. The core knows no
     /// directory layout: this is the adapter's mapping (ADR 0014).
     fn place_roots(&self, place: Place) -> Vec<PathBuf>;
+    /// Whether two locations are the same thing on this machine (the same
+    /// folder under a different case, or through a link), not only the same text.
+    fn same(&self, a: &Path, b: &Path) -> bool;
     /// Whether something already has this location (case-folded where the
     /// filesystem folds case).
     fn exists(&self, path: &Path) -> bool;

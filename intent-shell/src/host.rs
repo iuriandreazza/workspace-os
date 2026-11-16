@@ -49,7 +49,8 @@ fn parent_of(path: &Path) -> &Path {
 
 impl Host for UnixHost {
     fn place_roots(&self, place: Place) -> Vec<PathBuf> {
-        let Some(home) = &self.home else {
+        // A relative home would make the places depend on the working directory.
+        let Some(home) = self.home.as_ref().filter(|h| h.is_absolute()) else {
             return Vec::new();
         };
         let folder = match place {
@@ -66,6 +67,14 @@ impl Host for UnixHost {
                 .find(|p| p.is_dir()),
         };
         folder.into_iter().filter(|p| p.is_dir()).collect()
+    }
+
+    fn same(&self, a: &Path, b: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::metadata(a), fs::metadata(b)) {
+            (Ok(x), Ok(y)) => (x.dev(), x.ino()) == (y.dev(), y.ino()),
+            _ => a == b,
+        }
     }
 
     fn exists(&self, path: &Path) -> bool {
@@ -683,6 +692,28 @@ mod tests {
     fn the_host_itself_refuses_to_write_or_remove_the_filesystem_root() {
         assert!(!host().allows(Access::Write, Path::new("/")));
         assert!(!host().allows(Access::Delete, Path::new("/")));
+    }
+
+    #[test]
+    fn a_relative_or_empty_home_gives_no_places() {
+        for home in ["", "relative/home"] {
+            let host = UnixHost::new(Some(PathBuf::from(home)));
+            for place in Place::ALL {
+                assert!(host.place_roots(place).is_empty(), "{home:?} {place:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn two_names_for_one_folder_are_the_same_location() {
+        let dir = temp_dir("same");
+        fs::create_dir(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+        fs::create_dir(dir.join("other")).unwrap();
+        assert!(host().same(&dir.join("real"), &dir.join("alias")));
+        assert!(!host().same(&dir.join("real"), &dir.join("other")));
+        assert!(host().same(&dir.join("missing"), &dir.join("missing")));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

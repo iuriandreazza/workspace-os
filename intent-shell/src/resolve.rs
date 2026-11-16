@@ -123,14 +123,10 @@ pub fn locate(
                 .map_err(ResolveError::SearchFailed)?;
             // A place is a container the plan may read, never a thing it may
             // remove or overwrite, so naming it does not find it.
-            let places: Vec<PathBuf> = Place::ALL
-                .into_iter()
-                .flat_map(|place| host.place_roots(place))
-                .collect();
             let entries = search
                 .entries
                 .into_iter()
-                .filter(|e| !places.contains(&e.path))
+                .filter(|e| !is_place_root(host, &e.path))
                 .collect();
             let matches = best_matches(entries, name, *kind);
             // A search that did not finish must not look like one that did.
@@ -219,6 +215,14 @@ pub fn destination(
         Destination::Exact(path.clone())
     };
     Ok((destination, located.notes))
+}
+
+/// Whether `path` is the folder of some place, however its name is written.
+pub fn is_place_root(host: &dyn Host, path: &Path) -> bool {
+    Place::ALL
+        .into_iter()
+        .flat_map(|place| host.place_roots(place))
+        .any(|root| host.same(&root, path))
 }
 
 /// A target that is not a step reference.

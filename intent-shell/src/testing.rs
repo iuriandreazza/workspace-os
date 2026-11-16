@@ -29,6 +29,8 @@ pub struct FakeHost {
     pub searched: RefCell<Vec<String>>,
     /// What listing a folder returns, instead of the files below it.
     pub listings: HashMap<PathBuf, Vec<PathBuf>>,
+    /// Pairs of locations that are the same thing, as a folder under two cases.
+    pub aliases: Vec<(PathBuf, PathBuf)>,
 }
 
 impl Default for FakeHost {
@@ -53,6 +55,7 @@ impl Default for FakeHost {
             executed: RefCell::default(),
             searched: RefCell::default(),
             listings: HashMap::new(),
+            aliases: Vec::new(),
         }
     }
 }
@@ -93,6 +96,11 @@ impl FakeHost {
         self
     }
 
+    pub fn alias(mut self, a: &str, b: &str) -> Self {
+        self.aliases.push((PathBuf::from(a), PathBuf::from(b)));
+        self
+    }
+
     pub fn dir(mut self, path: &str) -> Self {
         self.dirs.push(PathBuf::from(path));
         self
@@ -107,6 +115,14 @@ impl FakeHost {
 impl Host for FakeHost {
     fn place_roots(&self, place: Place) -> Vec<PathBuf> {
         self.places.get(&place).cloned().unwrap_or_default()
+    }
+
+    fn same(&self, a: &Path, b: &Path) -> bool {
+        a == b
+            || self
+                .aliases
+                .iter()
+                .any(|(x, y)| (x == a && y == b) || (x == b && y == a))
     }
 
     fn exists(&self, path: &Path) -> bool {

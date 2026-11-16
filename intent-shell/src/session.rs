@@ -363,6 +363,10 @@ impl Host for LoggedReads<'_, '_, '_> {
         self.inner.place_roots(place)
     }
 
+    fn same(&self, a: &Path, b: &Path) -> bool {
+        self.inner.same(a, b)
+    }
+
     fn exists(&self, path: &Path) -> bool {
         self.inner.exists(path)
     }

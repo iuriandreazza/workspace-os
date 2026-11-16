@@ -13,8 +13,8 @@ use crate::action::{Access, Action, Capability, RootRule, quoted_path};
 use crate::label::Labels;
 use crate::plan::{Plan, Step, StepId};
 use crate::ports::{Host, Output, User};
-use crate::reference::{Destination, Place, Slot, Spec, Target};
-use crate::resolve::{Ambiguity, Choices, ResolveError, destination, locate};
+use crate::reference::{Destination, Slot, Spec, Target};
+use crate::resolve::{Ambiguity, Choices, ResolveError, destination, is_place_root, locate};
 
 /// Most paths one `from_step` reference may expand to.
 pub const MAX_EXPANDED_PATHS: usize = 100;
@@ -412,16 +412,12 @@ pub(crate) fn judge(
         return Verdict::Refused(Refusal::ProtectedPath(path.to_path_buf()));
     }
     // However a path was reached (a name, a listing), a place is never a target.
-    let roots: Vec<PathBuf> = Place::ALL
-        .into_iter()
-        .flat_map(|place| host.place_roots(place))
-        .collect();
     let removed_or_replaced = match action {
         Action::Delete { path } | Action::Write { path, .. } => Some(path),
         Action::Move { from, .. } => Some(from),
         _ => None,
     };
-    if let Some(path) = removed_or_replaced.filter(|p| roots.contains(p)) {
+    if let Some(path) = removed_or_replaced.filter(|p| is_place_root(host, p)) {
         return Verdict::Refused(Refusal::PlaceRoot(path.clone()));
     }
     if let Action::Move { from, to } = action
