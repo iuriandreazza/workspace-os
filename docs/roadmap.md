@@ -118,9 +118,9 @@ whole workspace.
 
 | Item | Session | Done when | Status |
 |---|---|---|---|
-| R1 | Prior-art survey with verified references: learned policies in kernels, LLM-as-OS proposals, reuse of Linux drivers on other kernels | An annotated list where every claim has a source that was actually read | next |
-| R2 | Article 1: booting a Rust microkernel, and what two rounds of adversarial review found in 60 lines of boot code | Draft reviewed by the user | blocked: R1 |
-| R3 | Article 2: models as a control plane over a deterministic core | Draft reviewed by the user | blocked: R1, S4 |
+| R1 | Prior-art survey with verified references: learned policies in kernels, LLM-as-OS proposals, reuse of Linux drivers on other kernels, models in boot. Result: `docs/prior-art.md` | An annotated list where every claim has a source that was actually read | done |
+| R2 | Article 1: booting a Rust microkernel, and what two rounds of adversarial review found in 60 lines of boot code | Draft reviewed by the user | next |
+| R3 | Article 2: models as a control plane over a deterministic core | Draft reviewed by the user | blocked: S4 |
 
 ## Track P: policy plane
 
