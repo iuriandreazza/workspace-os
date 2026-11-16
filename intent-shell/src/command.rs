@@ -495,13 +495,15 @@ fn parse_step(number: usize, words: &[Word]) -> Result<(&'static Command, Value)
         .iter()
         .find(|c| c.group == group.text && c.verb == verb.text)
         .ok_or_else(|| {
-            let hint = if group.text.contains('.') {
-                "; write `fs list`, not `fs.list`"
-            } else {
-                ""
-            };
+            if group.text.contains('.') {
+                return CommandError::new(format!(
+                    "unknown command {}; write the group and the action as two words, \
+                     for example `fs list`; try help",
+                    group.text
+                ));
+            }
             CommandError::new(format!(
-                "unknown command {} {}{hint}; try help",
+                "unknown command {} {}; try help",
                 group.text, verb.text
             ))
         })?;
@@ -594,7 +596,7 @@ fn build_arg(
             let digits = text.chars().all(|c| c.is_ascii_digit());
             let number: u32 = text.parse().ok().filter(|_| digits).ok_or_else(|| {
                 CommandError::new(format!(
-                    "{name}: --{} must be a whole number from 0 to 4294967295",
+                    "{name}: --{} must be a whole number (the format allows 1 to 100)",
                     flag_name(key)
                 ))
             })?;
@@ -808,7 +810,7 @@ fn help() -> String {
          --from-step sN means what step sN found; flags after `--` belong to the program.\n\
          Places: {places}.\n\
          Steps are s1, s2, ... by position; --after sN makes a step wait for sN.\n\
-         Quote with '...' or \"...\"; nothing is expanded. A line holds up to {MAX_STEPS} steps.\n",
+         Quote with '...' or \"...\"; nothing is expanded. A line holds up to {MAX_STEPS} steps; --count is 1 to 100.\n",
         places = place_words()
     ));
     out

@@ -151,8 +151,10 @@ The plan screen says `Typed commands:` followed by that list where a model plan 
 Everything else on the screen is the same function. The log records
 `command` (the typed line, the generated document, and whether it was accepted
 with the error) where a model plan records `model_output`, and then the same
-events: `plan_accepted`, `search`, `choice`, `review`, `plan_confirmation` or
-`plan_auto_approved`, `root_confirmation`, `execute`, `result`. A typed
+events as a model plan, whichever of them the plan reaches: `plan_accepted`,
+`search`, `choice`, `pre_run`, `review`, `plan_confirmation` or
+`plan_auto_approved`, `root_confirmation`, `use_pre_run` or `execute`,
+`step_not_run`, `result`. A typed
 command is never logged as a model decision (ADR 0002 rule 3 concerns the
 model, and the log is what retraining reads). The first write of a typed
 command is its own record, and the shell stops before anything when the log
