@@ -1,0 +1,2 @@
+{"kind":"plan","version":1,"summary":"Append a line to a root-owned file","steps":[
+ {"id":"s1","action":"fs.write","args":{"path":"/etc/motd","content":"Maintenance on Friday.\n","mode":"append"},"depends_on":[],"elevate":true}]}

@@ -1,0 +1,2 @@
+{"kind":"plan","version":1,"summary":"Largest files","steps":[
+ {"id":"s1","action":"fs.find_largest","args":{"path":"/var/log","count":100000},"depends_on":[],"elevate":false}]}

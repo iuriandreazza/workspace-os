@@ -1,0 +1,3 @@
+{"kind":"plan","version":1,"summary":"Move a report and write a note","steps":[
+ {"id":"s1","action":"fs.move","args":{"from":"report.txt","to":"archive/report.txt"},"depends_on":[],"elevate":false},
+ {"id":"s2","action":"fs.write","args":{"path":"notes.txt","content":"Report archived.","mode":"append"},"depends_on":[],"elevate":false}]}

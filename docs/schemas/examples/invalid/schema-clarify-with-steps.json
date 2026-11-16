@@ -1,0 +1,2 @@
+{"kind":"clarify","version":1,"question":"Which folder?","steps":[
+ {"id":"s1","action":"fs.delete","args":{"path":"."},"depends_on":[],"elevate":false}]}

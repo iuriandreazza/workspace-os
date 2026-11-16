@@ -1,0 +1,2 @@
+{"kind":"plan","version":2,"summary":"List a folder","steps":[
+ {"id":"s1","action":"fs.list","args":{"path":"."},"depends_on":[],"elevate":false}]}

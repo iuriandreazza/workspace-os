@@ -1,0 +1,2 @@
+{"kind":"plan","version":1,"summary":"Add ana to the administrators group","steps":[
+ {"id":"s1","action":"user.manage","args":{"operation":"add_to_group","user":"ana","group":"admin"},"depends_on":[]}]}

@@ -1,0 +1,2 @@
+{"kind":"plan","version":1,"summary":"Set the machine name","steps":[
+ {"id":"s1","action":"system.configure","args":{"key":"machine.name","value":"atlas"},"depends_on":[]}]}
