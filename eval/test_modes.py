@@ -130,5 +130,63 @@ class Calls(unittest.TestCase):
         self.assertEqual(document["steps"][0]["args"], {"target": {"place": "home"}})
 
 
+class Derived(unittest.TestCase):
+    TOOLS_DERIVED, BY_NAME_DERIVED = modes.build_tools(SCHEMA, derive_depends=True)
+
+    def test_the_tools_have_no_depends_on_and_the_prompt_does_not_ask_for_one(self):
+        self.assertNotIn("depends_on", json.dumps(self.TOOLS_DERIVED))
+        self.assertNotIn("depends_on", modes.tools_prompt(modes.shell_prompt(), derive_depends=True).split("\n", 1)[0])
+
+    def test_dependencies_come_from_the_references(self):
+        document, error = modes.document_from_calls(calls(
+            call("fs_find_largest", target={"place": "downloads"}, count=2, elevate=False),
+            call("fs_stat", target={"from_step": "s1"}, elevate=False),
+            call("fs_move", **{"from": {"from_step": "s1"}, "to": {"place": "documents"}, "elevate": False}),
+        ), self.BY_NAME_DERIVED, derive_depends=True)
+        self.assertIsNone(error)
+        self.assertEqual([s["depends_on"] for s in document["steps"]], [[], ["s1"], ["s1"]])
+
+
+class Names(unittest.TestCase):
+    def test_the_action_name_with_a_dot_is_the_same_tool(self):
+        document, error = modes.document_from_calls(calls(call("fs.list", target={"place": "home"}, depends_on=[], elevate=False)), BY_NAME)
+        self.assertIsNone(error)
+        self.assertEqual(document["steps"][0]["action"], "fs.list")
+
+    def test_clarify_with_another_argument_is_refused(self):
+        document, error = modes.document_from_calls(calls(call("clarify", question="?", extra=1)), BY_NAME)
+        self.assertIsNone(document)
+        self.assertIn("other than question", error)
+
+
+class Body(unittest.TestCase):
+    SETTINGS = {"temperature": 0, "max_tokens": 1024, "response_format": {"type": "json_schema"}, "tools": TOOLS}
+
+    def test_the_grammar_request_is_what_the_shell_sends(self):
+        body = modes.build_body("grammar", "SYSTEM", "list files", None, self.SETTINGS)
+        self.assertEqual(body, {
+            "temperature": 0, "max_tokens": 1024, "cache_prompt": True,
+            "messages": [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": "Request: list files"}],
+            "response_format": {"type": "json_schema"},
+        })
+
+    def test_a_retry_adds_the_refused_answer_and_the_reason_as_the_shell_does(self):
+        body = modes.build_body("grammar", "S", "x", {"previous": "{bad", "error": "not JSON"}, self.SETTINGS)
+        self.assertEqual(body["messages"][2], {"role": "assistant", "content": "{bad"})
+        self.assertEqual(body["messages"][3]["content"], "That document was refused: not JSON. Reply with a corrected document.")
+
+    def test_the_tools_request_lets_the_model_decide_and_allows_several_calls(self):
+        body = modes.build_body("tools", "S", "x", None, self.SETTINGS)
+        self.assertEqual((body["tool_choice"], body["parallel_tool_calls"]), ("auto", True))
+        self.assertNotIn("response_format", body)
+
+    def test_thinking_off_and_the_sampler_are_sent_only_when_asked(self):
+        plain = modes.build_body("grammar", "S", "x", None, self.SETTINGS)
+        self.assertNotIn("chat_template_kwargs", plain)
+        tuned = modes.build_body("grammar", "S", "x", None, {**self.SETTINGS, "no_thinking": True, "sampling": {"top_k": 20}})
+        self.assertEqual(tuned["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(tuned["top_k"], 20)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,7 +18,7 @@ fn intents() -> Vec<Value> {
 fn every_intent_has_text_and_something_to_accept() {
     let intents = intents();
     assert!(
-        intents.len() >= 60,
+        intents.len() >= 67,
         "the set is too small to tell models apart"
     );
     for intent in &intents {

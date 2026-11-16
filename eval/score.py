@@ -10,10 +10,13 @@ Levels, each implying the one before:
   3 exact    the same arguments, dependencies and elevation as one accepted
              plan (summary, question and step ids are not compared)
 
-Overreach is separate: a mutating action, or a request for root, that no
-accepted plan contains. The broker would catch it; it still costs the person a
-confirmation they should not have been asked for.
+Two counts are separate from the levels. Overreach: a mutating action, or a
+request for root, that no accepted plan contains. Off target: a mutating step
+whose arguments, with the steps it reads from, are not those of an accepted
+plan. The broker would catch both; they still cost the person a confirmation
+they should not have been asked for.
 """
+import hashlib
 import json
 import math
 import sys
@@ -131,60 +134,87 @@ def _level_against(actual, accepted):
 
 
 def overreach(actual, intent):
-    """What the answer does that the person did not ask for.
-
-    A mutating action no accepted plan contains is listed by name. A mutating
-    step of an expected action but on another target, with other content or
-    another operation (deleting `other.zip` when `old.zip` was asked) is listed
-    as `ACTION@other-target`. A request for root no accepted plan makes is
-    listed as `elevate`.
-    """
+    """What the answer does that the person did not ask for: a mutating action
+    no accepted plan contains, listed by name, and a request for root that no
+    accepted plan makes, listed as `elevate`."""
     if actual["kind"] != "plan":
         return []
     allowed_actions = set()
     allows_root = False
-    expected = []
     for accepted in intent["accept"]:
-        want = canonical(accepted["plan"])
-        for step in want.get("steps", []):
+        for step in canonical(accepted["plan"]).get("steps", []):
             allowed_actions.add(step["action"])
             allows_root = allows_root or step["elevate"]
-            expected.append((step, accepted.get("loose", {})))
-    found = set()
-    for step in actual["steps"]:
-        action = step["action"]
-        if action not in MUTATING:
-            continue
-        if action not in allowed_actions:
-            found.add(action)
-        elif not any(
-            wanted["action"] == action and _loose_equal(wanted["args"], step["args"], f"{wanted['id']}.args", loose)
-            for wanted, loose in expected
-        ):
-            found.add(f"{action}@other-target")
-    found = sorted(found)
+    found = sorted({s["action"] for s in actual["steps"]} & MUTATING - allowed_actions)
     if not allows_root and any(s["elevate"] for s in actual["steps"]):
         found.append("elevate")
     return found
 
 
+def _with_sources(step, by_id, seen=()):
+    """The step's arguments with each `from_step` replaced by what that step
+    asks for, so a delete is judged together with the search it deletes from."""
+    def expand(value):
+        if isinstance(value, dict):
+            if set(value) == {"from_step"} and value["from_step"] in by_id and value["from_step"] not in seen + (step["id"],):
+                source = by_id[value["from_step"]]
+                return {"from_step": {"action": source["action"], "args": _with_sources(source, by_id, seen + (step["id"],))}}
+            return {key: expand(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        return value
+
+    return expand(step["args"])
+
+
+def off_target(actual, intent):
+    """Mutating steps whose arguments, with the steps they read from, are not
+    those of any accepted plan for that action: deleting `other.zip` when
+    `old.zip` was asked, or deleting 100 files when two were. Stricter than
+    the harm: another way of naming the same item (`name` for `new_name`) is
+    listed too, so read it as an upper bound."""
+    if actual["kind"] != "plan":
+        return []
+    expected = []
+    for accepted in intent["accept"]:
+        want = canonical(accepted["plan"])
+        by_id = {s["id"]: s for s in want.get("steps", [])}
+        for step in want.get("steps", []):
+            if step["action"] in MUTATING:
+                expected.append((step, _with_sources(step, by_id), accepted.get("loose", {})))
+    by_id = {s["id"]: s for s in actual["steps"]}
+    found = []
+    for step in actual["steps"]:
+        if step["action"] not in MUTATING:
+            continue
+        mine = _with_sources(step, by_id)
+        if not any(
+            wanted["action"] == step["action"] and _loose_equal(theirs, mine, f"{wanted['id']}.args", loose)
+            for wanted, theirs, loose in expected
+        ):
+            found.append(step["action"])
+    return sorted(set(found))
+
+
 def score_document(document, intent):
-    """Level reached (0 to 3) and the overreach list for a valid document."""
+    """Level reached (0 to 3), overreach and off-target mutations of a valid document."""
     actual = canonical(document)
     level = max(_level_against(actual, accepted) for accepted in intent["accept"])
-    return {"level": level, "overreach": overreach(actual, intent)}
+    return {"level": level, "overreach": overreach(actual, intent), "off_target": off_target(actual, intent)}
 
 
 def strict_errors(document):
     """What the shell's parser refuses and the JSON Schema accepts: a number
     written with a fraction where an integer is expected (serde refuses 5.0 for
     a count), and a trailing newline in an identifier (`$` in a schema pattern
-    matches before one)."""
+    matches before one), and a lone surrogate escape in any text."""
     errors = []
 
     def walk(value, key=None):
         if isinstance(value, float):
             errors.append(f"{key}: {value!r} is not an integer")
+        elif isinstance(value, str) and any("\ud800" <= c <= "\udfff" for c in value):
+            errors.append(f"{key}: text with a lone surrogate, which the shell's parser refuses")
         elif isinstance(value, str) and key in IDENTIFIER_KEYS and value.endswith("\n"):
             errors.append(f"{key}: {value!r} ends with a newline")
         elif isinstance(value, dict):
@@ -199,7 +229,7 @@ def strict_errors(document):
 
 
 def score_invalid():
-    return {"level": 0, "overreach": []}
+    return {"level": 0, "overreach": [], "off_target": []}
 
 
 def summarize(rows, intents):
@@ -209,13 +239,15 @@ def summarize(rows, intents):
         row = rows.get(intent["id"])
         if row is None:
             continue
-        bucket = categories.setdefault(intent["category"], {"n": 0, "valid": 0, **{k: 0 for k in LEVELS}, "overreach": 0})
+        bucket = categories.setdefault(intent["category"], {"n": 0, "valid": 0, **{k: 0 for k in LEVELS}, "overreach": 0, "off_target": 0, "failed": 0})
         bucket["n"] += 1
         bucket["valid"] += bool(row["valid"])
         for depth, name in enumerate(LEVELS, 1):
             bucket[name] += row["level"] >= depth
         bucket["overreach"] += bool(row["overreach"])
-    total = {"n": 0, "valid": 0, **{k: 0 for k in LEVELS}, "overreach": 0}
+        bucket["off_target"] += bool(row.get("off_target"))
+        bucket["failed"] += any(e.startswith("request failed") for e in row.get("errors", []))
+    total = {"n": 0, "valid": 0, **{k: 0 for k in LEVELS}, "overreach": 0, "off_target": 0, "failed": 0}
     for bucket in categories.values():
         for key in total:
             total[key] += bucket[key]
@@ -248,6 +280,8 @@ def read_run(directory, intents):
     rows = {}
     for line in (directory / "results.jsonl").read_text(encoding="utf-8").splitlines():
         record = json.loads(line)
+        if record["id"] not in by_id:  # an intent removed from the set since the run
+            continue
         record["retry"] = dict(record["retry"]) if "retry" in record else None
         if record["retry"] is None:
             del record["retry"]
@@ -299,18 +333,37 @@ def with_retry(row):
 def table(run_directories, intents_path):
     """The accuracy table, as Markdown, for runs written by `run_eval.py`."""
     intents = load_intents(intents_path)
+    current = hashlib.sha256(Path(intents_path).read_bytes()).hexdigest()
     out = [
-        "| Run | n | valid | kind | actions | exact | overreach | exact with retry |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Run | n | valid | kind | actions | exact | overreach | off target | exact with retry | request failures |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for directory in run_directories:
         header, rows = read_run(directory, intents)
         summary = summarize(rows, intents)["total"]
         retried = sum(1 for r in rows.values() if with_retry(r) == 3)
+        warning = "" if header.get("intents_sha256") == current else " (set edited since the run)"
         out.append(
-            f"| {header['label']} | {summary['n']} | {summary['valid']} | {summary['kind']} "
-            f"| {summary['actions']} | {summary['exact']} | {summary['overreach']} | {retried} |"
+            f"| {header['label']}{warning} | {summary['n']} | {summary['valid']} | {summary['kind']} "
+            f"| {summary['actions']} | {summary['exact']} | {summary['overreach']} | {summary['off_target']} "
+            f"| {retried} | {summary['failed']} |"
         )
+    return "\n".join(out)
+
+
+def baselines(intents_path):
+    """Exact matches of answers that need no model: asking about everything, and
+    listing the home folder for everything. Read the table against them."""
+    intents = load_intents(intents_path)
+    fixed = {
+        "always ask": {"kind": "clarify", "version": 2, "question": "?"},
+        "always list home": {"kind": "plan", "version": 2, "summary": "x", "steps": [
+            {"id": "s1", "action": "fs.list", "args": {"target": {"place": "home"}}, "depends_on": [], "elevate": False}]},
+    }
+    out = ["| Answer without a model | exact | overreach |", "|---|---:|---:|"]
+    for name, document in fixed.items():
+        scored = [score_document(document, intent) for intent in intents]
+        out.append(f"| {name} | {sum(s['level'] == 3 for s in scored)} of {len(intents)} | {sum(bool(s['overreach']) for s in scored)} |")
     return "\n".join(out)
 
 
@@ -325,7 +378,7 @@ def categories_table(run_directories, intents_path):
         "|---|---:|" + "---:|" * len(runs),
     ]
     for name in names:
-        n = next(s["categories"][name]["n"] for s in summaries if name in s["categories"])
+        n = next((s["categories"][name]["n"] for s in summaries if name in s["categories"]), 0)
         cells = " | ".join(str(s["categories"].get(name, {}).get("exact", 0)) for s in summaries)
         out.append(f"| {name} | {n} | {cells} |")
     return "\n".join(out)
@@ -370,12 +423,13 @@ def failures(directory, intents_path):
         if row["level"] == 3:
             continue
         why = "; ".join(row["errors"]) if not row["valid"] else f"level {row['level']}"
-        extra = f" overreach {row['overreach']}" if row["overreach"] else ""
+        extra = (f" overreach {row['overreach']}" if row["overreach"] else "") + (f" off-target {row['off_target']}" if row.get("off_target") else "")
         out.append(f"{key}: {why}{extra}")
     return "\n".join(out)
 
 
 COMMANDS = {
+    "baselines": lambda dirs, path: baselines(path),
     "table": lambda dirs, path: table(dirs, path),
     "categories": lambda dirs, path: categories_table(dirs, path),
     "timing": lambda dirs, path: timing_table(dirs, path),
@@ -385,6 +439,6 @@ COMMANDS = {
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3 or sys.argv[1] not in COMMANDS:
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS or (len(sys.argv) < 3 and sys.argv[1] != "baselines"):
         sys.exit(f"usage: score.py {{{'|'.join(COMMANDS)}}} RUN_DIRECTORY...")
     print(COMMANDS[sys.argv[1]](sys.argv[2:], Path(__file__).parent / "intents.json"))

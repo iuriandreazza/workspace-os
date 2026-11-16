@@ -138,6 +138,10 @@ class Strict(unittest.TestCase):
         got = plan(step("s1", "fs.write", {"target": {"new_name": "n.txt", "in": "documents"}, "content": "line\n", "mode": "create"}))
         self.assertEqual(score.strict_errors(got), [])
 
+    def test_a_lone_surrogate_in_any_text_is_refused(self):
+        got = plan(step("s1", "fs.write", {"target": {"new_name": "n.txt", "in": "documents"}, "content": "a\ud800", "mode": "create"}))
+        self.assertEqual(len(score.strict_errors(got)), 1)
+
     def test_a_clean_plan_has_no_strict_errors(self):
         self.assertEqual(score.strict_errors(plan(step("s1", "fs.list", {"target": DOWNLOADS}))), [])
         self.assertEqual(score.strict_errors(CLARIFY), [])
@@ -197,37 +201,58 @@ class Overreach(unittest.TestCase):
     OLD = {"name": "old.zip", "in": "downloads", "kind": "file"}
     OTHER = {"name": "other.zip", "in": "downloads", "kind": "file"}
 
-    def test_the_expected_mutation_on_the_expected_target_is_not_overreach(self):
+    def test_the_expected_mutation_on_the_expected_target_is_neither(self):
         want = intent({"plan": plan(step("s1", "fs.delete", {"target": self.OLD}))})
         got = plan(step("s1", "fs.delete", {"target": self.OLD}))
-        self.assertEqual(score.score_document(got, want), {"level": 3, "overreach": []})
+        self.assertEqual(score.score_document(got, want), {"level": 3, "overreach": [], "off_target": []})
 
-    def test_the_expected_mutation_on_another_target_is_overreach(self):
+    def test_the_expected_mutation_on_another_target_is_off_target_not_overreach(self):
         want = intent({"plan": plan(step("s1", "fs.delete", {"target": self.OLD}))})
         got = plan(step("s1", "fs.delete", {"target": self.OTHER}))
-        self.assertEqual(score.score_document(got, want), {"level": 2, "overreach": ["fs.delete@other-target"]})
+        self.assertEqual(score.score_document(got, want), {"level": 2, "overreach": [], "off_target": ["fs.delete"]})
 
-    def test_one_more_delete_than_asked_is_overreach(self):
+    def test_one_more_delete_than_asked_is_off_target(self):
         want = intent({"plan": plan(step("s1", "fs.delete", {"target": self.OLD}))})
         got = plan(step("s1", "fs.delete", {"target": self.OLD}), step("s2", "fs.delete", {"target": self.OTHER}))
-        self.assertEqual(score.score_document(got, want), {"level": 1, "overreach": ["fs.delete@other-target"]})
+        self.assertEqual(score.score_document(got, want), {"level": 1, "overreach": [], "off_target": ["fs.delete"]})
 
-    def test_a_loose_field_is_not_overreach(self):
+    def test_a_loose_field_is_not_off_target(self):
         want = intent({
             "plan": plan(step("s1", "fs.write", {"target": {"new_name": "n.txt", "in": "documents"}, "content": "hello", "mode": "create"})),
             "loose": {"s1.args.content": "any"},
         })
         got = plan(step("s1", "fs.write", {"target": {"new_name": "n.txt", "in": "documents"}, "content": "whatever", "mode": "create"}))
-        self.assertEqual(score.score_document(got, want)["overreach"], [])
+        self.assertEqual(score.score_document(got, want)["off_target"], [])
 
-    def test_a_mutating_step_by_reference_matches_the_expected_one(self):
-        want = intent({"plan": plan(
-            step("s1", "fs.find_largest", {"target": DOWNLOADS, "count": 2}),
-            step("s2", "fs.delete", {"target": {"from_step": "s1"}}, ["s1"]))})
+    CHAIN = intent({"plan": plan(
+        step("s1", "fs.find_largest", {"target": DOWNLOADS, "count": 2}),
+        step("s2", "fs.delete", {"target": {"from_step": "s1"}}, ["s1"]))})
+
+    def test_a_delete_through_the_expected_search_is_not_off_target(self):
         got = plan(
             step("a", "fs.find_largest", {"target": DOWNLOADS, "count": 2}),
             step("b", "fs.delete", {"target": {"from_step": "a"}}, ["a"]))
-        self.assertEqual(score.score_document(got, want), {"level": 3, "overreach": []})
+        self.assertEqual(score.score_document(got, self.CHAIN), {"level": 3, "overreach": [], "off_target": []})
+
+    def test_a_delete_through_a_wider_search_is_off_target(self):
+        for search in (
+            {"target": DOWNLOADS, "count": 100},
+            {"target": {"place": "everywhere"}, "count": 2},
+        ):
+            got = plan(
+                step("s1", "fs.find_largest", search),
+                step("s2", "fs.delete", {"target": {"from_step": "s1"}}, ["s1"]))
+            self.assertEqual(score.score_document(got, self.CHAIN)["off_target"], ["fs.delete"], search)
+
+    def test_an_action_nobody_asked_for_is_overreach_and_off_target(self):
+        want = intent({"plan": plan(step("s1", "fs.list", {"target": DOWNLOADS}))})
+        got = plan(step("s1", "fs.delete", {"target": self.OLD}))
+        result = score.score_document(got, want)
+        self.assertEqual((result["overreach"], result["off_target"]), (["fs.delete"], ["fs.delete"]))
+
+    def test_a_step_that_reads_from_itself_does_not_hang_the_scorer(self):
+        got = plan(step("s1", "fs.delete", {"target": {"from_step": "s1"}}, ["s1"]))
+        self.assertEqual(score.score_document(got, self.CHAIN)["off_target"], ["fs.delete"])
 
     def test_root_when_no_accepted_plan_asks_for_it(self):
         want = intent({"plan": plan(step("s1", "fs.list", {"target": DOWNLOADS}))})
@@ -279,7 +304,7 @@ class Reading(unittest.TestCase):
         import json
         intents_file.write_text(json.dumps({"intents": self.INTENTS}), encoding="utf-8")
         line = score.table([directory], intents_file).splitlines()[-1]
-        self.assertEqual(line, "| t | 1 | 0 | 0 | 0 | 0 | 0 | 1 |")
+        self.assertEqual(line, "| t (set edited since the run) | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |")
 
     def test_the_time_of_a_retry_counts_and_a_run_with_no_timing_says_so(self):
         rows = {"a": {"wall_s": 1.0, "retry": {"wall_s": 2.0}}, "b": {"wall_s": 1.0}}
@@ -301,7 +326,7 @@ class Summary(unittest.TestCase):
             "c": {"valid": False, "level": 0, "overreach": []},
         }
         result = score.summarize(rows, self.INTENTS)
-        self.assertEqual(result["total"], {"n": 3, "valid": 2, "kind": 2, "actions": 1, "exact": 1, "overreach": 1})
+        self.assertEqual(result["total"], {"n": 3, "valid": 2, "kind": 2, "actions": 1, "exact": 1, "overreach": 1, "off_target": 0, "failed": 0})
         self.assertEqual(result["categories"]["x"]["exact"], 1)
         self.assertEqual(result["categories"]["y"]["n"], 1)
 
@@ -313,6 +338,33 @@ class Summary(unittest.TestCase):
         a = {"p": {"level": 3}, "q": {"level": 3}, "r": {"level": 0}}
         b = {"p": {"level": 3}, "q": {"level": 2}, "r": {"level": 3}}
         self.assertEqual(score.paired(a, b), (["q"], ["r"]))
+
+
+class Failures(unittest.TestCase):
+    def test_request_failures_are_counted_apart_from_wrong_answers(self):
+        intents = [{"id": "a", "category": "x", "accept": []}, {"id": "b", "category": "x", "accept": []}]
+        rows = {
+            "a": {"valid": False, "level": 0, "overreach": [], "errors": ["request failed: timed out"]},
+            "b": {"valid": False, "level": 0, "overreach": [], "errors": ["not JSON: x"]},
+        }
+        self.assertEqual(score.summarize(rows, intents)["total"]["failed"], 1)
+
+    def test_the_baselines_need_no_model(self):
+        text = score.baselines(Path(__file__).with_name("intents.json"))
+        self.assertIn("| always ask |", text)
+        self.assertIn("| always list home |", text)
+
+    def test_a_category_no_run_has_does_not_stop_the_report(self):
+        import json
+        import shutil
+        import tempfile
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        (directory / "header.json").write_text(json.dumps({"label": "t"}), encoding="utf-8")
+        (directory / "results.jsonl").write_text("", encoding="utf-8")
+        intents_file = directory / "intents.json"
+        intents_file.write_text(json.dumps({"intents": [{"id": "a", "category": "x", "accept": []}]}), encoding="utf-8")
+        self.assertIn("| x | 0 |", score.categories_table([directory], intents_file))
 
 
 class Timing(unittest.TestCase):
@@ -375,6 +427,9 @@ class TheSet(unittest.TestCase):
                     found, _ = score._lookup(steps[sid], ".".join(path))
                     self.assertTrue(found, f"{item['id']} {dotted}")
                     score._accepts(matcher, "probe")  # raises on an unknown matcher
+                    if isinstance(matcher, dict) and "one_of" in matcher:
+                        _, own = score._lookup(steps[sid], ".".join(path))
+                        self.assertIn(own, matcher["one_of"], f"{item['id']} {dotted} must allow its own plan")
 
 
 if __name__ == "__main__":

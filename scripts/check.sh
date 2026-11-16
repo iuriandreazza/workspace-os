@@ -30,6 +30,7 @@ echo "==> evaluation set"
 # (intent-shell/tests/eval_set.rs), run with the unit tests below.
 python3 -I eval/test_score.py
 python3 -I eval/test_modes.py
+bash -n eval/run-matrix.sh
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings

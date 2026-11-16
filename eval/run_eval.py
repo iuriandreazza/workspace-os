@@ -66,7 +66,12 @@ def check_document(document, validator):
     """Schema errors, else the semantic rules, else what only the shell's parser
     refuses (see `score.strict_errors`)."""
     problems = [error.message[:300] for error in validator.iter_errors(document)][:3]
-    return problems or rules.semantic_errors(document) or score.strict_errors(document)
+    if problems:
+        return problems
+    try:
+        return rules.semantic_errors(document) or score.strict_errors(document)
+    except UnicodeError as error:  # a lone surrogate in a name, which the shell's parser refuses too
+        return [f"text that cannot be encoded: {error}"]
 
 
 def post(url, body, timeout):
@@ -100,28 +105,18 @@ class Runner:
         if args.mode == "grammar":
             self.response_format = {"type": "json_schema", "json_schema": {"name": "action_plan", "schema": json.loads(schema_text)}}
         else:
-            self.tools, self.by_name = modes.build_tools(schema)
-            self.system = modes.tools_prompt(self.system)
+            self.tools, self.by_name = modes.build_tools(schema, args.derive_depends)
+            self.system = modes.tools_prompt(self.system, args.derive_depends)
 
     def body(self, text, retry=None):
-        messages = [
-            {"role": "system", "content": self.system},
-            {"role": "user", "content": f"Request: {text}"},
-        ]
-        if retry:
-            messages.append({"role": "assistant", "content": retry["previous"]})
-            messages.append({"role": "user", "content": f"That document was refused: {retry['error']}. Reply with a corrected document."})
-        body = {"temperature": self.args.temperature, "max_tokens": self.args.max_tokens, "cache_prompt": True, "messages": messages}
-        if self.args.mode == "grammar":
-            body["response_format"] = self.response_format
-        else:
-            body["tools"] = self.tools
-            body["tool_choice"] = "auto"
-            body["parallel_tool_calls"] = True
-        body.update(json.loads(self.args.sampling))
-        if self.args.no_thinking:
-            body["chat_template_kwargs"] = {"enable_thinking": False}
-        return body
+        return modes.build_body(self.args.mode, self.system, text, retry, {
+            "temperature": self.args.temperature,
+            "max_tokens": self.args.max_tokens,
+            "sampling": json.loads(self.args.sampling),
+            "no_thinking": self.args.no_thinking,
+            "response_format": getattr(self, "response_format", None),
+            "tools": getattr(self, "tools", None),
+        })
 
     def attempt(self, intent, retry=None):
         try:
@@ -153,7 +148,7 @@ class Runner:
 
     def read(self, message):
         if self.args.mode == "tools":
-            return modes.document_from_calls(message, self.by_name)
+            return modes.document_from_calls(message, self.by_name, self.args.derive_depends)
         text = message.get("content") or ""
         try:
             document = json.loads(text)
@@ -181,6 +176,7 @@ def main():
     parser.add_argument("--server-flags", default="", help="the llama-server command line, recorded as given")
     parser.add_argument("--out", help="directory for the run (default eval/results/LABEL)")
     parser.add_argument("--no-thinking", action="store_true", help='send chat_template_kwargs {"enable_thinking": false}')
+    parser.add_argument("--derive-depends", action="store_true", help="tools mode: the harness works out depends_on from the from_step references, and the model is not asked for it")
     parser.add_argument("--retry", action="store_true", help="one retry after an invalid answer, as the shell does (grammar mode)")
     parser.add_argument("--prompt-extra", help="text appended to the system prompt (S8: a personality preset)")
     parser.add_argument("--temperature", type=float, default=0)
@@ -209,6 +205,8 @@ def main():
 
     runner = Runner(args, schema_text, schema)
     out = Path(args.out) if args.out else HERE / "results" / args.label
+    if (out / "results.jsonl").exists():
+        sys.exit(f"run_eval: {out} already holds a run; remove it or choose another --label")
     out.mkdir(parents=True, exist_ok=True)
     props = get(args.url, "/props") or {}
     header = {
@@ -235,6 +233,7 @@ def main():
         "max_tokens": args.max_tokens,
         "no_thinking": args.no_thinking,
         "retry": args.retry and args.mode == "grammar",
+        "derive_depends": args.derive_depends and args.mode == "tools",
         "prompt_extra_sha256": sha256(Path(args.prompt_extra).read_bytes()) if args.prompt_extra else None,
         "intents": len(intents),
     }
@@ -247,6 +246,9 @@ def main():
             mark = ("-", "k", "a", "E")[record["level"]] if record["valid"] else "x"
             print(f"{number:3}/{len(intents)} {mark} {record['id']} ({record['wall_s'] if 'wall_s' in record else '?'} s)", flush=True)
     print(score.table([out], HERE / "intents.json"))
+    failed = sum(1 for r in score.read_run(out, intents)[1].values() if any(e.startswith("request failed") for e in r["errors"]))
+    if failed:
+        sys.exit(f"run_eval: {failed} requests failed; the figures of this run measure the server, not the model")
 
 
 if __name__ == "__main__":

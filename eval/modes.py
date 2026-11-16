@@ -32,13 +32,22 @@ DESCRIPTIONS = {
     "soul.propose_change": "Propose a change to the assistant's SOUL (its personality text). Only records a proposal.",
 }
 # The shell prompt shows `"depends_on":[]` in its JSON example; the last sentence
-# gives the tools mode the same information.
+# of the first preamble gives the tools mode the same information.
 TOOLS_PREAMBLE = (
     "You act on the user's request by calling the provided tools, and call no other tool. "
     "To ask a question instead of acting, call `clarify`. "
+    "The actions named below with a dot are the tools named with an underscore (fs.list is the tool fs_list). "
     "Your calls are numbered s1, s2, ... in the order you make them: list in depends_on the numbers of the calls a call needs, "
     "and use {\"from_step\":\"s1\"} to refer to what an earlier call found. "
     "A call that needs no earlier call has depends_on [] (an empty list)."
+)
+# The variant in which the harness works out the dependencies from the references,
+# so the model does not have to follow the numbering convention.
+DERIVED_PREAMBLE = (
+    "You act on the user's request by calling the provided tools, and call no other tool. "
+    "To ask a question instead of acting, call `clarify`. "
+    "The actions named below with a dot are the tools named with an underscore (fs.list is the tool fs_list). "
+    "Your calls are numbered s1, s2, ... in the order you make them: use {\"from_step\":\"s1\"} to refer to what an earlier call found."
 )
 
 
@@ -51,13 +60,14 @@ def shell_prompt(source=None):
     return found.group(1)
 
 
-def tools_prompt(prompt):
+def tools_prompt(prompt, derive_depends=False):
     """The shell prompt without its JSON-document instructions, for native tools."""
     lines = prompt.splitlines()
     start = next((i for i, line in enumerate(lines) if line.startswith("Things are never named")), None)
     if start is None:
         raise ValueError("cannot find the reference rules in the shell prompt")
-    return TOOLS_PREAMBLE + "\n" + "\n".join(lines[start:])
+    preamble = DERIVED_PREAMBLE if derive_depends else TOOLS_PREAMBLE
+    return preamble + "\n" + "\n".join(lines[start:])
 
 
 def inline(node, defs):
@@ -71,7 +81,7 @@ def inline(node, defs):
     return node
 
 
-def build_tools(schema):
+def build_tools(schema, derive_depends=False):
     """One function per action from the schema's own step definitions.
 
     Returns the OpenAI-style `tools` array and, by function name, the action
@@ -85,8 +95,9 @@ def build_tools(schema):
         args = inline(step["properties"]["args"], defs)
         properties = dict(args["properties"])
         required = list(args["required"])
-        properties["depends_on"] = inline(step["properties"]["depends_on"], defs)
-        required.append("depends_on")
+        if not derive_depends:
+            properties["depends_on"] = inline(step["properties"]["depends_on"], defs)
+            required.append("depends_on")
         has_elevate = "elevate" in step["properties"]
         if has_elevate:
             properties["elevate"] = {"type": "boolean"}
@@ -106,19 +117,31 @@ def build_tools(schema):
     return tools, by_name
 
 
-def document_from_calls(message, by_name):
+def references(value):
+    """Every step a value refers to with `from_step`."""
+    if isinstance(value, dict):
+        found = [value["from_step"]] if set(value) == {"from_step"} and isinstance(value["from_step"], str) else []
+        return found + [r for item in value.values() for r in references(item)]
+    if isinstance(value, list):
+        return [r for item in value for r in references(item)]
+    return []
+
+
+def document_from_calls(message, by_name, derive_depends=False):
     """A plan document from native tool calls, or an error text.
 
     Nothing is repaired: a missing `depends_on` or `elevate`, or an argument
     the schema does not have, stays in the document for the schema to refuse,
-    as it would for a plan written as JSON.
+    as it would for a plan written as JSON. With `derive_depends` the harness
+    sets `depends_on` to the steps the arguments refer to. A tool called by its
+    action name (`fs.list` for `fs_list`) is the same tool.
     """
     calls = message.get("tool_calls") or []
     if not calls:
         return None, "no tool call (plain text reply)"
     parsed = []
     for call in calls:
-        name = call["function"]["name"]
+        name = call["function"]["name"].replace(".", "_")
         arguments = call["function"]["arguments"]
         try:
             arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
@@ -130,12 +153,14 @@ def document_from_calls(message, by_name):
     if any(name == "clarify" for name, _ in parsed):
         if len(parsed) != 1:
             return None, "clarify mixed with other calls"
+        if set(parsed[0][1]) - {"question"}:
+            return None, "clarify has arguments other than question"
         return {"kind": "clarify", "version": 2, "question": parsed[0][1].get("question", "")}, None
     steps = []
     for index, (name, arguments) in enumerate(parsed, 1):
         if name not in by_name:
             return None, f"unknown tool {name!r}"
-        if "depends_on" not in arguments:
+        if not derive_depends and "depends_on" not in arguments:
             return None, f"{name} has no depends_on"
         info = by_name[name]
         if info["has_elevate"] and "elevate" not in arguments:
@@ -144,9 +169,41 @@ def document_from_calls(message, by_name):
             "id": f"s{index}",
             "action": info["action"],
             "args": {key: value for key, value in arguments.items() if key not in ("depends_on", "elevate")},
-            "depends_on": arguments["depends_on"],
+            "depends_on": sorted(set(references(arguments))) if derive_depends else arguments["depends_on"],
         }
         if "elevate" in arguments:
             step["elevate"] = arguments["elevate"]
         steps.append(step)
     return {"kind": "plan", "version": 2, "summary": "(from tool calls)", "steps": steps}, None
+
+
+def build_body(mode, system, text, retry, settings):
+    """The body of one chat request, as `intent-shell/src/model.rs` builds it
+    (system prompt, then `Request: ...`, then the refused answer and why).
+
+    `settings` carries temperature, max_tokens, sampling (extra fields),
+    no_thinking, and either `response_format` (grammar) or `tools` (tools).
+    """
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Request: {text}"},
+    ]
+    if retry:
+        messages.append({"role": "assistant", "content": retry["previous"]})
+        messages.append({"role": "user", "content": f"That document was refused: {retry['error']}. Reply with a corrected document."})
+    body = {
+        "temperature": settings["temperature"],
+        "max_tokens": settings["max_tokens"],
+        "cache_prompt": True,
+        "messages": messages,
+    }
+    if mode == "grammar":
+        body["response_format"] = settings["response_format"]
+    else:
+        body["tools"] = settings["tools"]
+        body["tool_choice"] = "auto"
+        body["parallel_tool_calls"] = True
+    body.update(settings.get("sampling", {}))
+    if settings.get("no_thinking"):
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+    return body

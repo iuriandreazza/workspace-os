@@ -18,6 +18,7 @@ cd "$(dirname "$0")/.."
 : "${LLAMA_SERVER:?set LLAMA_SERVER to a llama-server built from llama.cpp b11555 or newer}"
 port=8199
 server_pid=""
+server_log="$(mktemp)"
 
 stop_server() {
     if [ -n "$server_pid" ]; then
@@ -26,17 +27,29 @@ stop_server() {
         server_pid=""
     fi
 }
-trap stop_server EXIT
+trap 'stop_server; rm -f "$server_log"' EXIT
+
+# Something already answering on the port would be measured in place of the model asked for.
+if curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+    echo "run-matrix: something already answers on port $port; stop it first" >&2
+    exit 1
+fi
 
 # serve MODEL_FILE CONTEXT: starts llama-server on $port and waits until it answers.
 serve() {
     stop_server
     server_flags="llama-server -m $(basename "$1") -c $2 --parallel 1 --port $port --jinja -ngl 99"
-    "$LLAMA_SERVER" -m "$1" -c "$2" --parallel 1 --port "$port" --jinja -ngl 99 >/dev/null 2>&1 &
+    "$LLAMA_SERVER" -m "$1" -c "$2" --parallel 1 --port "$port" --jinja -ngl 99 >"$server_log" 2>&1 &
     server_pid=$!
+    local waited=0
     until curl -sf "http://127.0.0.1:$port/health" >/dev/null; do
-        kill -0 "$server_pid" 2>/dev/null || { echo "run-matrix: the server did not start for $1" >&2; exit 1; }
+        if ! kill -0 "$server_pid" 2>/dev/null || [ "$waited" -ge 300 ]; then
+            echo "run-matrix: the server did not start for $1; its log:" >&2
+            tail -20 "$server_log" >&2
+            exit 1
+        fi
         sleep 2
+        waited=$((waited + 2))
     done
     model_file="$1"
 }
@@ -49,10 +62,12 @@ measure() {
         --mode "$mode" --label "$label" --model-file "$model_file" --server-binary "$LLAMA_SERVER" --server-flags "$server_flags" "$@" | tail -1
 }
 
-# Both modes of a model, thinking off, one retry in the constrained mode.
+# Both modes of a model, thinking off, one retry in the constrained mode; and the
+# tools mode again with the harness deriving depends_on from the references.
 both_modes() {
     measure "$1-grammar" grammar --no-thinking --retry
     measure "$1-tools" tools --no-thinking
+    measure "$1-tools-derived" tools --no-thinking --derive-depends
 }
 
 selected() {
@@ -67,6 +82,12 @@ selected() {
 
 SECTIONS=("$@")
 [ "${#SECTIONS[@]}" -gt 0 ] || SECTIONS=(bonsai8b bonsai2 bonsai27b gemma sampling)
+for section in "${SECTIONS[@]}"; do
+    case "$section" in
+        bonsai8b | bonsai2 | bonsai27b | gemma | sampling | thinking) ;;
+        *) echo "run-matrix: unknown section '$section'" >&2; exit 1 ;;
+    esac
+done
 
 if selected bonsai8b && [ -n "${BONSAI_8B:-}" ]; then
     serve "$BONSAI_8B" 8192
