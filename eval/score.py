@@ -355,12 +355,20 @@ def table(run_directories, intents_path):
         summary = summarize(rows, intents)["total"]
         retried = sum(1 for r in rows.values() if with_retry(r) == 3)
         warning = "" if header.get("intents_sha256") == current else " (set edited since the run)"
+        if summary["n"] != header["intents"]:
+            warning += f" (INCOMPLETE: {summary['n']} of {header['intents']})"
         out.append(
             f"| {header['label']}{warning} | {summary['n']} | {summary['valid']} | {summary['kind']} "
             f"| {summary['actions']} | {summary['exact']} | {summary['overreach']} | {summary['off_target']} "
             f"| {retried} | {summary['failed']} |"
         )
     return "\n".join(out)
+
+
+def complete(directory, intents_path):
+    """True when the run answered every intent it was meant to and no request failed."""
+    header, rows = read_run(directory, load_intents(intents_path))
+    return len(rows) == header["intents"] and summarize(rows, load_intents(intents_path))["total"]["failed"] == 0
 
 
 def baselines(intents_path):
@@ -447,6 +455,7 @@ COMMANDS = {
     "timing": lambda dirs, path: timing_table(dirs, path),
     "compare": lambda dirs, path: comparison(*dirs, path),
     "failures": lambda dirs, path: failures(dirs[0], path),
+    "complete": lambda dirs, path: sys.exit(0 if complete(dirs[0], path) else 1),
 }
 
 

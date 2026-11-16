@@ -303,8 +303,14 @@ class Reading(unittest.TestCase):
         intents_file = Path(directory) / "intents.json"
         import json
         intents_file.write_text(json.dumps({"intents": self.INTENTS}), encoding="utf-8")
+        import hashlib
+        sha = hashlib.sha256(intents_file.read_bytes()).hexdigest()
+        header = {"label": "t", "intents": 1, "intents_sha256": sha}
+        (directory / "header.json").write_text(json.dumps(header), encoding="utf-8")
         line = score.table([directory], intents_file).splitlines()[-1]
-        self.assertEqual(line, "| t (set edited since the run) | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |")
+        self.assertEqual(line, "| t | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |")
+        (directory / "header.json").write_text(json.dumps({**header, "intents_sha256": "other"}), encoding="utf-8")
+        self.assertIn("(set edited since the run)", score.table([directory], intents_file))
 
     def test_the_time_of_a_retry_counts_and_a_run_with_no_timing_says_so(self):
         rows = {"a": {"wall_s": 1.0, "retry": {"wall_s": 2.0}}, "b": {"wall_s": 1.0}}
@@ -361,8 +367,10 @@ class Failures(unittest.TestCase):
         rows = {"a": {"valid": False, "level": 0, "overreach": [], "off_target": [], "errors": ["x"], "retry": harmful}}
         total = score.summarize(rows, intents)["total"]
         self.assertEqual((total["overreach"], total["off_target"]), (1, 1))
-        first_valid = {**rows["a"], "valid": True, "retry": {**harmful, "overreach": []}}
+        first_valid = {**rows["a"], "valid": True, "overreach": [], "off_target": [], "retry": harmful}
         self.assertEqual(score.summarize({"a": first_valid}, intents)["total"]["overreach"], 0)
+        first_harmful = {**rows["a"], "valid": True, "overreach": ["fs.delete"], "retry": {**harmful, "overreach": []}}
+        self.assertEqual(score.summarize({"a": first_harmful}, intents)["total"]["overreach"], 1)
 
     def test_the_baselines_need_no_model(self):
         text = score.baselines(Path(__file__).with_name("intents.json"))

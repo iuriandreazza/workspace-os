@@ -124,7 +124,10 @@ class Runner:
             reply, wall = post(self.args.url, self.body(intent["text"], retry), self.args.timeout)
         except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, RecursionError) as error:
             return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: {error}"], "output": None}
-        message = reply["choices"][0]["message"]
+        try:
+            message = reply["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as error:
+            return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: reply without a message ({error!r})"], "output": None}
         timings = reply.get("timings", {})
         record = {
             "output": message.get("content") if self.args.mode == "grammar" else {"content": message.get("content"), "tool_calls": message.get("tool_calls")},
@@ -136,7 +139,10 @@ class Runner:
             "predicted_n": timings.get("predicted_n"),
             "predicted_per_second": round(timings["predicted_per_second"], 1) if timings.get("predicted_per_second") else None,
         }
-        document, error = self.read(message)
+        try:
+            document, error = self.read(message)
+        except (KeyError, TypeError, AttributeError, ValueError, RecursionError) as failure:
+            document, error = None, f"unreadable reply: {failure!r}"
         problems = [error] if error else check_document(document, self.validator)
         record["errors"] = problems
         record["valid"] = not problems

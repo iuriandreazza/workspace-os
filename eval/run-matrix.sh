@@ -54,7 +54,7 @@ serve() {
     done
     model_file="$1"
     # The server that answers must be the one just started, not another on the same port.
-    if ! curl -sf "http://127.0.0.1:$port/props" | grep -q "$(basename "$1")"; then
+    if ! curl -sf "http://127.0.0.1:$port/props" | grep -qF "$(basename "$1")"; then
         echo "run-matrix: the server on port $port is not serving $(basename "$1")" >&2
         exit 1
     fi
@@ -65,7 +65,12 @@ measure() {
     local label="$1" mode="$2"
     shift 2
     if [ -f "eval/results/$label/results.jsonl" ]; then
-        echo "skipping $label: eval/results/$label already holds a run"
+        if python3 -I eval/score.py complete "eval/results/$label"; then
+            echo "skipping $label: eval/results/$label already holds a complete run"
+            return 0
+        fi
+        echo "run-matrix: eval/results/$label holds an incomplete or failed run; remove it and run again" >&2
+        failed=1
         return 0
     fi
     uv run --quiet --with jsonschema python eval/run_eval.py --url "http://127.0.0.1:$port" \
