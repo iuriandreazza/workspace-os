@@ -52,6 +52,14 @@ pub fn translation_root() -> u64 {
     ttbr & 0x0000_ffff_ffff_f000
 }
 
+/// `SCTLR_EL1`: the MMU, cache and alignment settings the kernel runs with.
+pub fn system_control() -> u64 {
+    let sctlr: u64;
+    // SAFETY: reading `SCTLR_EL1` has no side effects.
+    unsafe { asm!("mrs {}, sctlr_el1", out(reg) sctlr, options(nomem, nostack, preserves_flags)) };
+    sctlr
+}
+
 /// The memory attribute byte (as in `MAIR_EL1`) the current translation gives
 /// `address` for a privileged read, or `None` if the translation faults. With
 /// the MMU off it describes the default type of every access.

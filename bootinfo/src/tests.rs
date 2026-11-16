@@ -732,3 +732,32 @@ fn a_truncated_body_gets_the_default_entry_size_and_a_big_size_is_read() {
     big[12..16].copy_from_slice(&8192u32.to_le_bytes());
     assert!(BootInfo::parse(&big).is_ok());
 }
+
+#[test]
+fn entries_of_one_kind_with_a_gap_do_not_merge() {
+    let mut out = [MemoryEntry::default(); 4];
+    let n = build_memory_map(
+        [
+            descriptor(1, 0x1000, 1),
+            descriptor(1, 0x3000, 1),
+            descriptor(1, 0x4000, 1),
+        ],
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(
+        &out[..n],
+        &[
+            entry(0x1000, 1, MemoryKind::BootloaderReclaimable),
+            entry(0x3000, 2, MemoryKind::BootloaderReclaimable),
+        ]
+    );
+    // One page of overlap is an overlap.
+    assert_eq!(
+        build_memory_map(
+            [descriptor(7, 0x1000, 2), descriptor(7, 0x2000, 2)],
+            &mut out
+        ),
+        Err(BuildError::Overlap)
+    );
+}

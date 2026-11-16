@@ -87,6 +87,22 @@ pub extern "C" fn kernel_main(
                 .map(|a| a as i32)
                 .unwrap_or(-1)
         };
+        // Firmware regions the kernel must keep (runtime services) are probed too.
+        let runtime = board
+            .map_entries()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.kind() == bootinfo::MemoryKind::ReservedMapped)
+            .map_or(-1, |entry| attribute(entry.base as usize));
+        let _ = writeln!(
+            console,
+            "workspace-os kernel: sctlr_el1 {:#x}",
+            arch::system_control()
+        );
+        let _ = writeln!(
+            console,
+            "workspace-os kernel: mapping: runtime services {runtime:#04x}"
+        );
         let _ = writeln!(
             console,
             "workspace-os kernel: mapping: kernel image {:#04x}, uart {:#04x}, boot info {:#04x}, tables at {:#x}",

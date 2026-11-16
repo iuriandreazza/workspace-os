@@ -44,6 +44,8 @@
 #   uefi      256 MiB, the default
 #   uefi-768  768 MiB: the kernel sizes memory from the bootloader's map, so
 #             the amount it reports follows
+#   uefi-acpi-only  ACPI left on: no device tree is published, so the
+#             bootloader must refuse and the kernel must not start
 #   uefi-el2  the firmware runs the bootloader at EL2, which the bootloader
 #             must leave for EL1 itself before the kernel starts
 #
@@ -407,6 +409,15 @@ check_uefi_boot() {
     # The kernel runs on the bootloader's own tables, not the firmware's (the
     # root is the pool the bootloader printed), and what the tables map holds up
     # at the kernel, the UART and the boot info.
+    expect_once "workspace-os kernel: mapping: runtime services 0xff" "memory type of the runtime services regions"
+    # SCTLR_EL1: MMU (bit 0), data cache (2) and instruction cache (12) on;
+    # alignment check (1) and write-implies-execute-never (19) off.
+    local sctlr
+    sctlr="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: sctlr_el1 \(0x[0-9a-f]*\)$/\1/p')"
+    [[ -n "$sctlr" ]] || fail "SCTLR_EL1 not reported"
+    [[ $(((sctlr >> 0) & 1)) -eq 1 && $(((sctlr >> 2) & 1)) -eq 1 && $(((sctlr >> 12) & 1)) -eq 1 \
+        && $(((sctlr >> 1) & 1)) -eq 0 && $(((sctlr >> 19) & 1)) -eq 0 ]] \
+        || fail "SCTLR_EL1 is $sctlr: expected MMU, D-cache and I-cache on, alignment checks and WXN off"
     local tables
     tables="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os bootloader: page tables at \(0x[0-9a-f]*\)$/\1/p')"
     [[ -n "$tables" ]] || fail "bootloader did not report its page tables"
@@ -418,6 +429,22 @@ check_uefi_boot() {
     BOOT_TIMEOUT_SECONDS=10
     stop_qemu
     echo "PASS ($boot_name): kernel booted through the bootloader and stayed up"
+}
+
+# check_uefi_refusal NAME: with ACPI on, the firmware publishes no device tree
+# and the bootloader must say so and not start the kernel.
+check_uefi_refusal() {
+    BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+    start_qemu "$1" -machine virt -m 256M -bios "$uefi_firmware" \
+        -drive "file=$disk_image,format=raw,if=virtio"
+    wait_for_line "workspace-os bootloader: the firmware offers ACPI only"
+    sleep "$SETTLE_SECONDS"
+    if grep -qF "workspace-os kernel:" "$serial_log"; then
+        fail "the kernel started on a machine that offers ACPI only"
+    fi
+    BOOT_TIMEOUT_SECONDS=10
+    stop_qemu
+    echo "PASS ($boot_name): the bootloader refused an ACPI-only machine"
 }
 
 # build_with_feature FEATURE DESTINATION: builds the kernel with a self-test
@@ -510,6 +537,7 @@ disk_image="$work_dir/disk.img"
 check_uefi_boot uefi 256 1
 check_uefi_boot uefi-768 768 1
 check_uefi_boot uefi-el2 256 2 -machine virtualization=on
+check_uefi_refusal uefi-acpi-only
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"
