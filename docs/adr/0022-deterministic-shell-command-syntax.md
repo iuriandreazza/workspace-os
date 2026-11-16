@@ -22,8 +22,8 @@ and to ordering, quoting, `process.run` arguments, defaults, how the mode is
 entered, and what the person sees where the screen says "The model says".
 
 This ADR extends ADR 0011 and ADR 0014. It supersedes, for the deterministic
-shell only, two sentences of ADR 0011: "a script is a list of lines that parse
-into a plan" (a plan is one line, steps separated by `;`, because the
+shell only, three sentences of ADR 0011: "One command line parses into a one-step
+plan; a script is a list of lines that parse into a plan" (a line is a plan of one to 16 steps separated by `;`, because the
 interface has a single-line input and a line adapter has no way to say "more
 follows") and "`$s1`-style references" (`--from-step s1`, because `$` invites
 the expansion this shell must not have). The `--path` of ADR 0011 was already

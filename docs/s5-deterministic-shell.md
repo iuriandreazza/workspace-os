@@ -34,9 +34,9 @@ cargo run --target "$(rustc -vV | sed -n 's/^host: //p')" -p intent-shell --no-d
 fs find_largest --in downloads --count 3
 fs delete --name big.iso --in downloads --kind file
 fs delete --name big.iso --in downloads --kind file --elevate
-fs write --new-name notes.txt --in documents --content 'two words' [--mode create|overwrite|append]
+fs write --new-name notes.txt --in documents --content 'two words' --mode append
 fs move --name a.txt --in documents --kind file --to-name archive --to-in documents
-fs find_largest --in downloads --count 2; fs delete --from-step s1       # steps with ';'
+fs find_largest --in downloads --count 2; fs delete --from-step s1
 process run --program tar -- -czf backup.tgz docs
 user manage --operation add_to_group --user bia --group staff
 ```

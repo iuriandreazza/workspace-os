@@ -1110,7 +1110,7 @@ fn what_removes_or_moves_an_item_never_gets_a_default_kind() {
     ] {
         let why = refused(line);
         assert!(
-            why.contains("--kind") && why.contains("removes or moves"),
+            why.contains("--kind") && why.contains("writes, removes or moves"),
             "{line}: {why}"
         );
     }
@@ -1173,4 +1173,29 @@ fn separators_flags_and_dependencies_are_read_exactly() {
     // Naming a dependency twice, or once and again by a reference, is one dependency.
     let plan = plan_of("fs list --in home; fs stat --from-step s1 --after s1 --after s1");
     assert_eq!(plan.steps[1].depends_on.len(), 1);
+}
+
+#[test]
+fn help_and_errors_advertise_only_flags_that_are_accepted() {
+    let Ok(Parsed::Help(text)) = command::parse("help") else {
+        panic!("help")
+    };
+    assert!(!text.contains("--to-kind"), "{text}");
+    assert!(!refused("fs move --name a --in home --kind file").contains("--to-kind"));
+    // Every `--flag` the help prints is one some command accepts.
+    let known = command::known_flags();
+    let mut seen = 0;
+    for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+        if let Some(flag) = word.strip_prefix("--").filter(|f| !f.is_empty()) {
+            assert!(known.iter().any(|k| k == flag), "help prints --{flag}");
+            seen += 1;
+        }
+    }
+    assert!(seen > 10);
+}
+
+#[test]
+fn an_empty_argument_is_an_argument() {
+    let plan = plan_of("process run --program echo -- \"\" x");
+    assert!(format!("{:?}", plan.steps[0].spec).contains("argv: [\"\", \"x\"]"));
 }

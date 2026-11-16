@@ -92,6 +92,8 @@ impl Form {
     fn flags(self, prefix: &str) -> String {
         match self {
             Self::Place => format!("--{prefix}in PLACE"),
+            // A destination is always a folder, so it has no kind to write.
+            Self::Named if !prefix.is_empty() => format!("--{prefix}name NAME --{prefix}in PLACE"),
             Self::Named => {
                 format!("--{prefix}name NAME --{prefix}in PLACE [--{prefix}kind file|folder|any]")
             }
@@ -274,6 +276,12 @@ pub(crate) fn arg_keys(action: &str) -> Vec<&'static str> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Every flag some command accepts, for the test that checks what `help` prints.
+#[cfg(test)]
+pub(crate) fn known_flags() -> Vec<String> {
+    COMMANDS.iter().flat_map(allowed_flags).collect()
 }
 
 /// The commands that take `--elevate`, for the test that compares them with the root rules.
@@ -703,7 +711,7 @@ fn reference_value(
                 (false, Some(kind)) => kind,
                 (false, None) if kind_required => {
                     return Err(CommandError::new(format!(
-                        "{name}: {} needs {}, because it removes or moves what it names",
+                        "{name}: {} needs {}, because it writes, removes or moves what it names",
                         flag("name"),
                         flag("kind")
                     )));
@@ -789,7 +797,7 @@ fn help() -> String {
         out.push('\n');
     }
     out.push_str(&format!(
-        "A kind left out means any, and is only left out where the line above shows it in brackets.\n\
+        "A kind left out means any, and only where the line above shows it in brackets; a destination name is always a folder.\n\
          --from-step sN means what step sN found; flags after `--` belong to the program.\n\
          Places: {places}.\n\
          Steps are s1, s2, ... by position; --after sN makes a step wait for sN.\n\
