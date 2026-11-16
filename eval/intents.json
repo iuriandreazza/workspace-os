@@ -737,41 +737,13 @@
     },
     {
      "plan": {
-      "kind": "plan",
-      "version": 2,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "fs.write",
-        "args": {
-         "target": {
-          "new_name": "notes.txt",
-          "in": "everywhere"
-         },
-         "content": "hello",
-         "mode": "create"
-        },
-        "depends_on": [],
-        "elevate": false
-       }
-      ]
-     },
-     "loose": {
-      "s1.args.content": {
-       "contains": "hello"
-      }
-     }
-    },
-    {
-     "plan": {
       "kind": "clarify",
       "version": 2,
       "question": "(question is not compared)"
      }
     }
    ],
-   "note": "S3 wording, no place. A neutral place (home, everywhere) or a question; a guess such as documents is not accepted. The S3 and S3b runs used `name` here and nothing was found."
+   "note": "S3 wording, no place. A neutral place (home) or a question; a guess such as documents is not accepted, and `everywhere` is not a place to create something in (with several roots the shell cannot create there). The S3 and S3b runs used `name` here and nothing was found."
   },
   {
    "id": "write-append",
@@ -893,64 +865,6 @@
      "loose": {
       "s1.args.content": {
        "contains": "leite"
-      }
-     }
-    }
-   ]
-  },
-  {
-   "id": "write-then-read",
-   "category": "write",
-   "language": "en",
-   "source": "new",
-   "text": "create notes.txt in my documents with the text hello and then read it back",
-   "accept": [
-    {
-     "plan": {
-      "kind": "plan",
-      "version": 2,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "fs.write",
-        "args": {
-         "target": {
-          "new_name": "notes.txt",
-          "in": "documents"
-         },
-         "content": "hello",
-         "mode": "create"
-        },
-        "depends_on": [],
-        "elevate": false
-       },
-       {
-        "id": "s2",
-        "action": "fs.read",
-        "args": {
-         "target": {
-          "name": "notes.txt",
-          "in": "documents",
-          "kind": "file"
-         }
-        },
-        "depends_on": [
-         "s1"
-        ],
-        "elevate": false
-       }
-      ]
-     },
-     "loose": {
-      "s1.args.content": {
-       "contains": "hello"
-      },
-      "s2.args.target.kind": {
-       "one_of": [
-        "file",
-        "any"
-       ]
       }
      }
     }

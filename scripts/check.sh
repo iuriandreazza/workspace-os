@@ -25,10 +25,11 @@ python3 -I scripts/test_check_licences.py
 python3 -I scripts/check-licences.py
 
 echo "==> evaluation set"
-# The scoring of the S4 evaluation set (eval/score.py) is plain Python with unit
-# tests. That every accepted plan passes the shell's parser is a Rust test
+# The scoring and the prompts of the S4 evaluation (eval/score.py, eval/modes.py)
+# are plain Python with unit tests. That every accepted plan passes the shell's parser is a Rust test
 # (intent-shell/tests/eval_set.rs), run with the unit tests below.
 python3 -I eval/test_score.py
+python3 -I eval/test_modes.py
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings

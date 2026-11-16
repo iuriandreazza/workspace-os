@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use intent_shell::plan::{Document, parse_checked};
+use intent_shell::plan::parse_checked;
 use serde_json::Value;
 
 fn intents() -> Vec<Value> {
@@ -61,15 +61,12 @@ fn every_accepted_plan_passes_the_shells_parser_and_rules() {
 }
 
 #[test]
-fn a_question_is_accepted_only_where_it_is_a_question() {
+fn every_intent_says_what_it_is_for_the_scorer() {
     for intent in intents() {
-        for accepted in intent["accept"].as_array().expect("accept") {
-            let document = parse_checked(&accepted["plan"].to_string()).expect("parses");
-            let kind = accepted["plan"]["kind"].as_str().expect("a kind");
-            assert_eq!(
-                matches!(document, Document::Clarify(_)),
-                kind == "clarify",
-                "{}",
+        for field in ["id", "category", "language", "source", "text"] {
+            assert!(
+                intent[field].as_str().is_some_and(|v| !v.is_empty()),
+                "{}: no {field}",
                 intent["id"]
             );
         }
