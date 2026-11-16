@@ -48,7 +48,7 @@ kernel files, so they can run in separate sessions at the same time as K.
 | Item | Session | Gate addition | Status |
 |---|---|---|---|
 | K0 | Boot on QEMU `virt`, serial banner, parked cores, vector table that panics, check script, hooks, CI | Three boots: ELF, raw image over dirtied `.bss`, four cores | done |
-| K1 | Exception handling: save and restore context, decode the syndrome, report synchronous exceptions, enter EL1 when started at EL2 or EL3 | A boot that takes a deliberate breakpoint and resumes; boots at EL2 and EL3 | next |
+| K1 | Exception handling: save and restore context, decode the syndrome, report synchronous exceptions, enter EL1 when started at EL2 or EL3. Its adversarial review also covers what reached `main` without a clean round: the vector table, the raw and four-core boots, and the git hooks | A boot that takes a deliberate breakpoint and resumes; boots at EL2 and EL3 | next |
 | K2 | Device tree: keep the pointer from the boot protocol or find the blob at the start of RAM, read memory size and the UART node, stop hard-coding them in `board.rs` | Boots with two different memory sizes and prints each | blocked: K1 |
 | K3 | Physical frame allocator fed by the device tree memory map | Allocate, free and reuse frames at boot; exhausting memory is reported, not a hang | blocked: K2 |
 | K4 | MMU: kernel page tables, higher-half mapping, write-xor-execute | A write to kernel code and a jump into data each end in a reported fault | blocked: K3 |
@@ -60,9 +60,16 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K10 | Move the UART driver out of the kernel into a userspace server | The banner is printed by the server; killing the server does not stop the kernel | blocked: K9 |
 | K11 | Multi-core bring-up through PSCI | Four cores run threads | later |
 | K12 | Filesystem server with an in-memory filesystem | A user program creates, reads and deletes a file through the server | blocked: K10 |
-| K13 | Users and permissions in the Linux model (ADR 0007): users, groups, owner and permission bits enforced by the filesystem server, a root user, and a confirmed step to act as root | A user is refused a file they have no permission for; root is not; the kernel holds no notion of a user | blocked: K12 |
+| K13 | Users and permissions in the Linux model (ADR 0007): users, groups, owner and permission bits enforced by the filesystem server, a root user with no direct login, and `sudo`-style elevation for members of an administrators group | A user is refused a file they have no permission for; an administrator gets it after confirming with their own password; a user outside the group cannot elevate; the kernel holds no notion of a user | blocked: K12 |
+| K14 | x86_64 port (ADR 0004): boot, serial console, exceptions, memory management and context switch behind `kernel/src/arch`, with the same gate running on both architectures | Every boot in the gate passes on aarch64 and on x86_64 | blocked: K10 |
+| K15 | First real hardware: boot on an x86_64 PC | The serial banner on a physical machine, recorded | blocked: K14 |
 
 K10 is the point where the system is a microkernel in practice (ADR 0001).
+
+The x86_64 port waits for K10 on purpose: porting earlier would make every
+item up to K10 cost two implementations. After K14 every kernel item is done
+on both architectures. On the ARM development machine x86_64 runs emulated,
+so its gate is slower.
 
 ## Track S: intent shell with a local SLM
 
@@ -79,11 +86,11 @@ runtime before it has userspace, memory management and a filesystem.
 | S5 | Deterministic fallback shell: the same actions typed as commands, with no model loaded | Every action in the format is reachable without the model | blocked: S3 |
 | S6 | Bridge into the OS: the shell runs on the host and talks to the kernel over a virtual serial channel | A plan produced on the host is executed by a user program in the OS | blocked: S5, K10 |
 | S7 | Run inference inside the OS | To be designed | later |
-| S8 | SOUL format, presets and per-user personality (ADR 0006): what the single SOUL file holds, the ready-made profiles, how a user's personality layers on the SOUL without contradicting it, and the shell loading both. The broker reads neither | The same evaluation intents produce the same validated actions under every preset and personality; a personality that contradicts the SOUL is rejected | blocked: S4 |
+| S8 | SOUL format, presets and per-user personality (ADR 0006): what the single SOUL file holds, the four ready-made profiles, how a user's personality (tone, voice, language, level of detail, name) layers on the SOUL without contradicting it, and the shell loading both. The broker reads neither | The same evaluation intents produce the same validated actions under every preset and personality; a personality that contradicts the SOUL is rejected | blocked: S4 |
 | S9 | Guided interview that builds a SOUL from the user's answers; preset path with no model loaded | A SOUL produced by the interview loads in the shell; the preset path works with the model off | blocked: S8 |
 | S10 | SOUL evolution: the AI proposes a change as an action in the plan format; it applies only after a user with root authority approves the full diff; history and undo | A proposed change is refused without approval and when approved by a user without root authority, applied with a root approval, and undone from the history | blocked: S8 |
 | S11 | Speech on the host: local speech synthesis and recognition. The spoken voice belongs to each user's personality (ADR 0006), so two users can hear different voices. Research the models and their licences first | A spoken request becomes a validated plan and the answer is spoken back, with no network; two users get two different voices | blocked: S3, S8 |
-| S11b | Voice confirmation of root actions (ADR 0007): voiceprint enrolment, a random challenge phrase, and a second factor; typed confirmation always available. Research the speaker-verification models, their error rates and licences first | A root action is refused for the wrong speaker, for a replayed recording, for audio the system itself is playing, and without the second factor; it passes with all three | blocked: S11, S10 |
+| S11b | Voice confirmation of root actions (ADR 0007): voiceprint enrolment, a random challenge phrase, and the person's password as second factor; typed confirmation always available. Research the speaker-verification models, their error rates and licences first | A root action is refused for the wrong speaker, for a replayed recording, for audio the system itself is playing, and without the second factor; it passes with all three | blocked: S11, S10 |
 | S12 | First-boot flow inside the OS that runs the interview | To be designed; needs an installer, userspace, storage and audio drivers | later |
 
 Host-side code must not be built for the bare-metal target. Decide in S3
@@ -126,7 +133,7 @@ whole workspace.
 | C1 | Linux personality: load a static aarch64 Linux "hello world" and serve the system calls it makes | blocked: K8 |
 | C2 | Wider system call coverage, driven by a static BusyBox | blocked: C1, K13 |
 | C3 | Lightweight virtual machine as fallback | later |
-| C4 | x86_64 port, then binary translation | later |
+| C4 | Binary translation, to run programs built for the other architecture | blocked: K14 |
 
 ## Model notes: Bonsai 8B
 
@@ -179,4 +186,5 @@ Source: [Jev (AI model)](https://en.wikipedia.org/wiki/Jev_(AI_model)).
 
 - Legal review of the licence boundary for converted drivers and model
   weights (ADR 0005).
-- The hardware the OS should run on first after QEMU.
+- Which x86_64 PC is the first real machine (K15), and what it needs to boot:
+  firmware, serial port, storage.

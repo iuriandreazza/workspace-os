@@ -31,13 +31,23 @@ How they are defined and kept:
 1. **Guided interview plus presets.** At installation the AI asks a few
    questions and builds the SOUL from the answers. Someone who does not want
    the interview picks a ready-made profile. The presets also cover the case
-   where no model is loaded.
+   where no model is loaded. The profiles offered are:
+   - direct and technical: short, precise answers;
+   - warm and didactic: explains what it is doing and why;
+   - formal and discreet: professional, speaks only when needed;
+   - good-humoured: light, with a marked character, still precise.
 2. **One SOUL per machine.** The SOUL belongs to the system, not to a user
    account: it is the same AI for every user of the machine.
 3. **A personality per user, built on the SOUL.** For each user the AI may
    have a personality: the way that one SOUL shows itself to that person. A
-   personality uses the SOUL and cannot contradict it. The spoken voice is
-   part of the personality, so it can differ from one user to another.
+   personality uses the SOUL and cannot contradict it. Each user shapes
+   their own, without root authority; the AI may propose adjustments, and
+   only that user approves them. A personality may vary:
+   - the tone of writing, humour and formality;
+   - the spoken voice;
+   - the language;
+   - the level of detail of the answers;
+   - the name that user calls the AI by.
 4. **The AI may propose changes to its own SOUL, and only a user with root
    authority can approve them.** A change is a proposal shown in full and
    accepted or rejected. Every applied change is kept in a history and can be
@@ -85,13 +95,10 @@ The SOUL and the voice govern presentation. They never govern authority.
 
 ## Open questions
 
-- Who shapes a personality: assumed here to be the user it belongs to,
-  without root authority. Not confirmed.
-- What else a personality may vary beyond writing tone and spoken voice, and
-  what stays fixed by the SOUL.
+- With a different name per user, what name the system itself goes by: in
+  the SOUL, on the login screen, and when it speaks to several people.
 - How the system knows which user is speaking, so that it answers with that
   user's personality and voice. The voiceprint enrolled for root confirmation
   (ADR 0007) is the natural candidate; recognising a speaker to pick a
   personality needs far less certainty than confirming a root action.
 - Which local speech models to use, and their licences (ADR 0005).
-- What the presets are.

@@ -28,7 +28,9 @@ Use the Linux model for the user permission matrix:
 - an owner, a group and read, write and execute bits on every file;
 - a root user, id 0, with authority over the whole machine;
 - an explicit, confirmed step for an ordinary user to act with root
-  authority.
+  authority, in the style of `sudo`: only members of an administrators group
+  may do it, they confirm with their own password, and every use is logged
+  under the name of the person who did it. Nobody logs in as root directly.
 
 The two models sit in different layers and do not replace each other:
 
@@ -79,8 +81,9 @@ A root action can be confirmed by voice, with three things together:
    a user who may act as root.
 2. **Random challenge.** The person repeats a phrase that is different every
    time, so an old recording does not pass.
-3. **Second factor.** A password, PIN or physical key is still required. The
-   voice is never the only barrier to root.
+3. **Second factor.** The person's own password is still required. The voice
+   is never the only barrier to root. A PIN or a physical key may be added
+   later.
 
 Why all three: a voiceprint alone is weak. A recording replays it, a cloned
 voice imitates it, and this system has a loudspeaker and its own speech
@@ -115,8 +118,7 @@ Rules that follow:
 
 ## Open questions
 
-- How an ordinary user is granted root authority for one action: the
-  mechanism and what the user has to confirm.
-- Which second factor comes first: password, PIN or physical key.
+- How the machine is recovered when no administrator can authenticate, given
+  that nobody logs in as root directly.
 - Which local speaker-verification model to use, its error rates, and its
   licence (ADR 0005).

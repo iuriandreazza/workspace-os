@@ -30,3 +30,10 @@ Target aarch64 first, on the QEMU `virt` machine. x86_64 comes second.
 - Architecture-specific code is isolated in `kernel/src/arch/aarch64`.
 - Running x86_64 programs will need binary translation until the x86_64 port
   exists.
+
+## Update, 2026-11-15: first real hardware
+
+The first real machine the system should run on is an x86_64 PC. aarch64
+stays the first architecture, developed and tested under QEMU, and the
+x86_64 port moves earlier in the roadmap (item K14) because real hardware
+depends on it. Until that port exists the system only runs under QEMU.
