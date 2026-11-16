@@ -164,7 +164,7 @@ Rules about content:
 - **MMU on, instruction and data caches on**, 4 KiB granule, with an identity
   map in `TTBR0_EL1` built by the bootloader: every address in the memory map
   maps to itself, RAM as Normal write-back cacheable and everything else the
-  firmware described as MMIO as Device, read, write and execute. `MAIR_EL1`,
+  firmware described as MMIO as Device, read and write, never execute. `MAIR_EL1`,
   `TCR_EL1` and `SCTLR_EL1` are set consistently with that map and are
   otherwise unspecified. `TTBR1_EL1` is unused.
 - The page tables are in memory of kind BootloaderReclaimable. The kernel must
@@ -303,7 +303,8 @@ on Apple silicon). No decision above changed.
   EL2, which the bootloader leaves itself (it programs EL1's translation
   registers from EL2's and returns to the kernel with `eret`). The
   bootloader keeps the firmware's `MAIR_EL1` and `TCR_EL1` and only installs a
-  new `TTBR0_EL1`, so it never changes the translation setup while it runs on it.
+  new `TTBR0_EL1`, so it never changes `MAIR_EL1` or `TCR_EL1` while it runs on them (K2b-3
+  also turns the MMU off around the `TTBR0_EL1` write).
 - **Load address on VirtualBox.** RAM starts at `0x08000000` and the firmware
   reserves `0x3c170000..0x44000000` on a 1024 MiB machine, which covers
   `0x40200000`. The VM needs 2048 MiB (tested) or more; this is stricter than

@@ -270,6 +270,13 @@ fn run() -> Outcome<core::convert::Infallible> {
 
     let kernel_file = read_kernel_file()?;
     let plan = load_kernel(kernel_file)?;
+    #[cfg(feature = "selftest-retry-after-failure")]
+    let outcome = if FIRST_RUN.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        Err(Failure::Message("forced failure of the first run"))
+    } else {
+        hand_over(&plan)
+    };
+    #[cfg(not(feature = "selftest-retry-after-failure"))]
     let outcome = hand_over(&plan);
     // Only a boot that failed gets here. The range is given back so that a
     // second run in the same firmware session (the next boot entry) can load
@@ -281,6 +288,9 @@ fn run() -> Outcome<core::convert::Infallible> {
     }
     outcome
 }
+
+#[cfg(feature = "selftest-retry-after-failure")]
+static FIRST_RUN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 /// Everything after the kernel is loaded, up to the jump into it.
 fn hand_over(plan: &elf::LoadPlan) -> Outcome<core::convert::Infallible> {
@@ -458,7 +468,17 @@ fn convert(map: &impl uefi::mem::memory_map::MemoryMap, out: &mut [MemoryEntry])
 
 #[entry]
 fn main() -> Status {
-    match run() {
+    #[cfg(feature = "selftest-retry-after-failure")]
+    let result = match run() {
+        Err(failure) => {
+            ui::failure(format_args!("{failure}"));
+            run()
+        }
+        done => done,
+    };
+    #[cfg(not(feature = "selftest-retry-after-failure"))]
+    let result = run();
+    match result {
         Ok(never) => match never {},
         Err(failure) => {
             ui::failure(format_args!("{failure}"));

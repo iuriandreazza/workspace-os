@@ -17,6 +17,9 @@ uefi = { version = "0.41", default-features = false, features = ["panic_handler"
 # Hands the kernel a boot info of a major version it does not know, so the
 # boot smoke test can see the kernel refuse it on the console the header names.
 selftest-unknown-boot-info-version = []
+# Fails the first run after the kernel is loaded and runs again, so the boot
+# smoke test can see that the load range was given back.
+selftest-retry-after-failure = []
 
 [[bin]]
 name = "bootloader"

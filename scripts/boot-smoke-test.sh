@@ -54,6 +54,7 @@
 #             translation registers
 #   uefi-no-kernel  the partition holds no `\KERNEL.ELF`: the bootloader must
 #             say that file is missing
+#   uefi-retry  the first run fails after loading the kernel, the second boots
 #   uefi-load-at-zero  a kernel linked at address 0
 #   uefi-load-beyond-ram  a kernel linked past the end of RAM
 #   uefi-load-busy  a kernel linked where the firmware keeps its own memory
@@ -481,6 +482,24 @@ check_uefi_refusal() {
     echo "PASS ($boot_name): the bootloader refused with '$message'"
 }
 
+# check_uefi_retry NAME IMAGE: a bootloader whose first run fails after it
+# loaded the kernel must give the load range back, so that the second run loads
+# the kernel at the same address and the kernel boots.
+check_uefi_retry() {
+    BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+    start_qemu "$1" -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
+        -drive "file=$2,format=raw,if=virtio"
+    wait_for_line "forced failure of the first run"
+    wait_for_banner
+    wait_for_line "$RESUME_MARKER"
+    expect_once "$EXPECTED_BANNER" "boot banner"
+    [[ "$(grep -cF "started at EL1" "$serial_log")" -eq 2 && "$(grep -cF "kernel loaded at 0x" "$serial_log")" -eq 1 ]] \
+        || fail "expected two runs of the bootloader and one completed load"
+    BOOT_TIMEOUT_SECONDS=10
+    stop_qemu
+    echo "PASS ($boot_name): the second run loaded the kernel again after the first failed"
+}
+
 # build_with_feature FEATURE DESTINATION: builds the kernel with a self-test
 # feature and keeps the image, so the next build cannot replace it.
 build_with_feature() {
@@ -573,12 +592,18 @@ cargo build --quiet --target-dir "$TARGET_DIR" -p bootloader --target aarch64-un
 unknown_version_image="$work_dir/unknown-version.img"
 python3 -I scripts/make-disk-image.py "$unknown_version_image" \
     target/aarch64-unknown-uefi/debug/bootloader.efi "$KERNEL_ELF"
+cargo build --quiet --target-dir "$TARGET_DIR" -p bootloader --target aarch64-unknown-uefi \
+    --features selftest-retry-after-failure
+retry_image="$work_dir/retry.img"
+python3 -I scripts/make-disk-image.py "$retry_image" \
+    target/aarch64-unknown-uefi/debug/bootloader.efi "$KERNEL_ELF"
 disk_image="$work_dir/disk.img"
 ./scripts/build-disk-image.sh "$disk_image" > /dev/null
 check_uefi_boot uefi 256 1
 check_uefi_boot uefi-768 768 1
 check_uefi_boot uefi-el2 256 2 -machine virtualization=on
 check_uefi_boot uefi-el2-high 3584 2 -machine virtualization=on
+check_uefi_retry uefi-retry "$retry_image"
 check_uefi_refusal uefi-acpi-only "$disk_image" "the firmware offers ACPI only (rsdp 0x" -machine virt
 # The root pointer is the one non-zero `rsdp` any boot here can show: QEMU's
 # firmware never publishes ACPI together with a device tree.
