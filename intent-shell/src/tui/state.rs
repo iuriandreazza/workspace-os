@@ -208,6 +208,7 @@ impl State {
                 };
             }
             Event::Outcome(text) => {
+                self.forced_quit = false;
                 self.blocks.push(Block::Outcome(text));
                 self.mode = Mode::Input;
             }
@@ -268,6 +269,7 @@ impl State {
                     return Effect::Nothing;
                 }
                 self.scroll = 0;
+                self.forced_quit = false;
                 self.blocks.push(Block::Request(request.clone()));
                 self.busy("asking the model");
                 return Effect::Submit(request);
@@ -600,6 +602,32 @@ mod tests {
         state.clock_ms += 50;
         assert_eq!(state.on_key(press(KeyCode::Char('y'))), Effect::Nothing);
         assert!(state.is_asking());
+    }
+
+    #[test]
+    fn the_warning_about_a_running_step_comes_back_for_the_next_step() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let mut state = asking_plan();
+        state.on_key(press(KeyCode::Char('y')));
+        assert_eq!(state.on_key(ctrl_c), Effect::Nothing);
+        state.on_event(Event::Outcome("done\n".to_owned()));
+        type_text(&mut state, "again");
+        state.on_key(press(KeyCode::Enter));
+        state.on_event(Event::AskPlan {
+            screen: "plan".to_owned(),
+            details: String::new(),
+        });
+        state.clock_ms += DWELL_MS;
+        state.on_key(press(KeyCode::Char('y')));
+        assert_eq!(
+            state.on_key(ctrl_c),
+            Effect::Nothing,
+            "warned again, not left"
+        );
+        assert!(
+            !state.forced_quit
+                || matches!(state.blocks.last(), Some(Block::Note(n)) if n.contains("Ctrl-C again"))
+        );
     }
 
     #[test]

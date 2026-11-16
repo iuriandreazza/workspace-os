@@ -12,7 +12,7 @@ mod wrap;
 use std::io::{Write, stdout};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -155,10 +155,10 @@ fn discard_pending_keys() -> std::io::Result<()> {
 
 /// Set by SIGTERM and SIGHUP (a closed terminal, `kill`), so the loop can
 /// restore the screen instead of leaving the terminal in raw mode.
-static TERMINATED: AtomicBool = AtomicBool::new(false);
+static TERMINATIONS: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" fn on_terminate(_signal: libc::c_int) {
-    TERMINATED.store(true, Ordering::Relaxed);
+    TERMINATIONS.fetch_add(1, Ordering::Relaxed);
 }
 
 fn watch_termination() {
@@ -183,7 +183,7 @@ fn event_loop(
 ) -> std::io::Result<()> {
     let started = Instant::now();
     loop {
-        if TERMINATED.load(Ordering::Relaxed) {
+        if TERMINATIONS.load(Ordering::Relaxed) > 0 {
             return Ok(());
         }
         let size = terminal.size()?;
@@ -292,8 +292,13 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
         }
     );
     drop((request_tx, reply_tx));
-    if !waiting_for_model && !state.forced_quit {
-        let _ = worker.join();
+    // A second Ctrl-C, SIGTERM or SIGHUP stops the wait for a stuck step.
+    while !waiting_for_model
+        && !state.forced_quit
+        && !worker.is_finished()
+        && TERMINATIONS.load(Ordering::Relaxed) < 2
+    {
+        thread::sleep(Duration::from_millis(50));
     }
     let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
