@@ -29,6 +29,12 @@
 # comes back, a freed frame is reused and a double free is refused. The 64 MiB
 # and 512 MiB boots show the frame counts following the size.
 #
+# One more normal boot hands the kernel a device tree with two `/memreserve/`
+# entries (one unaligned, overlapping a frame boundary): the frames they touch
+# must be reserved on top of the kernel's own.
+#
+#   memreserve  `-dtb` with the machine's tree plus those entries
+#
 # Three more boots use kernels built to raise an exception nothing resumes
 # from, and must end in a kernel panic that names it:
 #
@@ -46,6 +52,9 @@ readonly BREAKPOINT_REPORT="exception: breakpoint #0x800 at"
 readonly RESUME_MARKER="workspace-os kernel: resumed after breakpoint"
 readonly PANIC_MARKER="kernel panic"
 readonly FRAME_SIZE=4096
+# `/memreserve/` entries the memreserve boot adds: 16 frames, then a range that
+# starts inside the last of them and ends inside the next frame, 17 in all.
+readonly MEMRESERVE_FRAMES=17
 # The kernel image, boot stack and device tree blob together stay well below this.
 readonly MAX_RESERVED_FRAMES=1024
 readonly BOOT_TIMEOUT_SECONDS=10
@@ -141,6 +150,10 @@ memory_mib_of() {
     echo "$mib"
 }
 
+extra_reserved_frames=0
+extra_reserved_ranges=0
+expected_blob_size=""
+
 # check_frames MEMORY_MIB: the frame allocator's report is coherent with the
 # amount of RAM and the layout the linker chose.
 check_frames() {
@@ -166,12 +179,19 @@ check_frames() {
     blob="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
     [[ "$(echo "$blob" | wc -l)" -eq 1 && -n "$blob" ]] || fail "device tree reservation not reported exactly once"
     read -r blob_start blob_end <<< "$blob"
-    [[ "$blob_start" -ge "$RAM_BASE" && "$blob_end" -gt "$blob_start" && "$blob_end" -le $((RAM_BASE + mib * 1024 * 1024)) ]] \
-        || fail "device tree reservation $blob_start..$blob_end is not inside RAM"
+    # QEMU loads the tree at the start of RAM, with the size its header holds.
+    # (QEMU rewrites a tree it is handed with `-dtb`, so only the start is exact then.)
+    [[ "$blob_start" -eq "$RAM_BASE" && "$blob_end" -gt "$blob_start" ]] \
+        || fail "device tree reserved as $blob_start..$blob_end, expected it to start at $RAM_BASE"
+    [[ -n "$expected_blob_size" && "$blob_end" -ne $((RAM_BASE + expected_blob_size)) ]] \
+        && fail "device tree reserved as $blob_start..$blob_end, expected $expected_blob_size bytes"
     kernel_frames=$(( (image_end_address + FRAME_SIZE - 1) / FRAME_SIZE - image_start_address / FRAME_SIZE ))
     blob_frames=$(( (blob_end + FRAME_SIZE - 1) / FRAME_SIZE - blob_start / FRAME_SIZE ))
-    [[ "$reserved" -ge $((kernel_frames + blob_frames)) ]] \
-        || fail "$reserved frames reserved, the kernel and the device tree need $((kernel_frames + blob_frames))"
+    # The machine's own tree declares nothing else to reserve.
+    [[ "$reserved" -eq $((kernel_frames + blob_frames + extra_reserved_frames)) ]] \
+        || fail "$reserved frames reserved, expected $((kernel_frames + blob_frames + extra_reserved_frames))"
+    expect_once "workspace-os kernel: reserved by the device tree: $extra_reserved_ranges regions" \
+        "device tree reservation count"
 
     expect_once "workspace-os kernel: frames: exhausted after $free allocations, next request refused" \
         "exhaustion report"
@@ -272,6 +292,29 @@ build_with_feature selftest-unhandled-vector "$vector_elf"
 build_with_feature selftest-compiler-trap "$trap_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
 
+# The machine's device tree, dumped, and a copy with two `/memreserve/` entries
+# put in front of the structure block (the dump leaves room: it is padded).
+dtb="$work_dir/machine.dtb"
+qemu-system-aarch64 "${QEMU_MACHINE[@]}" -machine dumpdtb="$dtb" 2> /dev/null
+dtb_size="$(wc -c < "$dtb" | tr -d ' ')"
+expected_blob_size="$dtb_size"
+memreserve_dtb="$work_dir/memreserve.dtb"
+python3 -I - "$dtb" "$memreserve_dtb" <<'PY'
+import struct, sys
+source, target = sys.argv[1:3]
+blob = open(source, "rb").read()
+fields = list(struct.unpack(">10I", blob[:40]))
+rsvmap, structure, strings, strings_size = fields[4], fields[2], fields[3], fields[8]
+entries = struct.pack(">4Q", 0x41000000, 0x10000, 0x4100F800, 0x1000)
+# Keep only the used part: QEMU grows a tree it is handed with `-dtb`, and
+# the machine's own is padded to 1 MiB, which then no longer fits below the kernel.
+body = entries + blob[rsvmap:strings + strings_size]
+fields[2], fields[3] = structure + len(entries), strings + len(entries)
+total = (rsvmap + len(body) + 7) // 8 * 8
+fields[1] = total
+open(target, "wb").write((struct.pack(">10I", *fields) + blob[40:rsvmap] + body).ljust(total, b"\0"))
+PY
+
 check_boot elf -kernel "$KERNEL_ELF"
 check_boot raw \
     -device "loader,file=$raw_image,addr=$entry,cpu-num=0,force-raw=on" \
@@ -282,6 +325,12 @@ check_boot smp -machine secure=on -smp 4 -kernel "$KERNEL_ELF"
 check_boot el2 -machine virtualization=on -kernel "$KERNEL_ELF"
 check_boot el3 -machine secure=on -kernel "$KERNEL_ELF"
 check_boot el3-el2 -machine secure=on,virtualization=on -kernel "$KERNEL_ELF"
+extra_reserved_frames=$MEMRESERVE_FRAMES
+extra_reserved_ranges=2
+expected_blob_size=""
+check_boot memreserve -dtb "$memreserve_dtb" -kernel "$KERNEL_ELF"
+extra_reserved_frames=0
+extra_reserved_ranges=0
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"

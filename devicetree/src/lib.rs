@@ -176,7 +176,8 @@ impl<'a> Fdt<'a> {
     /// `device_type` is `memory`, in tree order.
     pub fn for_each_memory_region(&self, mut visit: impl FnMut(Region)) -> Result<(), Error> {
         self.find_root_child(|node| {
-            if node.device_type == Some(b"memory\0") {
+            // A memory node with no `reg` describes nothing and is skipped.
+            if node.device_type == Some(b"memory\0") && node.reg.is_some() {
                 node.for_each_entry(&mut visit)?;
             }
             Ok(false)
@@ -1039,12 +1040,18 @@ mod tests {
     }
 
     #[test]
-    fn memory_node_without_reg_is_rejected() {
+    fn memory_node_without_reg_is_skipped_by_the_walker_but_not_by_memory() {
         let mut b = Builder::new();
         root(&mut b);
         b.begin("memory").prop("device_type", b"memory\0").end();
+        memory_node(&mut b, "memory@1000", &[0, 0x1000, 0, 0x1000]);
         b.end();
-        assert_eq!(memory_of(&b.finish()), Err(Error::MalformedReg));
+        let blob = b.finish();
+        assert_eq!(memory_of(&blob), Ok(vec![region(0x1000, 0x1000)]));
+        assert_eq!(
+            Fdt::parse(&blob).unwrap().memory(),
+            Err(Error::MalformedReg)
+        );
     }
 
     #[test]

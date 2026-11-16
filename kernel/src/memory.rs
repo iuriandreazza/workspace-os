@@ -20,9 +20,19 @@ const STORAGE_WORDS: usize = storage_words(WINDOW_FRAMES);
 static mut FRAME_STORAGE: [u64; STORAGE_WORDS] = [0; STORAGE_WORDS];
 static STORAGE_TAKEN: AtomicBool = AtomicBool::new(false);
 
+/// A device tree with more ranges than this is refused instead of processed:
+/// each range costs time proportional to the window, and a hostile blob can
+/// hold tens of thousands of them. Real trees hold a handful.
+const MAX_RANGES: usize = 4096;
+
+/// The self-test checks this many frames at the start of each range the device
+/// tree reserves; the fixed ranges are checked whole.
+const SAMPLED_FRAMES_PER_RANGE: u64 = 256;
+
 pub enum InitError {
     DeviceTree(devicetree::Error),
     NoUsableMemory,
+    TooManyRanges,
 }
 
 impl fmt::Display for InitError {
@@ -30,6 +40,7 @@ impl fmt::Display for InitError {
         match self {
             Self::DeviceTree(error) => write!(f, "{error}"),
             Self::NoUsableMemory => f.write_str("no usable memory left after the reservations"),
+            Self::TooManyRanges => f.write_str("the device tree holds too many memory ranges"),
         }
     }
 }
@@ -66,11 +77,17 @@ fn fixed_reservations(board: &Board) -> [(&'static str, Range<u64>); 3] {
 
 pub fn init(board: &Board) -> Result<FrameAllocator<'static>, InitError> {
     let mut lowest = u64::MAX;
+    let mut ranges = 0;
     board.fdt.for_each_memory_region(|region| {
+        ranges += 1;
         if region.size > 0 {
             lowest = lowest.min(region.base);
         }
     })?;
+    board.fdt.for_each_reserved_region(|_| ranges += 1)?;
+    if ranges > MAX_RANGES {
+        return Err(InitError::TooManyRanges);
+    }
     if lowest == u64::MAX {
         return Err(InitError::NoUsableMemory);
     }
@@ -177,7 +194,9 @@ pub fn selftest(frames: &mut FrameAllocator, board: &Board, out: &mut impl Write
         check_reserved(range);
     }
     let reserved_by_tree = board.fdt.for_each_reserved_region(|region| {
-        check_reserved(region.base..region.base.saturating_add(region.size));
+        let start = region.base.max(window.start);
+        let end = region.base.saturating_add(region.size);
+        check_reserved(start..end.min(start.saturating_add(SAMPLED_FRAMES_PER_RANGE * FRAME_SIZE)));
     });
     assert!(
         reserved_by_tree.is_ok(),

@@ -82,13 +82,35 @@ fn align_up(address: u64) -> u64 {
         .unwrap_or(align_down(u64::MAX))
 }
 
+/// Sets or clears a range of bits a word at a time: the ranges come from the
+/// device tree, so the cost of one must not grow with its length bit by bit.
 fn set_bits(bitmap: &mut [u64], frames: Range<usize>, value: bool) {
-    for index in frames {
-        let (word, bit) = (index / BITS, index % BITS);
-        if value {
-            bitmap[word] |= 1 << bit;
+    if frames.is_empty() {
+        return;
+    }
+    let (first_word, last_word) = (frames.start / BITS, (frames.end - 1) / BITS);
+    for (offset, bits) in bitmap[first_word..=last_word].iter_mut().enumerate() {
+        let word = first_word + offset;
+        let low = if word == first_word {
+            frames.start % BITS
         } else {
-            bitmap[word] &= !(1 << bit);
+            0
+        };
+        let high = if word == last_word {
+            (frames.end - 1) % BITS + 1
+        } else {
+            BITS
+        };
+        let width = high - low;
+        let mask = if width == BITS {
+            u64::MAX
+        } else {
+            ((1 << width) - 1) << low
+        };
+        if value {
+            *bits |= mask;
+        } else {
+            *bits &= !mask;
         }
     }
 }
@@ -265,6 +287,28 @@ mod tests {
     /// Frames handed out until exhaustion.
     fn drain(allocator: &mut FrameAllocator) -> Vec<u64> {
         std::iter::from_fn(|| allocator.alloc()).collect()
+    }
+
+    #[test]
+    fn set_bits_matches_a_bit_by_bit_fill() {
+        for start in [0, 1, 63, 64, 65, 127, 128, 200] {
+            for end in [0, 1, 63, 64, 65, 128, 129, 192, 255, 256] {
+                for value in [false, true] {
+                    let mut fast = vec![if value { 0 } else { u64::MAX }; 4];
+                    let mut slow = fast.clone();
+                    set_bits(&mut fast, start..end, value);
+                    for index in start..end {
+                        let (word, bit) = (index / BITS, index % BITS);
+                        if value {
+                            slow[word] |= 1 << bit;
+                        } else {
+                            slow[word] &= !(1 << bit);
+                        }
+                    }
+                    assert_eq!(fast, slow, "{start}..{end} {value}");
+                }
+            }
+        }
     }
 
     #[test]
