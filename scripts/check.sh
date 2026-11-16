@@ -20,6 +20,7 @@ cargo fmt --all --check
 
 echo "==> lint"
 cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector -- -D warnings
 
 echo "==> boot smoke test"
 ./scripts/boot-smoke-test.sh
