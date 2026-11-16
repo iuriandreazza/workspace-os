@@ -84,6 +84,18 @@ MPL-2.0 dependencies accepted so far:
 - The check is manual, done in review (CLAUDE.md lists licence problems among
   what the adversarial reviewer looks for). There is no automated licence
   check in `scripts/check.sh`; adding one is a separate piece of work.
+  (Superseded in part: see "Update, 2026-11-16: automatic licence check".)
 - No binary is distributed today: the disk image is built locally and never
   committed. The source notice becomes due with the first released image.
 - An upgrade of an MPL-2.0 dependency repeats check 2 and updates its row.
+
+## Update, 2026-11-16: automatic licence check
+
+The licence check is no longer only manual. `scripts/check-licences.py`, run by
+`scripts/check.sh` (roadmap item T1), fails the gate when a third-party crate
+that cargo can build in the workspace has a licence ADR 0005 and this ADR do
+not allow. It reads the table above as its list of accepted MPL-2.0 crates:
+an MPL-2.0 crate or version that is not a row fails with a message that asks
+for the Exhibit B check (condition 2) and a new row. The Exhibit B check
+itself stays manual, in review, because it needs a reading of the sources. The
+decision above does not change.
