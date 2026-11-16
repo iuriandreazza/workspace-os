@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fails when a third-party dependency has a licence ADR 0005 and ADR 0017 do
+"""Fails when a dependency (or a workspace crate) has a licence ADR 0005 and ADR 0017 do
 not allow. Called by scripts/check.sh; run it alone to see the verdict.
 
 It reads the licence each crate declares in its manifest (`cargo metadata`),
@@ -167,11 +167,13 @@ def unknown_to_metadata(packages, built):
     return sorted(built - listed)
 
 
-def third_party_built(packages, members, built):
-    """Built packages that are not workspace members. A path dependency outside
-    the workspace has no registry source but is still third-party code."""
+def built_only(packages, built):
+    """Every built package, workspace members included. Cargo makes a vendored
+    path dependency under the workspace directory a member too, so skipping
+    members would let vendored third-party code through. Our own crates declare
+    GPL-2.0-only, which is allowed."""
     return sorted(
-        (p for p in packages if p["id"] not in members and (p["name"], p["version"]) in built),
+        (p for p in packages if (p["name"], p["version"]) in built),
         key=lambda p: (p["name"], p["version"]),
     )
 
@@ -210,13 +212,13 @@ def main():
     unknown = unknown_to_metadata(metadata["packages"], built)
     if not built or unknown:
         sys.exit(f"licences: could not match the output of `cargo tree` to `cargo metadata` (unmatched: {unknown}); the parser needs an update")
-    packages = third_party_built(metadata["packages"], set(metadata["workspace_members"]), built)
+    packages = built_only(metadata["packages"], built)
     found = violations(packages, mpl_accepted)
     for message in found:
         print(f"licences: {message}", file=sys.stderr)
     if found:
         return 1
-    print(f"licences: {len(packages)} third-party crates, all allowed by ADR 0005 and ADR 0017")
+    print(f"licences: {len(packages)} crates, all allowed by ADR 0005 and ADR 0017")
     return 0
 
 

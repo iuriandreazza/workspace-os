@@ -93,19 +93,19 @@ class TreeAgainstMetadata(unittest.TestCase):
 
 
 class Violations(unittest.TestCase):
-    def test_workspace_members_and_unbuilt_crates_are_skipped_path_dependencies_are_not(self):
+    def test_unbuilt_crates_are_skipped_members_and_vendored_crates_are_not(self):
         def package(name, source, licence):
             return {"id": name, "name": name, "version": "1.0.0", "source": source, "license": licence}
 
         packages = [
-            package("own", None, "Proprietary"),
+            package("own", None, "GPL-2.0-only"),
             package("unbuilt", "registry", "Apache-2.0"),
             package("bad", "registry", "GPL-3.0-only"),
-            package("vendored", None, "GPL-3.0-only"),
+            package("vendored", None, "AGPL-3.0-only"),  # a path dependency inside the workspace is a member
         ]
         built = {(name, "1.0.0") for name in ["own", "bad", "vendored"]}
-        checked = lic.third_party_built(packages, {"own"}, built)
-        self.assertEqual([p["name"] for p in checked], ["bad", "vendored"])
+        checked = lic.built_only(packages, built)
+        self.assertEqual([p["name"] for p in checked], ["bad", "own", "vendored"])
         self.assertEqual(len(lic.violations(checked, MPL)), 2)
 
 
