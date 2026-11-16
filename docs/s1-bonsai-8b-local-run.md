@@ -177,5 +177,8 @@ of relying on the model alone.
   count against a prompt-processing rate of about 100 tok/s.
 - Plan for an 8k context on 8 GB machines; 32k needs a quantized cache and is
   slow to fill.
+- Project direction (decided by the owner): start with small contexts and let
+  the system decide when a larger one is needed, instead of fixing a large
+  context up front. S2 and S3 should design for that.
 - Reusing a cached prompt prefix (`cache_prompt`) matters: the second request
   above reprocessed only 87 of 283 tokens.
