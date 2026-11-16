@@ -228,10 +228,12 @@ pub fn raise_unhandled_class() {
 }
 
 /// The kernel never runs on SP_EL0, so no vector entry handles a BRK taken there.
+/// SP_EL1 is invalid when it happens, as after a stack overflow.
 #[cfg(feature = "selftest-unhandled-vector")]
 pub fn raise_unhandled_vector() {
     // SAFETY: the exception ends in a kernel panic, which is what the test checks.
-    unsafe { asm!("msr spsel, #0", "brk #0") };
+    // SP_EL1 is made invalid first: the panic path must not rely on it.
+    unsafe { asm!("mov x0, #0x10", "mov sp, x0", "msr spsel, #0", "brk #0", out("x0") _) };
 }
 
 /// `brk #0x1` is what the compiler emits for `abort` and `unreachable`: it must

@@ -48,7 +48,7 @@ kernel files, so they can run in separate sessions at the same time as K.
 
 | Item | Session | Gate addition | Status |
 |---|---|---|---|
-| K0 &
+| K0 | Boot on QEMU `virt`, serial banner, parked cores, vector table that panics, check script, hooks, CI | Three boots: ELF, raw image over dirtied `.bss`, four cores | done |
 | K1 | Exception handling: save and restore context, decode the syndrome, report synchronous exceptions, enter EL1 when started at EL2 or EL3. Its adversarial review also covers what reached `main` without a clean round: the vector table, the raw and four-core boots, and the git hooks | A boot that takes a deliberate breakpoint and resumes; boots at EL2 and EL3 | done |
 | K2 | Device tree: keep the pointer from the boot protocol or find the blob at the start of RAM, read memory size and the UART node, stop hard-coding them in `board.rs` | Boots with two different memory sizes and prints each | blocked: K1 |
 | K2b | Own UEFI bootloader, part 1 (ADR 0008). ADR first: the handoff structure between bootloader and kernel. Research first: what VirtualBox's ARM machine provides (firmware tables, serial device, memory layout), and how Limine does each step. Then a Rust UEFI application that loads the kernel from the EFI system partition, leaves boot services and jumps to it, plus a bootable disk image | The banner under QEMU with UEFI firmware, in the gate; the banner under VirtualBox on the ARM Mac, recorded by hand | blocked: K2 |

@@ -135,6 +135,8 @@ exception_selftest:
     stp  x26, x27, [sp, #64]
     stp  x28, x29, [sp, #80]
     str  x30, [sp, #96]
+    mrs  x0, sp_el0
+    str  x0, [sp, #104]
 
     // N and C set, Z and V clear: no flag keeps its reset value by chance.
     movz x30, #0xa000, lsl #16
@@ -174,6 +176,10 @@ exception_selftest:
 .Lselftest_failed:
     mov  x0, #1
 .Lselftest_done:
+    mov  x1, x0
+    ldr  x0, [sp, #104]
+    msr  sp_el0, x0
+    mov  x0, x1
     ldp  x20, x21, [sp, #16]
     ldp  x22, x23, [sp, #32]
     ldp  x24, x25, [sp, #48]
