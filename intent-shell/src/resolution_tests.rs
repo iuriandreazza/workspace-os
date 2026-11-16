@@ -632,11 +632,15 @@ fn a_single_match_from_a_search_that_did_not_finish_is_confirmed_by_the_person()
 }
 
 #[test]
-fn a_multibyte_name_over_the_byte_limit_is_refused_at_parse() {
+fn a_multibyte_name_over_the_byte_limit_passes_the_structure_and_fails_the_rules() {
     let name = "ã".repeat(200);
     let args = format!(r#"{{"target":{{"name":"{name}","in":"home","kind":"file"}}}}"#);
     let text = plan(&[step("s1", "fs.read", &args, "false")]);
-    assert!(crate::plan::parse(&text).is_err());
+    assert!(
+        crate::plan::parse(&text).is_ok(),
+        "the schema counts characters"
+    );
+    assert!(crate::plan::parse_checked(&text).is_err());
 }
 
 #[test]
@@ -922,4 +926,71 @@ fn a_step_cannot_act_on_what_an_earlier_step_moved_away() {
         reviewed(&result.outcome).steps[1].items[0].verdict,
         Verdict::Refused(Refusal::ConflictsWithStep(..))
     ));
+}
+
+#[test]
+fn a_log_that_fails_at_any_event_stops_the_request() {
+    let host = reports();
+    let text = plan(&[step("s1", "fs.delete", &named("report"), "true")]);
+    let authority = Authority::full(user(true));
+    let events_when_it_works = {
+        let (result, _) = run_with(
+            &[&text],
+            &host,
+            &authority,
+            Answers::yes().picking(&[Some(0)]),
+            MemoryLog::default(),
+        );
+        assert!(matches!(result.outcome, Outcome::Executed { .. }));
+        result.log.events.len()
+    };
+    for accepted in 0..events_when_it_works {
+        let host = reports();
+        let (result, _) = run_with(
+            &[&text],
+            &host,
+            &authority,
+            Answers::yes().picking(&[Some(0)]),
+            MemoryLog::failing_after(accepted),
+        );
+        assert!(
+            !matches!(result.outcome, Outcome::Executed { .. }),
+            "the log failed after {accepted} events and the request still finished"
+        );
+    }
+}
+
+#[test]
+fn a_refusal_is_logged_too_and_a_log_that_fails_there_is_reported() {
+    let text = plan(&[step("s1", "fs.delete", &named("report"), "true")]);
+    let authority = Authority::full(user(true));
+    for (plan_yes, root_yes) in [(false, true), (true, false)] {
+        let answers = || {
+            let mut a = Answers::yes().picking(&[Some(0)]);
+            a.plan = plan_yes;
+            a.root = root_yes;
+            a
+        };
+        let (baseline, _) = run_with(
+            &[&text],
+            &reports(),
+            &authority,
+            answers(),
+            MemoryLog::default(),
+        );
+        for accepted in 0..baseline.log.events.len() {
+            let (result, _) = run_with(
+                &[&text],
+                &reports(),
+                &authority,
+                answers(),
+                MemoryLog::failing_after(accepted),
+            );
+            assert!(
+                matches!(result.outcome, Outcome::LogFailed { .. }),
+                "plan {plan_yes}, root {root_yes}, log failed after {accepted}: {:?}",
+                result.outcome
+            );
+        }
+    }
 }

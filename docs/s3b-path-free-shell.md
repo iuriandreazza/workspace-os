@@ -161,7 +161,8 @@ Every output was valid and none held a path.
 - Two steps of one plan are compared by location only: deleting a folder and
   acting on something inside it in the same plan is not flagged.
 - The schema is compared with the examples by `validate.py` by hand, not in the
-  gate (ADR 0011); the Rust parser is stricter than the schema for `2.0`.
+  gate (ADR 0011); the Rust parser is stricter than the schema for `2.0`. A name is bounded in
+  characters by the schema and in bytes by a rule (`NAME_MAX`).
 - A search runs again after each choice the person makes, so a plan with
   several ambiguities searches several times.
 - S4 reuses the eight intents above as its first cases. S5 types the
