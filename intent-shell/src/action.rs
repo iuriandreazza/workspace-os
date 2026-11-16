@@ -77,6 +77,31 @@ pub enum Action {
     },
 }
 
+impl Action {
+    /// Whether the person is asked before this action runs (ADR 0016). Reading
+    /// and adding are not asked about; anything that changes, removes or
+    /// reaches beyond files is. There is no wildcard: a new action must be
+    /// classified before it compiles.
+    pub fn needs_confirmation(&self) -> bool {
+        match self {
+            Self::List { .. }
+            | Self::Stat { .. }
+            | Self::Read { .. }
+            | Self::FindLargest { .. } => false,
+            Self::Write { mode, .. } => match mode {
+                WriteMode::Create | WriteMode::Append => false,
+                WriteMode::Overwrite => true,
+            },
+            Self::Move { .. }
+            | Self::Delete { .. }
+            | Self::Run { .. }
+            | Self::UserManage { .. }
+            | Self::SystemConfigure { .. }
+            | Self::SoulProposeChange { .. } => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
     FsRead,

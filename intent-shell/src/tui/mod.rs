@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn leaving_at_a_question_is_a_refusal_in_the_decision_log() {
-        use crate::pipeline_tests::{LARGEST, files};
+        use crate::pipeline_tests::{DELETE_LARGEST, files};
         use crate::testing::{MemoryLog, ScriptedPlanner, user};
 
         let (request_tx, requests) = channel();
@@ -429,7 +429,7 @@ mod tests {
         serve(
             &Authority::full(user(false)),
             &files(),
-            &ScriptedPlanner::new(&[LARGEST]),
+            &ScriptedPlanner::new(&[DELETE_LARGEST]),
             &mut log,
             requests,
             events_tx,

@@ -34,6 +34,17 @@ is unset or `dumb`, so piped transcripts and the live test work as before.
 | y / n, Esc | root panel | confirm this exact action / refuse. Only `y` confirms |
 | Ctrl-D (idle), Ctrl-C | | quit; the history is printed to the terminal |
 
+## What asks, and what does not (ADR 0016)
+
+A plan runs without the plan question when every action that could run only
+reads (`fs.list`, `fs.stat`, `fs.read`, `fs.find_largest`) or adds
+(`fs.write` with mode `create` or `append`). The result then shows the plan table
+and a line saying it ran without asking, and the log records `plan_auto_approved`
+before anything runs. Overwrite, move, delete, `process.run`, user, system and
+SOUL changes, and anything held for root still ask, and one such action makes the
+whole plan ask. The rule is `Action::needs_confirmation`, a `match` without a
+wildcard, so a new action cannot be added without classifying it.
+
 ## How it is built
 
 ```text
