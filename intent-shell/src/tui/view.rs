@@ -51,7 +51,7 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
                 options,
                 *selected,
                 width,
-                usize::from(state.height / 2),
+                usize::from(state.height / 2).min(usize::from(state.height).saturating_sub(4)),
             ));
             lines.push(dim("↑/↓ select · Enter choose · Esc cancel".to_owned()));
         }
@@ -67,7 +67,7 @@ fn option_lines(
     width: usize,
     room: usize,
 ) -> Vec<Line<'static>> {
-    let room = room.max(3);
+    let room = room.max(1);
     let mut lines = Vec::new();
     let mut selected_first = 0;
     for (index, option) in options.iter().enumerate() {

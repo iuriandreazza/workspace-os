@@ -9,22 +9,26 @@ mod state;
 mod view;
 mod wrap;
 
-use std::io::stdout;
+use std::io::{Write, stdout};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as Input, KeyEventKind, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as Input, KeyEventKind, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 
+use crate::broker::Authority;
 use crate::plain::Setup;
-use crate::ports::{Confirm, Planner, Retry, User};
+use crate::ports::{Confirm, DecisionLog, Host, Planner, Retry, User};
 use crate::session::Shell;
-use state::{Block, Effect, Event, Reply, State};
+use state::{Effect, Event, Reply, State};
 
 const TICK: Duration = Duration::from_millis(100);
 
@@ -83,6 +87,41 @@ impl Planner for ProgressPlanner<'_> {
     }
 }
 
+/// Runs the shell for each request until the interface closes the channel.
+/// Takes trait objects so a test can drive it without a model or a terminal.
+fn serve(
+    authority: &Authority,
+    host: &dyn Host,
+    planner: &dyn Planner,
+    log: &mut dyn DecisionLog,
+    requests: Receiver<String>,
+    events: Sender<Event>,
+    replies: Receiver<Reply>,
+) {
+    let planner = ProgressPlanner {
+        inner: planner,
+        events: events.clone(),
+    };
+    let mut confirm = ChannelConfirm {
+        events: events.clone(),
+        replies,
+    };
+    for request in requests {
+        let outcome = Shell {
+            authority,
+            host,
+            planner: &planner,
+            confirm: &mut confirm,
+            log,
+        }
+        .handle(&request)
+        .render();
+        if events.send(Event::Outcome(outcome)).is_err() {
+            return;
+        }
+    }
+}
+
 fn worker(
     setup: Setup,
     requests: Receiver<String>,
@@ -96,28 +135,9 @@ fn worker(
         mut log,
         ..
     } = setup;
-    let planner = ProgressPlanner {
-        inner: &planner,
-        events: events.clone(),
-    };
-    let mut confirm = ChannelConfirm {
-        events: events.clone(),
-        replies,
-    };
-    for request in requests {
-        let outcome = Shell {
-            authority: &authority,
-            host: &host,
-            planner: &planner,
-            confirm: &mut confirm,
-            log: &mut log,
-        }
-        .handle(&request)
-        .render();
-        if events.send(Event::Outcome(outcome)).is_err() {
-            return;
-        }
-    }
+    serve(
+        &authority, &host, &planner, &mut log, requests, events, replies,
+    );
 }
 
 /// Discard what was typed before a question was drawn, so a key meant for
@@ -129,6 +149,27 @@ fn discard_pending_keys() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Set by SIGTERM and SIGHUP (a closed terminal, `kill`), so the loop can
+/// restore the screen instead of leaving the terminal in raw mode.
+static TERMINATED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_terminate(_signal: libc::c_int) {
+    TERMINATED.store(true, Ordering::Relaxed);
+}
+
+fn watch_termination() {
+    for signal in [libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only stores to an atomic, which is async-signal-safe,
+        // and the function pointer has the signature `signal` expects.
+        unsafe {
+            libc::signal(
+                signal,
+                on_terminate as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            );
+        }
+    }
+}
+
 fn event_loop(
     terminal: &mut DefaultTerminal,
     state: &mut State,
@@ -138,13 +179,25 @@ fn event_loop(
 ) -> std::io::Result<()> {
     let started = Instant::now();
     loop {
+        if TERMINATED.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let size = terminal.size()?;
         state.set_size(size.width, size.height);
         state.clock_ms = started.elapsed().as_millis() as u64;
         terminal.draw(|frame| view::draw(frame, state))?;
         if event::poll(TICK)? {
-            let effect = match event::read()? {
+            let input = event::read()?;
+            // The size may have changed since the draw: an answer is judged
+            // against the screen as it is now.
+            let size = terminal.size()?;
+            state.set_size(size.width, size.height);
+            let effect = match input {
                 Input::Key(key) if key.kind != KeyEventKind::Release => state.on_key(key),
+                Input::Paste(text) => {
+                    state.paste(&text);
+                    Effect::Nothing
+                }
                 Input::Mouse(mouse) => {
                     match mouse.kind {
                         MouseEventKind::ScrollUp => state.wheel(true),
@@ -177,14 +230,24 @@ fn event_loop(
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    state
-                        .blocks
-                        .push(Block::Note("The shell stopped unexpectedly.".to_owned()));
-                    return Ok(());
+                    return Err(std::io::Error::other("the shell stopped unexpectedly"));
                 }
             }
         }
     }
+}
+
+/// Write the transcript where only the person can read it: it holds requests
+/// and real locations, like the decision log.
+fn write_transcript(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(text.as_bytes())
 }
 
 /// Open the interface and run until the person quits. The history is printed
@@ -194,27 +257,39 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
-    thread::spawn(move || worker(setup, requests, event_tx, replies));
 
     let mut terminal = ratatui::init();
-    // `ratatui::init` restores the screen on a panic; the mouse mode is ours.
+    // `ratatui::init` restores the screen on a panic; the mouse and paste
+    // modes are ours. The process aborts on a panic (workspace profile), so
+    // this runs once and the terminal is left as it was found.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(stdout(), DisableMouseCapture);
+        let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);
         previous(info);
     }));
-    let _ = execute!(stdout(), EnableMouseCapture);
+    let _ = execute!(stdout(), EnableMouseCapture, EnableBracketedPaste);
+    watch_termination();
+    let worker = thread::spawn(move || worker(setup, requests, event_tx, replies));
     let result = event_loop(&mut terminal, &mut state, &request_tx, &reply_tx, &events);
-    let _ = execute!(stdout(), DisableMouseCapture);
+
+    // Leaving at a question is a refusal, and the decision log must say so:
+    // closing the channels lets the worker's wait fail and record it.
+    let asked = state.is_asking();
+    drop((request_tx, reply_tx));
+    if asked {
+        let _ = worker.join();
+    }
+    let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
 
     let text = state.transcript();
     print!("{text}");
-    if let Some(path) = transcript {
-        std::fs::write(path, &text)
-            .map_err(|e| format!("cannot write the transcript {}: {e}", path.display()))?;
-    }
-    result.map_err(|e| format!("terminal error: {e}"))
+    let written = transcript.map_or(Ok(()), |path| {
+        write_transcript(path, &text)
+            .map_err(|e| format!("cannot write the transcript {}: {e}", path.display()))
+    });
+    result.map_err(|e| format!("terminal error: {e}"))?;
+    written
 }
 
 #[cfg(test)]
@@ -281,5 +356,53 @@ mod tests {
         assert_eq!(confirm.choose("which", &["a".to_owned()]), None);
         replies.send(Reply::Choice(Some(0))).unwrap();
         assert_eq!(confirm.choose("which", &["a".to_owned()]), Some(0));
+    }
+
+    #[test]
+    fn leaving_at_a_question_is_a_refusal_in_the_decision_log() {
+        use crate::pipeline_tests::{LARGEST, files};
+        use crate::testing::{MemoryLog, ScriptedPlanner, user};
+
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        let (reply_tx, replies) = channel();
+        request_tx.send("largest".to_owned()).unwrap();
+        // The person quits at the first question: nothing is ever answered.
+        drop((request_tx, reply_tx));
+        let mut log = MemoryLog::default();
+        serve(
+            &Authority::full(user(false)),
+            &files(),
+            &ScriptedPlanner::new(&[LARGEST]),
+            &mut log,
+            requests,
+            events_tx,
+            replies,
+        );
+        let seen: Vec<Event> = events.try_iter().collect();
+        assert!(seen.iter().any(|e| matches!(e, Event::AskPlan { .. })));
+        assert!(
+            log.events
+                .iter()
+                .any(|e| e["event"] == "plan_confirmation" && e["confirmed"] == false),
+            "{:?}",
+            log.events
+        );
+        assert!(
+            !log.events.iter().any(|e| e["event"] == "executed"),
+            "nothing ran"
+        );
+    }
+
+    #[test]
+    fn the_transcript_is_private_to_the_user() {
+        let dir =
+            std::env::temp_dir().join(format!("intent-shell-transcript-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.txt");
+        write_transcript(&path, "requests and paths\n").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

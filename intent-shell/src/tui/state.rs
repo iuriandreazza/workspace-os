@@ -5,9 +5,9 @@
 //! confirms, Esc refuses, a selection never leaves its list, a root action is
 //! never confirmed without being shown whole) is unit tested.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::wrap::wrap;
+use super::wrap::{text_width, wrap};
 use crate::action::printable;
 
 /// An entry of the history. The text is already safe to print: it comes from
@@ -101,6 +101,16 @@ pub struct State {
 
 /// A character the person may type: one `printable` would leave as it is, so
 /// a pasted escape sequence or an invisible character never reaches the shell.
+/// A key press meant as an answer: a fresh press (not a repeat or a release)
+/// with no Ctrl, Alt or Super held. An escape byte followed by `y`, which a
+/// terminal reports as Alt-y, is not a confirmation.
+fn deliberate(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+}
+
 fn typeable(c: char) -> bool {
     let text = c.to_string();
     printable(&text, false) == text
@@ -144,7 +154,13 @@ impl State {
     pub fn root_fits(&self) -> bool {
         match &self.mode {
             Mode::Root { panel } => {
-                wrap(panel, self.width.saturating_sub(2).into()).len() <= self.root_capacity()
+                let columns = usize::from(self.width.saturating_sub(2));
+                let lines = wrap(panel, columns);
+                // A character wider than the panel is dropped by the screen,
+                // so an action containing one would not be shown whole.
+                columns >= 1
+                    && lines.len() <= self.root_capacity()
+                    && lines.iter().all(|line| text_width(line) <= columns)
             }
             _ => false,
         }
@@ -189,7 +205,22 @@ impl State {
     pub fn on_key(&mut self, key: KeyEvent) -> Effect {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('c') if control => return Effect::Quit,
+            KeyCode::Char('c') if control => {
+                if matches!(
+                    self.mode,
+                    Mode::Busy {
+                        label: "working",
+                        ..
+                    }
+                ) {
+                    // Quitting now would stop a step half way and lose its result.
+                    self.blocks.push(Block::Note(
+                        "A step is running; quit when it has finished.".to_owned(),
+                    ));
+                    return Effect::Nothing;
+                }
+                return Effect::Quit;
+            }
             KeyCode::Char('d') if control && self.mode == Mode::Input => return Effect::Quit,
             KeyCode::PageUp => return self.scroll_by(self.page(), true),
             KeyCode::PageDown => return self.scroll_by(self.page(), false),
@@ -208,7 +239,9 @@ impl State {
 
     fn input_key(&mut self, key: KeyEvent) -> Effect {
         match key.code {
-            KeyCode::Char(c) if typeable(c) => self.input.push(c),
+            KeyCode::Char(c) if typeable(c) && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.push(c);
+            }
             KeyCode::Backspace => {
                 self.input.pop();
             }
@@ -234,6 +267,9 @@ impl State {
     }
 
     fn plan_key(&mut self, key: KeyEvent, details: &str) -> Effect {
+        if !deliberate(&key) {
+            return Effect::Nothing;
+        }
         match key.code {
             KeyCode::Char('y' | 'Y') => self.answer("▸ confirmed", Reply::Yes),
             KeyCode::Char('n' | 'N') | KeyCode::Esc => self.answer("▸ cancelled", Reply::No),
@@ -247,6 +283,9 @@ impl State {
     }
 
     fn root_key(&mut self, key: KeyEvent) -> Effect {
+        if !deliberate(&key) {
+            return Effect::Nothing;
+        }
         match key.code {
             KeyCode::Char('y' | 'Y') if self.root_fits() => {
                 self.answer("▸ root action confirmed", Reply::Yes)
@@ -266,18 +305,36 @@ impl State {
             };
             Effect::Nothing
         };
+        if !deliberate(&key) {
+            return Effect::Nothing;
+        }
         match key.code {
             KeyCode::Up => select(self, selected.saturating_sub(1)),
             KeyCode::Down => select(self, (selected + 1).min(options.len().saturating_sub(1))),
             KeyCode::Enter => match options.get(selected) {
                 Some(option) => {
-                    let note = format!("▸ chose {}", printable(option, false));
+                    let note = format!("▸ chose {option}");
                     self.answer(&note, Reply::Choice(Some(selected)))
                 }
                 None => Effect::Nothing,
             },
             KeyCode::Esc => self.answer("▸ cancelled", Reply::Choice(None)),
             _ => Effect::Nothing,
+        }
+    }
+
+    /// Pasted text goes into the request, on one line; elsewhere it is ignored,
+    /// so a paste can never answer a question.
+    pub fn paste(&mut self, text: &str) {
+        if self.mode != Mode::Input {
+            return;
+        }
+        for c in text.chars() {
+            if matches!(c, '\n' | '\r') {
+                self.input.push(' ');
+            } else if typeable(c) {
+                self.input.push(c);
+            }
         }
     }
 
@@ -453,6 +510,73 @@ mod tests {
         assert_eq!(
             state.on_key(press(KeyCode::Char('n'))),
             Effect::Reply(Reply::No)
+        );
+    }
+
+    #[test]
+    fn a_modified_or_repeated_key_never_answers() {
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ] {
+            let key = KeyEvent::new(KeyCode::Char('y'), modifiers);
+            for mut state in [asking_plan(), asking_root("x")] {
+                state.set_size(80, 24);
+                assert_eq!(state.on_key(key), Effect::Nothing, "{modifiers:?}");
+                assert!(state.is_asking());
+            }
+        }
+        let repeat =
+            KeyEvent::new_with_kind(KeyCode::Char('y'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        let mut state = asking_plan();
+        assert_eq!(state.on_key(repeat), Effect::Nothing);
+        let shifted = KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT);
+        assert_eq!(asking_plan().on_key(shifted), Effect::Reply(Reply::Yes));
+    }
+
+    #[test]
+    fn a_paste_can_fill_the_request_but_never_answers() {
+        let mut state = State::new(String::new());
+        state.paste("list\ndownloads\u{1b}y\u{202e}");
+        assert_eq!(state.input, "list downloadsy");
+        for mut asking in [asking_plan(), asking_root("x"), asking_choice(2)] {
+            asking.set_size(80, 24);
+            asking.paste("y\n1");
+            assert!(asking.is_asking());
+            assert!(asking.input.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_root_action_with_a_character_wider_than_the_panel_cannot_be_confirmed() {
+        let mut state = asking_root("漢字");
+        state.set_size(3, 20);
+        assert!(
+            !state.root_fits(),
+            "one column cannot hold a wide character"
+        );
+        state.set_size(2, 20);
+        assert!(!state.root_fits(), "no column at all");
+        state.set_size(6, 20);
+        assert!(state.root_fits());
+    }
+
+    #[test]
+    fn quitting_while_a_step_runs_is_refused_with_a_note() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let mut state = asking_plan();
+        state.on_key(press(KeyCode::Char('y')));
+        assert_eq!(state.on_key(ctrl_c), Effect::Nothing);
+        assert!(matches!(state.blocks.last(), Some(Block::Note(n)) if n.contains("running")));
+        let mut waiting = State::new(String::new());
+        type_text(&mut waiting, "x");
+        waiting.on_key(press(KeyCode::Enter));
+        assert_eq!(
+            waiting.on_key(ctrl_c),
+            Effect::Quit,
+            "waiting for the model can be left"
         );
     }
 

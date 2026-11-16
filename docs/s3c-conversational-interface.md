@@ -52,6 +52,10 @@ main thread: terminal, state, drawing        worker thread: Shell::handle
 - Keys typed before a question is drawn are discarded, so a keystroke meant for
   something else cannot answer it. Characters that `printable` would escape
   cannot be typed at all.
+- An answer needs a plain key press: Ctrl-, Alt- or repeated keys never answer, and
+  a paste (bracketed) only fills the request line. Quitting at a question is a
+  refusal and is logged; Ctrl-C is refused while a step runs. SIGTERM and SIGHUP
+  restore the terminal. \`--transcript\` is written with mode 0600.
 - The plan arrives whole from the model, so the block grows by stage (request,
   wait, plan, results), not by token.
 
