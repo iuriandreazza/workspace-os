@@ -1,7 +1,7 @@
 ---
 title: "ADR 0017: Directories, navigation and the tree view of the intent shell"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-16
 updated: 2026-11-16
 tags: [shell, resolver, navigation, tree, ux, schema]
@@ -28,7 +28,7 @@ is a choice the person makes, the root panel shows the exact action, and
 `Action` is built only from resolved resources. ADR 0002, 0007, 0011, 0015
 and 0016 stand (0016's hidden-path rule applies to every path, typed or found).
 
-## Decisions (proposed)
+## Decisions
 
 ### 1. How a location is named
 
@@ -146,11 +146,17 @@ Rules:
   root confirmation shows the exact real location now holds on every screen
   that shows a location.
 
-## Questions for the user
+## Decisions taken by the user (2026-11-16)
 
-1. Option B for naming (paths next to places and names)?
-2. Current directory in the core (A)?
-3. Default view shows locations relative to the current directory or `~`?
-4. `/etc` and the rest of system space may be named and shown in the tree,
-   marked `system`, with the broker as the only gate?
-5. Tree defaults: depth 2, 200 lines, hidden entries only when asked?
+The user chose the recommended option in every question:
+
+1. Naming: paths as one more reference next to `place`, `name`+`in` and
+   `from_step` (option B); `everywhere` becomes `under_home`; schema version 3.
+2. Navigation: the current directory is session state in the core `Shell`
+   (option A); screens show locations relative to it or to `~`, and the exact
+   absolute location stays in the details view and the root panel.
+3. System space: `/etc` and the rest may be named and appear in the tree marked
+   `system`, with the broker as the only gate. Tree defaults: depth 2, 200 lines,
+   hidden entries only when asked, folders first.
+
+Implementation is a roadmap item of its own (a new session, code after this ADR).
