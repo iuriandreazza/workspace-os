@@ -270,6 +270,20 @@ fn run() -> Outcome<core::convert::Infallible> {
 
     let kernel_file = read_kernel_file()?;
     let plan = load_kernel(kernel_file)?;
+    let outcome = hand_over(&plan);
+    // Only a boot that failed gets here. The range is given back so that a
+    // second run in the same firmware session (the next boot entry) can load
+    // the kernel at the same address.
+    if let Some(base) = core::ptr::NonNull::new(plan.base as *mut u8) {
+        // SAFETY: `load_kernel` allocated exactly these pages and nothing
+        // refers to them after the failure.
+        let _ = unsafe { boot::free_pages(base, pages_for(plan.span() as usize)) };
+    }
+    outcome
+}
+
+/// Everything after the kernel is loaded, up to the jump into it.
+fn hand_over(plan: &elf::LoadPlan) -> Outcome<core::convert::Infallible> {
     ui::ok(format_args!(
         "kernel loaded at {:#x}..{:#x}, entry {:#x}",
         plan.base, plan.end, plan.entry

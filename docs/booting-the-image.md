@@ -28,8 +28,9 @@ and `python3` only. The image is a build product and is never committed.
 Everything below needs **ACPI off** (`acpi=off` on QEMU, `--acpi off` on
 VirtualBox). With ACPI on, both firmwares publish only ACPI tables and no
 device tree; the kernel can read only the device tree (ADR 0010), so the
-bootloader stops with "the firmware offers ACPI only". The expected serial
-output is in `docs/adr/0013-boot-handoff-structure.md`, "Findings of K2b-2".
+bootloader stops with "the firmware offers ACPI only". A good boot prints the
+bootloader's banner and summary, then the kernel's banner and
+`entry: bootloader, boot info 1.0` (the gate checks the details).
 
 ## QEMU on a Mac with Apple silicon
 
@@ -54,7 +55,9 @@ a summary box; the kernel draws its own box and logs lines that start with
 banner. Leave QEMU with Ctrl-A then X.
 
 Add `-accel hvf -cpu host` to run with the hypervisor instead of emulation.
-That combination was not tried; the gate uses emulation.
+It boots through the EL1 path (tried by hand in K2b-3, with a start at EL2 it
+fails: the host does not allow nested virtualization); the gate uses
+emulation.
 
 ## QEMU emulating aarch64 on Linux x86_64
 
