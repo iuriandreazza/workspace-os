@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Move a file into a folder","steps":[
+ {"id":"s1","action":"fs.move","args":{"from":{"path":"report.pdf"},"to":{"path":"~/Documents"}},"depends_on":[],"elevate":false}]}

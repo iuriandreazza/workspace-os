@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"A new item named after the folder itself","steps":[
+{"kind":"plan","version":3,"summary":"A new item named after the folder itself","steps":[
  {"id":"s1","action":"fs.write","args":{"target":{"new_name":".","in":"home"},"content":"x","mode":"create"},"depends_on":[],"elevate":false}]}

@@ -18,14 +18,17 @@ const SCHEMA: &str = include_str!("../../docs/schemas/action-plan.schema.json");
 
 /// Static text first and the request last, so `cache_prompt` reuses the prefix (ADR 0011).
 const SYSTEM_PROMPT: &str = r#"You turn the user's request into one JSON document and output nothing else.
-A plan: {"kind":"plan","version":2,"summary":"...","steps":[{"id":"s1","action":"...","args":{...},"depends_on":[],"elevate":false}]}
-A question, only when the request cannot be done without guessing: {"kind":"clarify","version":2,"question":"..."}
-Things are never named by a path. Name them with a reference, P being one of home, downloads, documents, desktop, pictures, music, videos, everywhere:
-a place {"place":P}; an existing item found by name {"name":"report.pdf","in":P,"kind":"file"} (kind: file, folder or any); an item to create {"new_name":"notes.txt","in":P}; what an earlier step found {"from_step":"s1"} (put s1 in depends_on).
-A name is a file name only, never a path. To create something that does not exist yet use new_name, never name. There is no current directory: when the user does not say where, use everywhere.
+A plan: {"kind":"plan","version":3,"summary":"...","steps":[{"id":"s1","action":"...","args":{...},"depends_on":[],"elevate":false}]}
+A question, only when the request cannot be done without guessing: {"kind":"clarify","version":3,"question":"..."}
+Name things with a reference, P being one of home, downloads, documents, desktop, pictures, music, videos:
+a path {"path":"~/Music/jazz"}: absolute, starting with ~ (the home), or relative to the current directory;
+a place {"place":P}; an existing item found by name {"name":"report.pdf","in":P,"kind":"file"} (kind: file, folder or any; in is a place P or a path {"path":"..."}); an existing item found by name anywhere below the home {"under_home":true,"name":"report.pdf","kind":"file"}; an item to create {"new_name":"notes.txt","in":P}; what an earlier step found {"from_step":"s1"} (put s1 in depends_on).
+The current directory is given with the request. When the user writes a path, or means this folder, or a file in this folder, use a path: "this folder" is the current directory written out in full, and a file in it is {"path":"report.pdf"}. Use a place only when the user names one (my downloads). Use under_home only when the user does not say where. A name is a file name only, never a path. To create something that does not exist yet use new_name, never name.
+Relative paths start at the current directory as it was when the request was made, for every step of the plan.
 Actions and their args:
-fs.list {target: place, name or from_step}; fs.stat {target: name or from_step}; fs.read {target: name or from_step}; fs.find_largest {target: place or name, count}; fs.write {target: name or new_name, content, mode: create|overwrite|append}; fs.move {from: name or from_step, to: place, folder name or new_name}; fs.delete {target: name or from_step}; process.run {program,argv}
-user.manage {operation: add|remove|add_to_group|remove_from_group,user,group or null}, system.configure {key,value} and soul.propose_change {rationale,new_text} have no elevate field.
+fs.list {target: place, path, name, under_home or from_step}; fs.stat {target: path, name, under_home or from_step}; fs.read {target: path, name, under_home or from_step}; fs.find_largest {target: place, path, name or under_home, count}; fs.write {target: path, name, under_home or new_name, content, mode: create|overwrite|append}; fs.move {from: path, name, under_home or from_step, to: place, path, folder name or new_name}; fs.delete {target: path, name, under_home or from_step}; process.run {program,argv}
+session.cd {target: place, path or folder name}: changes the current directory for the next request.
+user.manage {operation: add|remove|add_to_group|remove_from_group,user,group or null}, system.configure {key,value}, soul.propose_change {rationale,new_text} and session.cd have no elevate field.
 Rules: ids are s1, s2, ...; depends_on lists the step ids a step needs; elevate is true only when the user asks for administrator rights.
 A from_step reference only works after an fs.list or fs.find_largest step.
 Do not ask a question when the request is clear."#;
@@ -62,10 +65,10 @@ struct JsonSchema<'a> {
 }
 
 impl LlamaPlanner {
-    fn request_body(&self, request: &str, retry: Option<&Retry>) -> String {
+    fn request_body(&self, request: &str, cwd: &str, retry: Option<&Retry>) -> String {
         let mut messages = vec![
             json!({"role": "system", "content": SYSTEM_PROMPT}),
-            json!({"role": "user", "content": format!("Request: {request}")}),
+            json!({"role": "user", "content": format!("Current directory: {cwd}\nRequest: {request}")}),
         ];
         if let Some(retry) = retry {
             messages.push(json!({"role": "assistant", "content": retry.previous_output}));
@@ -90,8 +93,8 @@ impl LlamaPlanner {
 }
 
 impl Planner for LlamaPlanner {
-    fn plan(&self, request: &str, retry: Option<&Retry>) -> Result<String, String> {
-        let body = self.request_body(request, retry);
+    fn plan(&self, request: &str, cwd: &str, retry: Option<&Retry>) -> Result<String, String> {
+        let body = self.request_body(request, cwd, retry);
         let response = post(&self.address, "/v1/chat/completions", &body)?;
         let value: Value = serde_json::from_str(&response)
             .map_err(|e| format!("server reply is not JSON: {e}"))?;
@@ -206,10 +209,11 @@ mod tests {
         let planner = LlamaPlanner {
             address: "127.0.0.1:1".into(),
         };
-        let body: Value = serde_json::from_str(&planner.request_body("list files", None)).unwrap();
+        let body: Value =
+            serde_json::from_str(&planner.request_body("list files", "~", None)).unwrap();
         assert_eq!(
             body["response_format"]["json_schema"]["schema"]["title"],
-            "Action plan, version 2"
+            "Action plan, version 3"
         );
         let last = body["messages"].as_array().unwrap().last().unwrap();
         assert!(
@@ -225,11 +229,31 @@ mod tests {
         let planner = LlamaPlanner {
             address: "127.0.0.1:1".into(),
         };
-        let body = planner.request_body("x", None);
+        let body = planner.request_body("x", "~", None);
         let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle}"));
         // The grammar follows property order: a name comes before where to look for it.
         assert!(at(r#""name": { "$ref""#) < at(r#""in": { "$ref""#));
         assert!(at(r#""kind": { "enum""#) > at(r#""in": { "$ref""#));
+    }
+
+    #[test]
+    fn the_request_tells_the_model_the_current_directory_after_the_static_prompt() {
+        let planner = LlamaPlanner {
+            address: "127.0.0.1:1".into(),
+        };
+        let body: Value =
+            serde_json::from_str(&planner.request_body("list", "~/Downloads", None)).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[1]["content"],
+            "Current directory: ~/Downloads\nRequest: list"
+        );
+        assert!(
+            !messages[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("~/Downloads\nRequest")
+        );
     }
 
     #[test]
@@ -241,7 +265,8 @@ mod tests {
             previous_output: "{bad",
             error: "not JSON",
         };
-        let body: Value = serde_json::from_str(&planner.request_body("x", Some(&retry))).unwrap();
+        let body: Value =
+            serde_json::from_str(&planner.request_body("x", "~", Some(&retry))).unwrap();
         let messages = body["messages"].clone();
         assert_eq!(messages.as_array().unwrap().len(), 4);
         assert!(

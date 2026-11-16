@@ -1,0 +1,2 @@
+{"kind":"plan","version":2,"summary":"A plan as written before paths","steps":[
+ {"id":"s1","action":"fs.list","args":{"target":{"place":"downloads"}},"depends_on":[],"elevate":false}]}

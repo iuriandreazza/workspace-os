@@ -1,3 +1,3 @@
-{"kind":"plan","version":2,"summary":"Two steps, one id","steps":[
+{"kind":"plan","version":3,"summary":"Two steps, one id","steps":[
  {"id":"s1","action":"fs.list","args":{"target":{"place":"home"}},"depends_on":[],"elevate":false},
  {"id":"s1","action":"fs.list","args":{"target":{"place":"documents"}},"depends_on":[],"elevate":false}]}

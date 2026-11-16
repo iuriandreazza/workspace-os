@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Show the five largest files anywhere","steps":[
- {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"everywhere"},"count":5},"depends_on":[],"elevate":false}]}
+{"kind":"plan","version":3,"summary":"Show the five largest files in the home","steps":[
+ {"id":"s1","action":"fs.find_largest","args":{"target":{"path":"~"},"count":5},"depends_on":[],"elevate":false}]}

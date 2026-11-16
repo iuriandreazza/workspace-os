@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Clean up","steps":[
+{"kind":"plan","version":3,"summary":"Clean up","steps":[
  {"id":"s1","action":"process.run","args":{"program":"rm -rf / ; echo","argv":[]},"depends_on":[],"elevate":false}]}

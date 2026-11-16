@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Run the archiver on a folder","steps":[
+{"kind":"plan","version":3,"summary":"Run the archiver on a folder","steps":[
  {"id":"s1","action":"process.run","args":{"program":"tar","argv":["-czf","backup.tgz","docs"]},"depends_on":[],"elevate":false}]}

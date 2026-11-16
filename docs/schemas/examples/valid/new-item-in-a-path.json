@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Create a note","steps":[
+ {"id":"s1","action":"fs.write","args":{"target":{"new_name":"notes.txt","in":{"path":"~/Documents"}},"content":"hello","mode":"create"},"depends_on":[],"elevate":false}]}

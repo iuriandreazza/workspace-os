@@ -1,16 +1,22 @@
-//! What the person sees in the terminal (ADR 0014): a header, a table with one
-//! line per concrete action and the broker's verdict beside it, notes, a
-//! summary line, and a separate panel for each root action.
+//! What the person sees in the terminal (ADR 0014, ADR 0018): a header, a table
+//! with one line per concrete action and the broker's verdict beside it,
+//! notes, a summary line, a separate panel for each root action, and the tree
+//! view of listings and choices.
 //!
 //! Pure functions from the broker's data to text, so the screen is unit tested
-//! and the terminal adapter only prints it. Nothing here shows a current
-//! directory, and real locations appear only in the details view and in the
-//! root panel, where ADR 0007 requires the exact action.
+//! and the terminal adapter only prints it. Locations are written relative to
+//! the current directory or to `~`; the exact absolute location is in the
+//! details view and in the root panel, where ADR 0007 requires the exact action.
 
-use crate::action::{Action, UserOperation, WriteMode, printable, quoted};
+use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+use crate::action::{Action, UserOperation, WriteMode, is_hidden, printable, quoted};
 use crate::broker::{Review, ReviewedAction, ReviewedStep, Verdict};
 use crate::label::Labels;
 use crate::plan::StepId;
+use crate::ports::{ChoiceLine, EntryKind, TREE_DEPTH, TreeEntry};
 use crate::resolve::Ambiguity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +31,8 @@ pub struct Header<'a> {
     pub user: &'a str,
     pub administrator: bool,
     pub model: &'a str,
+    /// The directory the session started in, written as the person would (`~/Downloads`).
+    pub cwd: &'a str,
     /// The file name only: the directory is in the details, not on the screen.
     pub log: &'a str,
 }
@@ -37,10 +45,11 @@ pub fn header(h: &Header) -> String {
     };
     printable(
         &format!(
-            " intent shell ──────────────────────────────────────────────\n  user  {}{rank}   model  {}   log  {}\n ───────────────────────────────────────────────────────────────",
+            " intent shell ──────────────────────────────────────────────\n  user  {}{rank}   model  {}   log  {}\n  started in  {}\n ───────────────────────────────────────────────────────────────",
             quoted(h.user),
             quoted(h.model),
             quoted(h.log),
+            h.cwd,
         ),
         true,
     )
@@ -54,6 +63,7 @@ pub fn say(action: &Action, labels: &Labels) -> String {
         Action::Stat { path } => format!("Show details of {}", of(path)),
         Action::Read { path } => format!("Read {}", of(path)),
         Action::Delete { path } => format!("Delete {}", of(path)),
+        Action::Cd { path } => format!("Go to {}", of(path)),
         Action::FindLargest { path, count: 1 } => {
             format!("Find the largest file in {}", of(path))
         }
@@ -155,7 +165,10 @@ fn rows(step: &ReviewedStep, labels: &Labels, view: View) -> Vec<Row> {
                 String::new()
             },
             what: say(&item.action, labels),
-            needs: item.action.capability().to_string(),
+            needs: item
+                .action
+                .capability()
+                .map_or_else(|| "-".to_owned(), |c| c.to_string()),
             verdict,
             under,
         });
@@ -228,7 +241,10 @@ pub fn plan_screen(review: &Review, view: View) -> String {
     let line = |step: &str, what: &str, needs: &str, verdict: &str| {
         format!("  {step:<w_step$}  {what:<w_what$}  {needs:<w_needs$}  {verdict}\n")
     };
-    let mut out = String::from("\n");
+    let mut out = format!(
+        "\n  in {}\n\n",
+        printable(&review.labels.cwd_text().to_string_lossy(), false)
+    );
     out.push_str(&line("Step", "What", "Needs", "Verdict"));
     for row in &all {
         out.push_str(&line(&row.step, &row.what, &row.needs, &row.verdict));
@@ -255,15 +271,34 @@ pub fn root_panel(who: &str, step: &StepId, action: &Action, labels: &Labels) ->
             quoted(who),
             say(action, labels),
             action.describe(),
-            action.capability(),
+            action
+                .capability()
+                .map_or_else(String::new, |c| c.to_string()),
         ),
         true,
     )
 }
 
-/// The question for a reference that matched several things, and one line per
-/// candidate with enough to tell them apart.
-pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<String>) {
+/// The question for a reference that matched several things, and the
+/// candidates in their parent context so the person tells them apart by where
+/// they sit. Only the candidates can be picked (ADR 0018).
+pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<ChoiceLine>) {
+    let entries: Vec<TreeEntry> = ambiguity
+        .candidates
+        .iter()
+        .map(|path| TreeEntry {
+            path: path.clone(),
+            kind: EntryKind::File,
+            size: None,
+            readable: true,
+            protected: false,
+        })
+        .collect();
+    let options = TreeOptions {
+        depth: usize::MAX,
+        show_hidden: true,
+        ..TreeOptions::default()
+    };
     (
         printable(
             &format!(
@@ -272,12 +307,360 @@ pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<String>)
             ),
             false,
         ),
-        ambiguity
-            .candidates
-            .iter()
-            .map(|path| printable(&labels.of(path), false))
-            .collect(),
+        tree(
+            &common_parent(&ambiguity.candidates),
+            &entries,
+            &ambiguity.candidates,
+            labels,
+            &TreeMarks::default(),
+            &options,
+        ),
     )
+}
+
+/// The deepest folder that holds every path.
+fn common_parent(paths: &[PathBuf]) -> PathBuf {
+    let mut common: Option<PathBuf> = None;
+    for path in paths {
+        let parent = path.parent().unwrap_or(Path::new("/"));
+        common = Some(match common {
+            None => parent.to_path_buf(),
+            Some(current) => current
+                .ancestors()
+                .find(|a| parent.starts_with(a))
+                .unwrap_or(Path::new("/"))
+                .to_path_buf(),
+        });
+    }
+    common.unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// What a tree shows besides the listing: where a plan would ask, or hold an
+/// action for root.
+#[derive(Debug, Default)]
+pub struct TreeMarks {
+    pub root: HashSet<PathBuf>,
+    pub asks: HashSet<PathBuf>,
+}
+
+/// The locations the reviewed plan would ask about or hold for root.
+pub fn marks_of(review: &Review) -> TreeMarks {
+    let mut marks = TreeMarks::default();
+    for item in review
+        .steps
+        .iter()
+        .filter(|s| s.blocked.is_none())
+        .flat_map(|s| &s.items)
+    {
+        let set = match &item.verdict {
+            Verdict::NeedsRoot => &mut marks.root,
+            Verdict::Allowed if item.action.needs_confirmation() => &mut marks.asks,
+            _ => continue,
+        };
+        set.extend(
+            item.action
+                .accesses()
+                .into_iter()
+                .map(|(_, p)| p.to_path_buf()),
+        );
+    }
+    marks
+}
+
+/// Depth, length and hidden entries of a tree (ADR 0018, decision 3).
+#[derive(Debug, Clone)]
+pub struct TreeOptions {
+    pub depth: usize,
+    pub max_lines: usize,
+    pub show_hidden: bool,
+}
+
+impl Default for TreeOptions {
+    fn default() -> Self {
+        Self {
+            depth: TREE_DEPTH,
+            max_lines: 200,
+            show_hidden: false,
+        }
+    }
+}
+
+struct Node {
+    name: OsString,
+    path: PathBuf,
+    entry: Option<TreeEntry>,
+    children: BTreeMap<OsString, Node>,
+}
+
+impl Node {
+    fn new(name: OsString, path: PathBuf) -> Self {
+        Self {
+            name,
+            path,
+            entry: None,
+            children: BTreeMap::new(),
+        }
+    }
+
+    fn is_dir(&self) -> bool {
+        match &self.entry {
+            Some(entry) => entry.kind == EntryKind::Dir || !self.children.is_empty(),
+            None => true,
+        }
+    }
+
+    fn is_hidden(&self) -> bool {
+        is_hidden(Path::new(&self.name))
+    }
+}
+
+fn build(root: &Path, entries: &[TreeEntry]) -> Node {
+    let mut top = Node::new(OsString::new(), root.to_path_buf());
+    for entry in entries {
+        let Ok(inside) = entry.path.strip_prefix(root) else {
+            continue;
+        };
+        let mut node = &mut top;
+        for part in inside.components() {
+            let name = part.as_os_str().to_owned();
+            let path = node.path.join(&name);
+            node = node
+                .children
+                .entry(name.clone())
+                .or_insert_with(|| Node::new(name, path));
+        }
+        node.entry = Some(entry.clone());
+    }
+    top
+}
+
+/// Folders first, then names ignoring case, then the bytes.
+fn ordered(node: &Node) -> Vec<&Node> {
+    let mut children: Vec<&Node> = node.children.values().collect();
+    children.sort_by_key(|c| {
+        (
+            !c.is_dir(),
+            c.name.to_string_lossy().to_lowercase(),
+            c.name.clone(),
+        )
+    });
+    children
+}
+
+fn size_text(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1000.0;
+    let mut unit = 0;
+    while value >= 1000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// A name as it is printed bare: byte-exact like a quoted path, without the quotes.
+fn bare(name: &std::ffi::OsStr) -> String {
+    let quoted = crate::action::quoted_path(Path::new(name));
+    quoted[1..quoted.len() - 1].to_owned()
+}
+
+struct TreeRow {
+    left: String,
+    size: String,
+    marks: String,
+    option: Option<usize>,
+}
+
+struct Walk<'a> {
+    labels: &'a Labels,
+    marks: &'a TreeMarks,
+    options: &'a TreeOptions,
+    candidates: &'a [PathBuf],
+    rows: Vec<TreeRow>,
+    hidden: usize,
+    folders: usize,
+    last_level_folders: bool,
+}
+
+impl Walk<'_> {
+    fn children(&mut self, node: &Node, prefix: &str, level: usize) {
+        let shown: Vec<&Node> = ordered(node)
+            .into_iter()
+            .filter(|c| {
+                let skipped = c.is_hidden() && !self.options.show_hidden;
+                self.hidden += usize::from(skipped);
+                !skipped
+            })
+            .collect();
+        for (index, child) in shown.iter().enumerate() {
+            let last = index + 1 == shown.len();
+            let (branch, indent) = if last {
+                ("└─ ", "   ")
+            } else {
+                ("├─ ", "│  ")
+            };
+            self.rows
+                .push(self.row(child, &format!("{prefix}{branch}"), node));
+            if child.is_dir() {
+                self.folders += 1;
+                if level < self.options.depth {
+                    self.children(child, &format!("{prefix}{indent}"), level + 1);
+                } else {
+                    self.last_level_folders = true;
+                }
+            }
+        }
+    }
+
+    fn row(&self, node: &Node, lead: &str, parent: &Node) -> TreeRow {
+        let slash = if node.is_dir() { "/" } else { "" };
+        let mut name = format!("{}{slash}", bare(&node.name));
+        let mut marks: Vec<String> = Vec::new();
+        if let Some(entry) = &node.entry {
+            if let EntryKind::Link(target) = &entry.kind {
+                name = format!("{name} -> {}", bare(target.as_os_str()));
+                marks.push("link".to_owned());
+            }
+            if !entry.readable {
+                marks.push("unreadable".to_owned());
+            }
+            if entry.protected {
+                marks.push("protected".to_owned());
+            }
+        }
+        if node.is_hidden() {
+            marks.push("hidden, asks to open".to_owned());
+        }
+        if self.labels.is_system(&node.path)
+            && (!self.labels.is_system(&parent.path) || self.labels.holds_home(&parent.path))
+        {
+            marks.push("system".to_owned());
+        }
+        if self.marks.asks.contains(&node.path) {
+            marks.push("⚠ asks".to_owned());
+        }
+        if self.marks.root.contains(&node.path) {
+            marks.push("ROOT".to_owned());
+        }
+        let size = node
+            .entry
+            .as_ref()
+            .and_then(|e| e.size)
+            .map(size_text)
+            .unwrap_or_default();
+        TreeRow {
+            left: format!("{lead}{name}"),
+            size,
+            marks: marks.join(" · "),
+            option: self.candidates.iter().position(|c| *c == node.path),
+        }
+    }
+}
+
+/// A listing, or paths with their folders around them, as a tree (ADR 0018,
+/// decision 3). `entries` are what to show below `root`; folders that only
+/// hold them are inferred. Pure, so `--plain`, the deterministic shell and the
+/// interface print the same text. A bound is never silent.
+pub fn tree(
+    root: &Path,
+    entries: &[TreeEntry],
+    candidates: &[PathBuf],
+    labels: &Labels,
+    marks: &TreeMarks,
+    options: &TreeOptions,
+) -> Vec<ChoiceLine> {
+    let top = build(root, entries);
+    let mut walk = Walk {
+        labels,
+        marks,
+        options,
+        candidates,
+        rows: Vec::new(),
+        hidden: 0,
+        folders: 0,
+        last_level_folders: false,
+    };
+    walk.children(&top, " ", 1);
+
+    let root_text = if root == labels.cwd() {
+        labels.cwd_text()
+    } else {
+        labels.display(root)
+    };
+    let mut head = bare(root_text.as_os_str());
+    if labels.is_system(root) && !labels.holds_home(root) {
+        head.push_str("  (system)");
+    }
+    let plural = if walk.folders == 1 {
+        "folder"
+    } else {
+        "folders"
+    };
+    let mut counts = vec![format!("{} {plural}", walk.folders)];
+    if walk.hidden > 0 {
+        counts.push(format!("{} hidden", walk.hidden));
+    }
+    let width = walk
+        .rows
+        .iter()
+        .map(|r| r.left.chars().count())
+        .chain([head.chars().count() + 1])
+        .max()
+        .unwrap_or(0);
+    let size_width = walk
+        .rows
+        .iter()
+        .map(|r| r.size.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut lines = vec![ChoiceLine {
+        text: format!(
+            "{:<width$}  {:>size_width$}  {}",
+            format!(" {head}"),
+            "",
+            counts.join(" · ")
+        )
+        .trim_end()
+        .to_owned(),
+        option: None,
+    }];
+    let total = walk.rows.len();
+    let cut = total > options.max_lines;
+    for row in walk.rows.into_iter().take(options.max_lines) {
+        lines.push(ChoiceLine {
+            text: format!(
+                "{:<width$}  {:>size_width$}  {}",
+                row.left, row.size, row.marks
+            )
+            .trim_end()
+            .to_owned(),
+            option: row.option,
+        });
+    }
+    if cut {
+        lines.push(ChoiceLine {
+            text: format!(
+                " └─ … {} more (use a path or --depth to open)",
+                total - options.max_lines
+            ),
+            option: None,
+        });
+    }
+    if walk.last_level_folders && options.depth != usize::MAX {
+        lines.push(ChoiceLine {
+            text: " … folders at the last level may hold more (use a path or --depth to open)"
+                .to_owned(),
+            option: None,
+        });
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -293,6 +676,7 @@ mod tests {
         FakeHost::with_files(&[("/work/big.iso", 900), ("/work/movie.mkv", 400)])
             .forbid(crate::action::Access::Delete, "/work/movie.mkv")
             .place(Place::Downloads, "/work")
+            .with_home("/work")
     }
 
     fn reviewed(plan: &str, administrator: bool) -> Review {
@@ -303,23 +687,26 @@ mod tests {
             &plan,
             &Authority::full(user(administrator)),
             &host(),
+            std::path::Path::new("/work"),
             &Choices::default(),
         )
     }
 
-    const DELETE_LARGEST: &str = r#"{"kind":"plan","version":2,"summary":"Delete the two largest","steps":[
+    const DELETE_LARGEST: &str = r#"{"kind":"plan","version":3,"summary":"Delete the two largest","steps":[
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#;
 
     #[test]
-    fn the_plan_screen_has_a_table_a_verdict_per_action_and_a_summary_and_no_location() {
+    fn the_plan_screen_has_the_directory_a_table_a_verdict_per_action_and_a_summary() {
         let screen = plan_screen(&reviewed(DELETE_LARGEST, false), View::Friendly);
         let expected = "
-  Step  What                                   Needs      Verdict
-  s1    Find the 2 largest files in Downloads  fs.read    ok
-  s2    Delete \"big.iso\" (Downloads)           fs.delete  ok
-        Delete \"movie.mkv\" (Downloads)         fs.delete  REFUSED
-          ↳ your permissions do not allow delete on \"movie.mkv\" (Downloads)
+  in ~
+
+  Step  What                             Needs      Verdict
+  s1    Find the 2 largest files in \".\"  fs.read    ok
+  s2    Delete \"big.iso\"                 fs.delete  ok
+        Delete \"movie.mkv\"               fs.delete  REFUSED
+          ↳ your permissions do not allow delete on \"movie.mkv\"
 
   2 steps, 3 actions: 2 ok, 0 held for root, 1 refused.  The model says: \"Delete the two largest\"
 ";
@@ -342,7 +729,7 @@ mod tests {
 
     #[test]
     fn a_step_that_waits_for_a_choice_says_so() {
-        let plan = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+        let plan = r#"{"kind":"plan","version":3,"summary":"x","steps":[
           {"id":"s1","action":"fs.read","args":{"target":{"name":"o","in":"downloads","kind":"file"}},"depends_on":[],"elevate":false}]}"#;
         let screen = plan_screen(&reviewed(plan, false), View::Friendly);
         assert!(screen.contains("CHOOSE"), "{screen}");
@@ -354,10 +741,7 @@ mod tests {
         let review = reviewed(DELETE_LARGEST, true);
         let action = &review.steps[1].items[0].action;
         let panel = root_panel("ana", &review.steps[1].id, action, &review.labels);
-        assert!(
-            panel.contains(r#"Action  Delete "big.iso" (Downloads)"#),
-            "{panel}"
-        );
+        assert!(panel.contains(r#"Action  Delete "big.iso""#), "{panel}");
         assert!(
             panel.contains(r#"Exact   fs.delete path="/work/big.iso""#),
             "{panel}"
@@ -369,7 +753,7 @@ mod tests {
     fn names_from_the_machine_cannot_rewrite_the_screen() {
         let host = FakeHost::with_files(&[("/work/a\u{1b}[2Jb", 5)]);
         let Document::Plan(plan) = parse_checked(
-            r#"{"kind":"plan","version":2,"summary":"s\u001b[31m","steps":[
+            r#"{"kind":"plan","version":3,"summary":"s\u001b[31m","steps":[
           {"id":"s1","action":"fs.list","args":{"target":{"place":"downloads"}},"depends_on":[],"elevate":false},
           {"id":"s2","action":"fs.read","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#,
         )
@@ -380,6 +764,7 @@ mod tests {
             &plan,
             &Authority::full(user(false)),
             &host,
+            std::path::Path::new("/work"),
             &Choices::default(),
         );
         for view in [View::Friendly, View::Details] {
@@ -394,6 +779,7 @@ mod tests {
             user: "ana",
             administrator: true,
             model: "127.0.0.1:8089",
+            cwd: "~",
             log: "decisions.jsonl",
         });
         assert!(text.contains(r#"user  "ana" (administrator)"#), "{text}");

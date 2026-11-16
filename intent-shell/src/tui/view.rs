@@ -9,6 +9,7 @@ use ratatui::widgets::{Block as Frame_, Clear, Paragraph};
 
 use super::state::{Kind, Mode, ROOT_KEYS, State};
 use super::wrap::{tail, text_width, wrap};
+use crate::ports::ChoiceLine;
 
 const PLAN_KEYS: &str = "[y] run the steps marked ok   [d] details   [n] cancel";
 const CHOOSE_KEYS: &str = "↑/↓ select · Enter choose · Esc cancel";
@@ -49,9 +50,12 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
                 .into_iter()
                 .map(|row| Line::styled(row, Style::new().add_modifier(Modifier::BOLD))),
         ),
-        Mode::Choose { options, selected } => {
+        Mode::Choose {
+            lines: choices,
+            selected,
+        } => {
             lines.extend(option_lines(
-                options,
+                choices,
                 *selected,
                 width,
                 usize::from(state.height / 2).min(usize::from(state.height).saturating_sub(4)),
@@ -63,9 +67,9 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// The options as lines, scrolled so the selected one starts in view.
+/// The tree lines of a choice, the selected candidate marked and scrolled into view.
 fn option_lines(
-    options: &[String],
+    choices: &[ChoiceLine],
     selected: usize,
     width: usize,
     room: usize,
@@ -73,20 +77,21 @@ fn option_lines(
     let room = room.max(1);
     let mut lines = Vec::new();
     let mut selected_first = 0;
-    for (index, option) in options.iter().enumerate() {
-        if index == selected {
+    for choice in choices {
+        let is_selected = choice.option == Some(selected);
+        if is_selected {
             selected_first = lines.len();
         }
-        let style = if index == selected {
+        let style = if is_selected {
             Style::new().add_modifier(Modifier::REVERSED)
         } else {
             Style::new()
         };
-        for (row, text) in wrap(&format!("{}. {option}", index + 1), width.saturating_sub(2))
+        for (row, text) in wrap(&choice.text, width.saturating_sub(2))
             .into_iter()
             .enumerate()
         {
-            let marker = if index == selected && row == 0 {
+            let marker = if is_selected && row == 0 {
                 "▸ "
             } else {
                 "  "
@@ -181,6 +186,7 @@ pub fn draw(frame: &mut Frame, state: &State) {
 
 #[cfg(test)]
 mod tests {
+    use crate::ports::ChoiceLine;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -286,11 +292,16 @@ mod tests {
         let mut state = state_with(&[]);
         state.on_event(Event::AskChoose {
             question: "Which?".to_owned(),
-            options: (1..=20).map(|n| format!("choice {n}")).collect(),
+            lines: (1..=20)
+                .map(|n| ChoiceLine {
+                    text: format!("choice {n}"),
+                    option: Some(n - 1),
+                })
+                .collect(),
         });
         state.clock_ms = crate::tui::state::DWELL_MS;
         let screen = render(&state, 40, 12);
-        assert!(screen.iter().any(|l| l == "▸ 1. choice 1"), "{screen:#?}");
+        assert!(screen.iter().any(|l| l == "▸ choice 1"), "{screen:#?}");
         for _ in 0..15 {
             state.clock_ms += crate::tui::state::DWELL_MS;
             state.on_key(ratatui::crossterm::event::KeyEvent::from(
@@ -298,7 +309,37 @@ mod tests {
             ));
         }
         let screen = render(&state, 40, 12);
-        assert!(screen.iter().any(|l| l == "▸ 16. choice 16"), "{screen:#?}");
+        assert!(screen.iter().any(|l| l == "▸ choice 16"), "{screen:#?}");
+    }
+
+    #[test]
+    fn a_choice_shows_its_context_unmarked_and_marks_only_the_selected_candidate() {
+        let line = |text: &str, option| ChoiceLine {
+            text: text.to_owned(),
+            option,
+        };
+        let mut state = state_with(&[]);
+        state.on_event(Event::AskChoose {
+            question: "Which?".to_owned(),
+            lines: vec![
+                line("~  2 folders", None),
+                line("├─ Documents/", None),
+                line("│  └─ report.pdf", Some(0)),
+                line("└─ Downloads/", None),
+                line("   └─ report.pdf", Some(1)),
+            ],
+        });
+        state.clock_ms = crate::tui::state::DWELL_MS;
+        let screen = render(&state, 40, 14);
+        assert!(screen.iter().any(|l| l == "  ├─ Documents/"), "{screen:#?}");
+        assert!(
+            screen.iter().any(|l| l == "▸ │  └─ report.pdf"),
+            "{screen:#?}"
+        );
+        assert!(
+            screen.iter().any(|l| l == "     └─ report.pdf"),
+            "{screen:#?}"
+        );
     }
 
     #[test]

@@ -13,8 +13,8 @@ use crate::action::{Access, Action, Capability, RootRule, WriteMode, quoted_path
 use crate::label::Labels;
 use crate::plan::{Plan, Step, StepId};
 use crate::ports::{Host, Output, User};
-use crate::reference::{Destination, Slot, Spec, Target};
-use crate::resolve::{Ambiguity, Choices, ResolveError, destination, is_place_root, locate};
+use crate::reference::{Destination, Direct, Slot, Spec, Target};
+use crate::resolve::{Ambiguity, Choices, ResolveError, Scope, destination, is_place_root, locate};
 
 /// Most paths one `from_step` reference may expand to.
 pub const MAX_EXPANDED_PATHS: usize = 100;
@@ -65,6 +65,8 @@ pub enum Refusal {
     PreRunFailed(String),
     /// A reference that did not resolve to exactly one resource (ADR 0014).
     Unresolved(ResolveError),
+    /// A directory to enter that is something else.
+    NotADirectory(PathBuf),
 }
 
 impl fmt::Display for Refusal {
@@ -116,6 +118,7 @@ impl fmt::Display for Refusal {
             Self::CannotExpand(why) => write!(f, "cannot expand the reference: {why}"),
             Self::PreRunFailed(why) => write!(f, "the read this step needed failed: {why}"),
             Self::Unresolved(why) => why.fmt(f),
+            Self::NotADirectory(path) => write!(f, "{} is not a directory", quoted_path(path)),
         }
     }
 }
@@ -148,6 +151,7 @@ impl Refusal {
                 "{} is a whole place and cannot be removed, moved or overwritten",
                 labels.of(path)
             ),
+            Self::NotADirectory(path) => format!("{} is not a directory", labels.of(path)),
             other => other.to_string(),
         }
     }
@@ -208,6 +212,9 @@ impl ReviewedStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
     pub summary: String,
+    /// The directory the plan was made under: its relative references were
+    /// resolved against it, and a later `cd` does not change what was reviewed.
+    pub cwd: PathBuf,
     /// In execution order.
     pub steps: Vec<ReviewedStep>,
     /// Friendly names for every location the review mentions.
@@ -221,28 +228,17 @@ impl Review {
             .iter()
             .find_map(|s| s.blocked.as_ref().and_then(Refusal::ambiguity))
     }
-
-    /// Every location the review mentions, for labelling.
-    fn locations(&self) -> Vec<&Path> {
-        let mut found: Vec<&Path> = Vec::new();
-        for step in &self.steps {
-            if let Some(a) = step.blocked.as_ref().and_then(Refusal::ambiguity) {
-                found.extend(a.candidates.iter().map(PathBuf::as_path));
-            }
-            for item in &step.items {
-                found.extend(item.action.accesses().into_iter().map(|(_, p)| p));
-                if let Some(Ok(output)) = &item.output {
-                    found.extend(output.paths().map(PathBuf::as_path));
-                }
-            }
-        }
-        found
-    }
 }
 
 /// Check every step of a plan that already passed the schema and semantic rules.
-/// References are resolved here, before any action is judged.
-pub fn review(plan: &Plan, authority: &Authority, host: &dyn Host, choices: &Choices) -> Review {
+/// References are resolved here, before any action is judged, against `cwd`.
+pub fn review(
+    plan: &Plan,
+    authority: &Authority,
+    host: &dyn Host,
+    cwd: &Path,
+    choices: &Choices,
+) -> Review {
     let referenced: HashSet<&StepId> = plan
         .steps
         .iter()
@@ -272,7 +268,7 @@ pub fn review(plan: &Plan, authority: &Authority, host: &dyn Host, choices: &Cho
             .map(|d| Refusal::DependencyRefused(d.clone()));
 
         if reviewed.blocked.is_none() {
-            match resolve_step(step, host, choices, &done) {
+            match resolve_step(step, &Scope { host, cwd }, choices, &done) {
                 Ok(resolved) => {
                     reviewed.notes = resolved.notes;
                     reviewed.items = resolved
@@ -338,13 +334,12 @@ pub fn review(plan: &Plan, authority: &Authority, host: &dyn Host, choices: &Cho
         done.insert(step.id.clone(), reviewed.clone());
         steps.push(reviewed);
     }
-    let mut review = Review {
+    Review {
         summary: plan.summary.clone(),
+        cwd: cwd.to_path_buf(),
         steps,
-        labels: Labels::default(),
-    };
-    review.labels = Labels::build(host, review.locations());
-    review
+        labels: Labels::new(cwd, host.home()),
+    }
 }
 
 /// Run the reads a later step refers to, so the person sees real paths when
@@ -378,7 +373,7 @@ struct Resolved {
 /// The concrete actions of a step: references resolved to real locations.
 fn resolve_step(
     step: &Step,
-    host: &dyn Host,
+    scope: &Scope,
     choices: &Choices,
     done: &HashMap<StepId, ReviewedStep>,
 ) -> Result<Resolved, Refusal> {
@@ -396,14 +391,22 @@ fn resolve_step(
                 ));
             }
             (Slot::Primary, Target::Direct(direct)) => {
-                let located =
-                    locate(host, choices, &step.id, slot, direct).map_err(Refusal::Unresolved)?;
+                let located = locate(
+                    scope,
+                    choices,
+                    &step.id,
+                    slot,
+                    direct,
+                    step.spec.follows_last_link(),
+                )
+                .map_err(Refusal::Unresolved)?;
+                require_existing(&step.spec, slot, direct, &located.paths, scope.host)?;
                 sources = located.paths;
                 notes.extend(located.notes);
             }
             (_, Target::Direct(direct)) => {
                 let (found, more) =
-                    destination(host, choices, &step.id, direct).map_err(Refusal::Unresolved)?;
+                    destination(scope, choices, &step.id, direct).map_err(Refusal::Unresolved)?;
                 dest = Some(found);
                 notes.extend(more);
             }
@@ -416,10 +419,39 @@ fn resolve_step(
                 .to_owned(),
         ));
     }
+    if matches!(step.spec, Spec::Cd { .. }) && sources.len() != 1 {
+        return Err(Refusal::CannotExpand(
+            "the place lives in several folders, and a session is in only one".to_owned(),
+        ));
+    }
     Ok(Resolved {
         actions: step.spec.instantiate(&sources, dest.as_ref()),
         notes,
     })
+}
+
+/// A typed path that names nothing is not found, so the person is told that
+/// and not that a permission is missing. Where the user may not even reach the
+/// path, the existence is not this check's to say: the judge refuses it.
+fn require_existing(
+    spec: &Spec,
+    slot: Slot,
+    direct: &Direct,
+    paths: &[PathBuf],
+    host: &dyn Host,
+) -> Result<(), Refusal> {
+    if !matches!(direct, Direct::Path(_)) || !spec.needs_existing(slot) {
+        return Ok(());
+    }
+    match paths
+        .iter()
+        .find(|p| !host.exists(p) && host.allows(Access::Stat, p))
+    {
+        Some(_) => Err(Refusal::Unresolved(ResolveError::NotFound(
+            direct.describe(),
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// What an earlier step found, as the locations a later step acts on.
@@ -470,8 +502,9 @@ pub(crate) fn judge(
     authority: &Authority,
     host: &dyn Host,
 ) -> Verdict {
-    let capability = action.capability();
-    if !authority.capabilities.contains(&capability) {
+    if let Some(capability) = action.capability()
+        && !authority.capabilities.contains(&capability)
+    {
         return Verdict::Refused(Refusal::CapabilityNotGranted(capability));
     }
     match action {
@@ -517,6 +550,11 @@ pub(crate) fn judge(
                 path: path.to_path_buf(),
             });
         }
+    }
+    if let Action::Cd { path } = action
+        && !host.is_dir(path)
+    {
+        return Verdict::Refused(Refusal::NotADirectory(path.clone()));
     }
     Verdict::Allowed
 }

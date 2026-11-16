@@ -1,9 +1,12 @@
-//! How a plan refers to resources without a path (ADR 0014).
+//! How a plan refers to resources (ADR 0014, extended by ADR 0018).
 //!
 //! A `Spec` is what the model asked for: an action whose resources are
-//! `Target`s. Only the resolver and the broker's `from_step` expansion turn a
-//! spec into `Action`s that hold real locations, so an unresolved reference
-//! cannot reach the permission checks or the host.
+//! `Target`s. A target is a place, a name inside a place or a path, a search
+//! below the person's home, a path (absolute, `~` or relative to the current
+//! directory), or what an earlier step found. Only the resolver and the
+//! broker's `from_step` expansion turn a spec into `Action`s that hold real
+//! locations, so an unresolved reference cannot reach the permission checks
+//! or the host.
 
 use std::path::{Path, PathBuf};
 
@@ -23,12 +26,10 @@ pub enum Place {
     Pictures,
     Music,
     Videos,
-    /// All the person's files, wherever they live. Not a path.
-    Everywhere,
 }
 
 impl Place {
-    pub const ALL: [Place; 8] = [
+    pub const ALL: [Place; 7] = [
         Self::Home,
         Self::Downloads,
         Self::Documents,
@@ -36,7 +37,6 @@ impl Place {
         Self::Pictures,
         Self::Music,
         Self::Videos,
-        Self::Everywhere,
     ];
 
     /// What the person sees.
@@ -49,7 +49,6 @@ impl Place {
             Self::Pictures => "Pictures",
             Self::Music => "Music",
             Self::Videos => "Videos",
-            Self::Everywhere => "everywhere",
         }
     }
 }
@@ -68,37 +67,86 @@ pub fn is_single_name(name: &str) -> bool {
     (1..=255).contains(&name.len()) && !name.contains(['/', '\0']) && name != "." && name != ".."
 }
 
+/// The longest path text a plan may carry (PATH_MAX).
+pub const MAX_PATH_BYTES: usize = 4096;
+
+/// A path as typed: something to look at, not yet a location. The schema
+/// bounds the length in characters, and this is the rule in bytes plus the NUL
+/// that no path can hold. What `..` means is the resolver's rule.
+pub fn is_path_text(text: &str) -> bool {
+    (1..=MAX_PATH_BYTES).contains(&text.len()) && !text.contains('\0')
+}
+
+/// Where a name is looked for, or an item is created: a place or a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Within {
+    Place(Place),
+    Path(String),
+}
+
+impl Within {
+    fn describe(&self) -> String {
+        match self {
+            Self::Place(place) => place.title().to_owned(),
+            Self::Path(path) => format!("path {}", quoted(path)),
+        }
+    }
+}
+
 /// A resource the resolver can find or build on its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Direct {
     Place(Place),
-    /// An existing item found by name inside a place.
-    Named {
+    /// What the person typed or saw in the tree: absolute, `~` or relative to
+    /// the current directory (ADR 0018).
+    Path(String),
+    /// An existing item found by name anywhere below the person's home. Shown
+    /// as such, never as a place.
+    UnderHome {
         name: String,
-        within: Place,
         kind: Kind,
     },
-    /// An item that does not exist yet, to be created inside a place.
+    /// An existing item found by name inside a place or below a path.
+    Named {
+        name: String,
+        within: Within,
+        kind: Kind,
+    },
+    /// An item that does not exist yet, to be created inside a place or a path.
     New {
         name: String,
-        within: Place,
+        within: Within,
     },
 }
 
+fn kind_prefix(kind: Kind) -> &'static str {
+    match kind {
+        Kind::File => "file ",
+        Kind::Folder => "folder ",
+        Kind::Any => "",
+    }
+}
+
 impl Direct {
-    /// For the person: never a path.
+    /// What the model asked for, in its own words: the location is not known yet.
     pub fn describe(&self) -> String {
         match self {
             Self::Place(place) => place.title().to_owned(),
-            Self::Named { name, within, kind } => {
-                let what = match kind {
-                    Kind::File => "file ",
-                    Kind::Folder => "folder ",
-                    Kind::Any => "",
-                };
-                format!("{what}{} in {}", quoted(name), within.title())
+            Self::Path(path) => format!("path {}", quoted(path)),
+            Self::UnderHome { name, kind } => {
+                format!("{}{} under home", kind_prefix(*kind), quoted(name))
             }
-            Self::New { name, within } => format!("new {} in {}", quoted(name), within.title()),
+            Self::Named { name, within, kind } => {
+                format!(
+                    "{}{} in {}",
+                    kind_prefix(*kind),
+                    quoted(name),
+                    within.describe()
+                )
+            }
+            Self::New { name, within } => {
+                format!("new {} in {}", quoted(name), within.describe())
+            }
         }
     }
 }
@@ -163,6 +211,10 @@ pub enum Spec {
         from: Target,
         to: Target,
     },
+    /// Change the session's current directory (ADR 0018).
+    Cd {
+        target: Target,
+    },
     /// An action with no resource to resolve (accounts, configuration, programs, the SOUL).
     Plain(Action),
 }
@@ -177,6 +229,7 @@ impl Spec {
             Self::FindLargest { .. } => "fs.find_largest",
             Self::Write { .. } => "fs.write",
             Self::Move { .. } => "fs.move",
+            Self::Cd { .. } => "session.cd",
             Self::Plain(action) => action.name(),
         }
     }
@@ -184,6 +237,7 @@ impl Spec {
     pub fn root_rule(&self) -> RootRule {
         match self {
             Self::Plain(action) => action.root_rule(),
+            Self::Cd { .. } => RootRule::Never,
             _ => RootRule::OnRequest,
         }
     }
@@ -199,11 +253,28 @@ impl Spec {
             | Self::Stat { target }
             | Self::Read { target }
             | Self::Delete { target }
+            | Self::Cd { target }
             | Self::FindLargest { target, .. }
             | Self::Write { target, .. } => vec![(Slot::Primary, target)],
             Self::Move { from, to } => vec![(Slot::Primary, from), (Slot::Destination, to)],
             Self::Plain(_) => Vec::new(),
         }
+    }
+
+    /// Whether a path in this position must name something that exists: only
+    /// what a step creates may not yet.
+    pub fn needs_existing(&self, slot: Slot) -> bool {
+        match self {
+            Self::Write { .. } => false,
+            Self::Move { .. } => slot == Slot::Primary,
+            _ => true,
+        }
+    }
+
+    /// Whether a path in the primary position that ends in a link means what
+    /// the link leads to (a directory to enter) or the link itself.
+    pub fn follows_last_link(&self) -> bool {
+        matches!(self, Self::Cd { .. })
     }
 
     /// The step whose results this step uses, if any.
@@ -221,6 +292,7 @@ impl Spec {
             Self::Stat { target } => format!("Show details of {}", target.describe()),
             Self::Read { target } => format!("Read {}", target.describe()),
             Self::Delete { target } => format!("Delete {}", target.describe()),
+            Self::Cd { target } => format!("Go to {}", target.describe()),
             Self::FindLargest { target, count } => {
                 format!("Find the {count} largest files in {}", target.describe())
             }
@@ -247,6 +319,7 @@ impl Spec {
             Self::Stat { .. } => each(&|path| Action::Stat { path }),
             Self::Read { .. } => each(&|path| Action::Read { path }),
             Self::Delete { .. } => each(&|path| Action::Delete { path }),
+            Self::Cd { .. } => each(&|path| Action::Cd { path }),
             Self::FindLargest { count, .. } => each(&|path| Action::FindLargest {
                 path,
                 count: *count,
@@ -300,6 +373,33 @@ mod tests {
         ] {
             assert!(!is_single_name(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_path_is_text_of_a_bounded_length_with_no_nul() {
+        for good in ["~", "/", "a/b", "../x", "ação/é", &"x".repeat(4096)] {
+            assert!(is_path_text(good), "{good}");
+        }
+        for bad in ["", "a\0b", &"x".repeat(4097), &"é".repeat(2049)] {
+            assert!(!is_path_text(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_reference_is_described_in_the_models_words_with_no_location() {
+        let path = Direct::Path("~/a b".into());
+        assert_eq!(path.describe(), r#"path "~/a b""#);
+        let home = Direct::UnderHome {
+            name: "x".into(),
+            kind: Kind::Folder,
+        };
+        assert_eq!(home.describe(), r#"folder "x" under home"#);
+        let named = Direct::Named {
+            name: "x".into(),
+            within: Within::Path("d".into()),
+            kind: Kind::Any,
+        };
+        assert_eq!(named.describe(), r#""x" in path "d""#);
     }
 
     #[test]

@@ -58,6 +58,10 @@ pub enum Action {
     Delete {
         path: PathBuf,
     },
+    /// Changes only the session's directory (ADR 0018). Run by the shell, never by a host.
+    Cd {
+        path: PathBuf,
+    },
     Run {
         program: String,
         argv: Vec<String>,
@@ -96,6 +100,8 @@ impl Action {
             // Startup files and credentials are dotfiles or live under one
             // (`.zshrc`, `.ssh/`): listing, showing or adding to them is asked.
             Self::Read { path } => is_hidden(path),
+            // Entering a directory shows nothing; looking inside it asks (ADR 0016).
+            Self::Cd { .. } => false,
             Self::Write { path, mode, .. } => match mode {
                 WriteMode::Create | WriteMode::Append => is_hidden(path),
                 WriteMode::Overwrite => true,
@@ -289,6 +295,7 @@ impl Action {
             Self::Write { .. } => "fs.write",
             Self::Move { .. } => "fs.move",
             Self::Delete { .. } => "fs.delete",
+            Self::Cd { .. } => "session.cd",
             Self::Run { .. } => "process.run",
             Self::UserManage { .. } => "user.manage",
             Self::SystemConfigure { .. } => "system.configure",
@@ -296,25 +303,29 @@ impl Action {
         }
     }
 
-    pub fn capability(&self) -> Capability {
-        match self {
+    /// What the session must hold to run this. Changing directory needs none:
+    /// it touches nothing but the session, and the user's own read permission
+    /// on the target is the whole check (ADR 0018).
+    pub fn capability(&self) -> Option<Capability> {
+        Some(match self {
             Self::List { .. }
             | Self::Stat { .. }
             | Self::Read { .. }
             | Self::FindLargest { .. } => Capability::FsRead,
             Self::Write { .. } | Self::Move { .. } => Capability::FsWrite,
             Self::Delete { .. } => Capability::FsDelete,
+            Self::Cd { .. } => return None,
             Self::Run { .. } => Capability::ProcessExec,
             Self::UserManage { .. } => Capability::UserAdmin,
             Self::SystemConfigure { .. } => Capability::SystemConfig,
             Self::SoulProposeChange { .. } => Capability::SoulPropose,
-        }
+        })
     }
 
     pub fn root_rule(&self) -> RootRule {
         match self {
             Self::UserManage { .. } | Self::SystemConfigure { .. } => RootRule::Always,
-            Self::SoulProposeChange { .. } => RootRule::Never,
+            Self::SoulProposeChange { .. } | Self::Cd { .. } => RootRule::Never,
             _ => RootRule::OnRequest,
         }
     }
@@ -322,14 +333,16 @@ impl Action {
     /// Reads change nothing, so the broker may run them before confirmation to
     /// expand a `from_step` reference (ADR 0011).
     pub fn is_read_only(&self) -> bool {
-        self.capability() == Capability::FsRead
+        self.capability() == Some(Capability::FsRead)
     }
 
     /// What the user's own permissions must allow, path by path.
     pub fn accesses(&self) -> Vec<(Access, &Path)> {
         match self {
             Self::Stat { path } => vec![(Access::Stat, path)],
-            Self::List { path } | Self::Read { path } => vec![(Access::Read, path)],
+            Self::List { path } | Self::Read { path } | Self::Cd { path } => {
+                vec![(Access::Read, path)]
+            }
             Self::FindLargest { path, .. } => vec![(Access::Read, path)],
             Self::Write { path, .. } => vec![(Access::Write, path)],
             Self::Move { from, to } => vec![(Access::Delete, from), (Access::Write, to)],
@@ -351,6 +364,7 @@ impl Action {
             Self::List { path }
             | Self::Stat { path }
             | Self::Read { path }
+            | Self::Cd { path }
             | Self::Delete { path } => {
                 format!("{name} path={}", p(path))
             }
@@ -536,7 +550,7 @@ mod tests {
             ),
         ];
         for (action, capability, rule) in table {
-            assert_eq!(action.capability(), capability, "{}", action.name());
+            assert_eq!(action.capability(), Some(capability), "{}", action.name());
             assert_eq!(action.root_rule(), rule, "{}", action.name());
         }
     }

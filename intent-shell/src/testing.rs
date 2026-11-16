@@ -8,7 +8,8 @@ use serde_json::Value;
 
 use crate::action::{Access, Action};
 use crate::ports::{
-    Confirm, DecisionLog, Entry, Found, Host, Output, Planner, Retry, Search, User,
+    ChoiceLine, Confirm, DecisionLog, Entry, EntryKind, Found, Host, Output, Planner, Retry,
+    Search, TREE_DEPTH, TreeEntry, User,
 };
 use crate::reference::Place;
 
@@ -18,6 +19,9 @@ pub struct FakeHost {
     /// Folders that exist, besides the ones the files are in.
     pub dirs: Vec<PathBuf>,
     pub places: HashMap<Place, Vec<PathBuf>>,
+    pub home: Option<PathBuf>,
+    /// Links: a path that leads somewhere else, as a symbolic link does.
+    pub links: Vec<(PathBuf, PathBuf)>,
     pub forbidden: Vec<(Access, PathBuf)>,
     /// Reads of these paths fail, as when the directory vanishes after the check.
     pub failing: Vec<PathBuf>,
@@ -34,20 +38,18 @@ pub struct FakeHost {
 }
 
 impl Default for FakeHost {
-    /// `downloads` is `/work`, `documents` is `/docs`, and `everywhere` is both.
+    /// `downloads` is `/work`, `documents` is `/docs`, and the home is `/home/ana`.
     fn default() -> Self {
         let places = HashMap::from([
             (Place::Downloads, vec![PathBuf::from("/work")]),
             (Place::Documents, vec![PathBuf::from("/docs")]),
-            (
-                Place::Everywhere,
-                vec![PathBuf::from("/work"), PathBuf::from("/docs")],
-            ),
         ]);
         Self {
             files: HashMap::new(),
             dirs: Vec::new(),
             places,
+            home: Some(PathBuf::from("/home/ana")),
+            links: Vec::new(),
             forbidden: Vec::new(),
             failing: Vec::new(),
             note: None,
@@ -101,20 +103,101 @@ impl FakeHost {
         self
     }
 
+    pub fn with_home(mut self, home: &str) -> Self {
+        self.home = Some(PathBuf::from(home));
+        self
+    }
+
+    pub fn link(mut self, from: &str, to: &str) -> Self {
+        self.links.push((PathBuf::from(from), PathBuf::from(to)));
+        self
+    }
+
     pub fn dir(mut self, path: &str) -> Self {
         self.dirs.push(PathBuf::from(path));
         self
     }
 
-    fn is_dir(&self, path: &Path) -> bool {
+    fn holds_dir(&self, path: &Path) -> bool {
         self.dirs.iter().any(|d| d == path)
             || self.files.keys().any(|f| f != path && f.starts_with(path))
+    }
+
+    /// `path` with the first link on the way replaced by where it leads.
+    fn through_links(&self, path: &Path) -> PathBuf {
+        let mut path = path.to_path_buf();
+        for _ in 0..8 {
+            let Some((from, to)) = self.links.iter().find(|(from, _)| path.starts_with(from))
+            else {
+                break;
+            };
+            path = to.join(path.strip_prefix(from).unwrap_or(Path::new("")));
+        }
+        path
+    }
+
+    /// What a listing of `path` shows down to the tree's depth.
+    fn tree_below(&self, path: &Path) -> Vec<TreeEntry> {
+        let mut entries: std::collections::BTreeMap<PathBuf, TreeEntry> = Default::default();
+        let mut add = |entry_path: PathBuf, size: Option<u64>, kind: EntryKind| {
+            entries.entry(entry_path.clone()).or_insert(TreeEntry {
+                path: entry_path,
+                kind,
+                size,
+                readable: true,
+                protected: false,
+            });
+        };
+        let known: Vec<PathBuf> = self
+            .files
+            .keys()
+            .cloned()
+            .chain(self.dirs.clone())
+            .collect();
+        for known in known {
+            let Ok(inside) = known.strip_prefix(path) else {
+                continue;
+            };
+            let parts: Vec<_> = inside.components().collect();
+            for depth in 1..=parts.len().min(TREE_DEPTH) {
+                let here = parts[..depth]
+                    .iter()
+                    .fold(path.to_path_buf(), |p, c| p.join(c));
+                if depth == parts.len() && self.files.contains_key(&known) {
+                    add(here, self.files.get(&known).copied(), EntryKind::File);
+                } else {
+                    add(here, None, EntryKind::Dir);
+                }
+            }
+        }
+        entries.into_values().collect()
     }
 }
 
 impl Host for FakeHost {
     fn place_roots(&self, place: Place) -> Vec<PathBuf> {
-        self.places.get(&place).cloned().unwrap_or_default()
+        match (self.places.get(&place), place) {
+            (Some(roots), _) => roots.clone(),
+            (None, Place::Home) => self.home.clone().into_iter().collect(),
+            (None, _) => Vec::new(),
+        }
+    }
+
+    fn home(&self) -> Option<PathBuf> {
+        self.home.clone()
+    }
+
+    fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf {
+        match (follow_last, path.parent(), path.file_name()) {
+            (false, Some(parent), Some(last)) => self.through_links(parent).join(last),
+            _ => self.through_links(path),
+        }
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.holds_dir(&self.through_links(path))
+            || self.places.values().flatten().any(|root| root == path)
+            || self.home.as_deref() == Some(path)
     }
 
     fn same(&self, a: &Path, b: &Path) -> bool {
@@ -127,7 +210,9 @@ impl Host for FakeHost {
     }
 
     fn exists(&self, path: &Path) -> bool {
-        self.files.contains_key(path) || self.dirs.iter().any(|d| d == path)
+        self.files.contains_key(path)
+            || self.links.iter().any(|(from, _)| from == path)
+            || Host::is_dir(self, path)
     }
 
     fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String> {
@@ -154,7 +239,7 @@ impl Host for FakeHost {
         let entries = found
             .into_iter()
             .map(|path| Entry {
-                is_dir: self.is_dir(&path),
+                is_dir: self.holds_dir(&path),
                 path,
             })
             .collect();
@@ -216,6 +301,7 @@ impl Host for FakeHost {
                         .into_iter()
                         .map(|path| Found { path, size: None })
                         .collect(),
+                    tree: self.tree_below(path),
                     ..Output::default()
                 })
             }
@@ -232,6 +318,8 @@ impl Host for FakeHost {
 pub struct ScriptedPlanner {
     pub outputs: RefCell<Vec<String>>,
     pub retries: RefCell<Vec<Option<String>>>,
+    /// The current directory the model was told, one per call.
+    pub directories: RefCell<Vec<String>>,
 }
 
 impl ScriptedPlanner {
@@ -239,12 +327,14 @@ impl ScriptedPlanner {
         Self {
             outputs: RefCell::new(outputs.iter().rev().map(|s| (*s).to_owned()).collect()),
             retries: RefCell::default(),
+            directories: RefCell::default(),
         }
     }
 }
 
 impl Planner for ScriptedPlanner {
-    fn plan(&self, _request: &str, retry: Option<&Retry>) -> Result<String, String> {
+    fn plan(&self, _request: &str, cwd: &str, retry: Option<&Retry>) -> Result<String, String> {
+        self.directories.borrow_mut().push(cwd.to_owned());
         self.retries
             .borrow_mut()
             .push(retry.map(|r| r.error.to_owned()));
@@ -262,7 +352,7 @@ pub struct Answers {
     pub screens: Vec<(String, String)>,
     /// What the person picks at each question, in order; running out means cancelling.
     pub picks: Vec<Option<usize>>,
-    pub questions: Vec<(String, Vec<String>)>,
+    pub questions: Vec<(String, Vec<ChoiceLine>)>,
 }
 
 impl Answers {
@@ -294,8 +384,8 @@ impl Confirm for Answers {
         self.root
     }
 
-    fn choose(&mut self, question: &str, options: &[String]) -> Option<usize> {
-        self.questions.push((question.to_owned(), options.to_vec()));
+    fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize> {
+        self.questions.push((question.to_owned(), lines.to_vec()));
         self.picks.pop().flatten()
     }
 }

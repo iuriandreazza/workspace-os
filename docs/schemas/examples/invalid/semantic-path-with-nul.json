@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"A path with a NUL","steps":[
+ {"id":"s1","action":"fs.list","args":{"target":{"path":"~/a\u0000b"}},"depends_on":[],"elevate":false}]}

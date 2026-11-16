@@ -3,7 +3,7 @@ title: "S3: intent shell prototype on the host"
 type: report
 status: done
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-16
 tags: [slm, shell, broker, capabilities, prototype]
 ---
 
@@ -11,7 +11,9 @@ tags: [slm, shell, broker, capabilities, prototype]
 
 > S3b (`docs/s3b-path-free-shell.md`, ADR 0014) replaced the path arguments, the current
 > directory and the plain-text rendering described below with references, a resolver and
-> the terminal screen. The broker, the log and the tests of the refusal classes stay as written here.
+> the terminal screen. S3e (`docs/s3e-directories-and-tree.md`, ADR 0018) brought paths and a
+> current directory back, as one more reference, with a tree view and plan schema version 3.
+> The broker, the log and the tests of the refusal classes stay as written here.
 
 Roadmap item S3. The model proposes, deterministic code decides (ADR 0002):
 `intent-shell` turns a request into a plan in the ADR 0011 format, the broker
