@@ -2,7 +2,7 @@
 //!
 //! Needs `llama-server` running Bonsai 8B (docs/s3-intent-shell-prototype.md).
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use intent_shell::broker::Authority;
@@ -10,6 +10,7 @@ use intent_shell::host::UnixHost;
 use intent_shell::log::JsonlLog;
 use intent_shell::model::LlamaPlanner;
 use intent_shell::ports::{Confirm, User};
+use intent_shell::screen::{self, Header};
 use intent_shell::session::Shell;
 
 const USAGE: &str = "usage: intent-shell [--model HOST:PORT] [--log FILE] [--administrator]";
@@ -40,11 +41,20 @@ fn parse_options(home: &str) -> Result<Options, String> {
 
 struct TerminalConfirm;
 
-fn ask(question: &str) -> bool {
-    print!("{question} [y/N] ");
+fn read_line() -> Option<String> {
     let _ = io::stdout().flush();
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer).is_ok() && is_yes(&answer)
+    let mut line = String::new();
+    match io::stdin().read_line(&mut line) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => {
+            // A terminal shows what is typed; a script's answers would not
+            // appear anywhere, and a transcript has to show them.
+            if !io::stdin().is_terminal() {
+                print!("{line}");
+            }
+            Some(line)
+        }
+    }
 }
 
 /// Only an explicit yes counts: an empty line, end of input or anything else is no.
@@ -52,18 +62,45 @@ fn is_yes(answer: &str) -> bool {
     matches!(answer.trim(), "y" | "Y" | "yes")
 }
 
+fn is_details(answer: &str) -> bool {
+    matches!(answer.trim(), "d" | "D" | "details")
+}
+
+/// The one-based number the person typed, as an index into `count` options.
+fn parse_choice(answer: &str, count: usize) -> Option<usize> {
+    let number: usize = answer.trim().parse().ok()?;
+    (1..=count).contains(&number).then(|| number - 1)
+}
+
 impl Confirm for TerminalConfirm {
-    fn plan(&mut self, rendering: &str) -> bool {
-        println!("{rendering}");
-        ask("Run the steps marked ok?")
+    fn plan(&mut self, screen: &str, details: &str) -> bool {
+        println!("{screen}");
+        loop {
+            print!("  [y] run the steps marked ok   [d] details   [n] cancel > ");
+            let Some(answer) = read_line() else {
+                return false;
+            };
+            if is_details(&answer) {
+                println!("{details}");
+            } else {
+                return is_yes(&answer);
+            }
+        }
     }
 
-    fn root_action(&mut self, rendering: &str, who: &User) -> bool {
-        println!(
-            "ROOT action, to be confirmed by {}:\n  {rendering}",
-            who.name
-        );
-        ask("Confirm this exact action?")
+    fn root_action(&mut self, panel: &str, _who: &User) -> bool {
+        println!("{panel}");
+        print!("╚═ [y] confirm this exact action   [n] refuse > ");
+        read_line().is_some_and(|answer| is_yes(&answer))
+    }
+
+    fn choose(&mut self, question: &str, options: &[String]) -> Option<usize> {
+        println!("\n  {question}");
+        for (index, option) in options.iter().enumerate() {
+            println!("   {}. {option}", index + 1);
+        }
+        print!("  number, or Enter to cancel > ");
+        parse_choice(&read_line()?, options.len())
     }
 }
 
@@ -77,14 +114,9 @@ fn main() {
 fn run() -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
     let options = parse_options(&home)?;
-    let host = UnixHost::from_environment().map_err(|e| e.to_string())?;
-    let working_directory = std::env::current_dir()
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .into_owned();
+    let host = UnixHost::from_environment();
     let planner = LlamaPlanner {
-        address: options.model,
-        working_directory,
+        address: options.model.clone(),
     };
     let mut log = JsonlLog::open(&options.log).map_err(|e| {
         format!(
@@ -100,8 +132,17 @@ fn run() -> Result<(), String> {
     let mut confirm = TerminalConfirm;
 
     println!(
-        "intent-shell: decisions are logged to {}",
-        options.log.display()
+        "{}",
+        screen::header(&Header {
+            user: &authority.user.name,
+            administrator: authority.user.administrator,
+            model: &options.model,
+            log: &options
+                .log
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        })
     );
     loop {
         print!("intent> ");
@@ -131,7 +172,15 @@ fn run() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_yes;
+    use super::{is_yes, parse_choice};
+
+    #[test]
+    fn a_choice_is_a_number_inside_the_list() {
+        assert_eq!(parse_choice("2\n", 3), Some(1));
+        for bad in ["", "0", "4", "x", "-1", " "] {
+            assert_eq!(parse_choice(bad, 3), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn only_an_explicit_yes_confirms() {

@@ -16,12 +16,16 @@ use serde_json::Value;
 struct Decline;
 
 impl Confirm for Decline {
-    fn plan(&mut self, _rendering: &str) -> bool {
+    fn plan(&mut self, _screen: &str, _details: &str) -> bool {
         false
     }
 
-    fn root_action(&mut self, _rendering: &str, _who: &User) -> bool {
+    fn root_action(&mut self, _panel: &str, _who: &User) -> bool {
         false
+    }
+
+    fn choose(&mut self, _question: &str, _options: &[String]) -> Option<usize> {
+        None
     }
 }
 
@@ -40,12 +44,8 @@ impl DecisionLog for Events {
 fn the_model_answers_through_the_broker_and_declining_runs_nothing() {
     let address =
         std::env::var("INTENT_SHELL_MODEL").unwrap_or_else(|_| "127.0.0.1:8089".to_owned());
-    let cwd = std::env::current_dir().unwrap();
-    let planner = LlamaPlanner {
-        address,
-        working_directory: cwd.to_string_lossy().into_owned(),
-    };
-    let host = UnixHost::new(std::env::var_os("HOME").map(Into::into), cwd);
+    let planner = LlamaPlanner { address };
+    let host = UnixHost::from_environment();
     let authority = Authority::full(User {
         name: "tester".to_owned(),
         administrator: false,
@@ -59,7 +59,7 @@ fn the_model_answers_through_the_broker_and_declining_runs_nothing() {
         confirm: &mut Decline,
         log: &mut log,
     }
-    .handle("list the largest files here");
+    .handle("list the five largest files in my downloads");
 
     assert!(
         matches!(

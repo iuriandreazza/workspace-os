@@ -29,7 +29,8 @@ impl UserOperation {
     }
 }
 
-/// One concrete action: every path is a real path, no step reference is left.
+/// One concrete action: every location is a real one, nothing is left to resolve.
+/// Built only from a `Spec` by the resolver and the broker (ADR 0014).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     List {
@@ -285,10 +286,6 @@ impl Action {
         self.capability() == Capability::FsRead
     }
 
-    pub fn produces_paths(&self) -> bool {
-        matches!(self, Self::List { .. } | Self::FindLargest { .. })
-    }
-
     /// What the user's own permissions must allow, path by path.
     pub fn accesses(&self) -> Vec<(Access, &Path)> {
         match self {
@@ -303,43 +300,6 @@ impl Action {
             | Self::SystemConfigure { .. }
             | Self::SoulProposeChange { .. } => Vec::new(),
         }
-    }
-
-    /// The same action with every path passed through `f`.
-    pub fn map_paths(&self, f: &dyn Fn(&Path) -> PathBuf) -> Action {
-        let mut action = self.clone();
-        match &mut action {
-            Self::List { path }
-            | Self::Stat { path }
-            | Self::Read { path }
-            | Self::FindLargest { path, .. }
-            | Self::Write { path, .. }
-            | Self::Delete { path } => *path = f(path),
-            Self::Move { from, to } => {
-                *from = f(from);
-                *to = f(to);
-            }
-            Self::Run { .. }
-            | Self::UserManage { .. }
-            | Self::SystemConfigure { .. }
-            | Self::SoulProposeChange { .. } => {}
-        }
-        action
-    }
-
-    /// The path a `from_step` reference replaces: the only reference position
-    /// in each action that accepts one.
-    pub fn with_referenced_path(&self, referenced: PathBuf) -> Action {
-        let mut action = self.clone();
-        match &mut action {
-            Self::List { path }
-            | Self::Stat { path }
-            | Self::Read { path }
-            | Self::Delete { path } => *path = referenced,
-            Self::Move { from, .. } => *from = referenced,
-            _ => {}
-        }
-        action
     }
 
     /// The exact action as it will run. Strings are JSON-quoted so a control
@@ -576,29 +536,5 @@ mod tests {
         for (action, text) in shown {
             assert_eq!(action.describe(), text);
         }
-    }
-
-    #[test]
-    fn a_reference_fills_the_source_of_a_move_and_the_target_of_the_rest() {
-        let moved = Action::Move {
-            from: PathBuf::new(),
-            to: PathBuf::from("/dest"),
-        }
-        .with_referenced_path(PathBuf::from("/src"));
-        assert_eq!(
-            moved,
-            Action::Move {
-                from: PathBuf::from("/src"),
-                to: PathBuf::from("/dest")
-            }
-        );
-        let mapped = moved.map_paths(&|p| p.join("x"));
-        assert_eq!(
-            mapped,
-            Action::Move {
-                from: PathBuf::from("/src/x"),
-                to: PathBuf::from("/dest/x")
-            }
-        );
     }
 }

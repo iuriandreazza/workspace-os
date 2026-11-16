@@ -7,18 +7,51 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::action::{Access, Action};
-use crate::ports::{Confirm, DecisionLog, Host, Output, Planner, Retry, User};
+use crate::ports::{
+    Confirm, DecisionLog, Entry, Found, Host, Output, Planner, Retry, Search, User,
+};
+use crate::reference::Place;
 
-/// A filesystem in memory: files with sizes, and a set of paths the user may not touch.
-#[derive(Default)]
+/// A filesystem in memory: files with sizes, places, and a set of paths the user may not touch.
 pub struct FakeHost {
     pub files: HashMap<PathBuf, u64>,
+    /// Folders that exist, besides the ones the files are in.
+    pub dirs: Vec<PathBuf>,
+    pub places: HashMap<Place, Vec<PathBuf>>,
     pub forbidden: Vec<(Access, PathBuf)>,
     /// Reads of these paths fail, as when the directory vanishes after the check.
     pub failing: Vec<PathBuf>,
     /// Attached to what a search returns, as when part of the tree was unreadable.
     pub note: Option<String>,
+    /// A name search fails, as when the disk does.
+    pub search_fails: bool,
     pub executed: RefCell<Vec<String>>,
+    pub searched: RefCell<Vec<String>>,
+}
+
+impl Default for FakeHost {
+    /// `downloads` is `/work`, `documents` is `/docs`, and `everywhere` is both.
+    fn default() -> Self {
+        let places = HashMap::from([
+            (Place::Downloads, vec![PathBuf::from("/work")]),
+            (Place::Documents, vec![PathBuf::from("/docs")]),
+            (
+                Place::Everywhere,
+                vec![PathBuf::from("/work"), PathBuf::from("/docs")],
+            ),
+        ]);
+        Self {
+            files: HashMap::new(),
+            dirs: Vec::new(),
+            places,
+            forbidden: Vec::new(),
+            failing: Vec::new(),
+            note: None,
+            search_fails: false,
+            executed: RefCell::default(),
+            searched: RefCell::default(),
+        }
+    }
 }
 
 impl FakeHost {
@@ -43,11 +76,52 @@ impl FakeHost {
         self.forbidden.push((access, PathBuf::from(path)));
         self
     }
+
+    pub fn place(mut self, place: Place, root: &str) -> Self {
+        self.places.insert(place, vec![PathBuf::from(root)]);
+        self
+    }
+
+    pub fn dir(mut self, path: &str) -> Self {
+        self.dirs.push(PathBuf::from(path));
+        self
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.dirs.iter().any(|d| d == path)
+            || self.files.keys().any(|f| f != path && f.starts_with(path))
+    }
 }
 
 impl Host for FakeHost {
-    fn resolve(&self, path: &Path) -> PathBuf {
-        path.to_path_buf()
+    fn place_roots(&self, place: Place) -> Vec<PathBuf> {
+        self.places.get(&place).cloned().unwrap_or_default()
+    }
+
+    fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String> {
+        self.searched.borrow_mut().push(needle.to_owned());
+        if self.search_fails {
+            return Err("disk error".to_owned());
+        }
+        let needle = needle.to_lowercase();
+        let mut seen: Vec<PathBuf> = self.dirs.clone();
+        seen.extend(self.files.keys().cloned());
+        let entries = seen
+            .into_iter()
+            .filter(|p| roots.iter().any(|r| p.starts_with(r) && p != r))
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().to_lowercase().contains(&needle))
+            })
+            .map(|path| Entry {
+                is_dir: self.is_dir(&path),
+                path,
+            })
+            .collect();
+        Ok(Search {
+            entries,
+            notes: self.note.clone().into_iter().collect(),
+        })
     }
 
     fn allows(&self, access: Access, path: &Path) -> bool {
@@ -72,15 +146,18 @@ impl Host for FakeHost {
                     .filter(|(p, _)| p.starts_with(path))
                     .collect();
                 found.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-                let paths: Vec<PathBuf> = found
+                let found: Vec<Found> = found
                     .into_iter()
                     .take(*count as usize)
-                    .map(|(p, _)| p.clone())
+                    .map(|(p, s)| Found {
+                        path: p.clone(),
+                        size: Some(*s),
+                    })
                     .collect();
                 Ok(Output {
-                    text: format!("{} files", paths.len()),
-                    paths,
+                    found,
                     notes: self.note.clone().into_iter().collect(),
+                    ..Output::default()
                 })
             }
             Action::List { path } => {
@@ -92,8 +169,10 @@ impl Host for FakeHost {
                     .collect();
                 paths.sort();
                 Ok(Output {
-                    text: String::new(),
-                    paths,
+                    found: paths
+                        .into_iter()
+                        .map(|path| Found { path, size: None })
+                        .collect(),
                     ..Output::default()
                 })
             }
@@ -137,6 +216,10 @@ pub struct Answers {
     pub plan: bool,
     pub root: bool,
     pub root_asked: Vec<String>,
+    pub screens: Vec<(String, String)>,
+    /// What the person picks at each question, in order; running out means cancelling.
+    pub picks: Vec<Option<usize>>,
+    pub questions: Vec<(String, Vec<String>)>,
 }
 
 impl Answers {
@@ -145,18 +228,32 @@ impl Answers {
             plan: true,
             root: true,
             root_asked: Vec::new(),
+            screens: Vec::new(),
+            picks: Vec::new(),
+            questions: Vec::new(),
         }
+    }
+
+    pub fn picking(mut self, picks: &[Option<usize>]) -> Self {
+        self.picks = picks.iter().rev().copied().collect();
+        self
     }
 }
 
 impl Confirm for Answers {
-    fn plan(&mut self, _rendering: &str) -> bool {
+    fn plan(&mut self, screen: &str, details: &str) -> bool {
+        self.screens.push((screen.to_owned(), details.to_owned()));
         self.plan
     }
 
-    fn root_action(&mut self, rendering: &str, _who: &User) -> bool {
-        self.root_asked.push(rendering.to_owned());
+    fn root_action(&mut self, panel: &str, _who: &User) -> bool {
+        self.root_asked.push(panel.to_owned());
         self.root
+    }
+
+    fn choose(&mut self, question: &str, options: &[String]) -> Option<usize> {
+        self.questions.push((question.to_owned(), options.to_vec()));
+        self.picks.pop().flatten()
     }
 }
 

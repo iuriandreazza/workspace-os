@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::action::{Access, Action};
+use crate::reference::Place;
 
 /// Who the shell acts for. `administrator` means allowed to act as root
 /// after confirming (ADR 0007).
@@ -17,19 +18,52 @@ pub struct User {
     pub administrator: bool,
 }
 
-/// What an executed action produced. `paths` feeds `from_step` references.
+/// One item a search or a listing produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub path: PathBuf,
+    pub size: Option<u64>,
+}
+
+/// What an executed action produced. `found` feeds `from_step` references.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Output {
+    /// Content or details, for actions that return them. Items go in `found`.
     pub text: String,
-    pub paths: Vec<PathBuf>,
+    pub found: Vec<Found>,
     /// What the person must know about how complete the result is. Shown
     /// with the plan, because a reference expands from it.
     pub notes: Vec<String>,
 }
 
+impl Output {
+    pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
+        self.found.iter().map(|f| &f.path)
+    }
+}
+
+/// An item a name search came across.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Search {
+    /// Items whose name contains the needle, ignoring case.
+    pub entries: Vec<Entry>,
+    /// What the search could not look at.
+    pub notes: Vec<String>,
+}
+
 pub trait Host {
-    /// Turn what the model wrote (`~`, relative) into the path the action uses.
-    fn resolve(&self, path: &Path) -> PathBuf;
+    /// Where a place lives on this machine, if it has one. The core knows no
+    /// directory layout: this is the adapter's mapping (ADR 0014).
+    fn place_roots(&self, place: Place) -> Vec<PathBuf>;
+    /// Look below `roots`, only where the user may list, for names that
+    /// contain `needle`. Says what it could not look at.
+    fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String>;
     /// Whether the user's own permissions allow this access to this path.
     fn allows(&self, access: Access, path: &Path) -> bool;
     /// Run one concrete action, or say why this host cannot.
@@ -48,10 +82,14 @@ pub trait Planner {
 }
 
 pub trait Confirm {
-    /// Show the broker's rendering of the whole plan and ask whether to go on.
-    fn plan(&mut self, rendering: &str) -> bool;
-    /// Ask `who`, an administrator, to confirm one root action, shown exactly.
-    fn root_action(&mut self, rendering: &str, who: &User) -> bool;
+    /// Show the plan screen and ask whether to go on. `details` is the same
+    /// screen with the real locations, which the person may ask to see.
+    fn plan(&mut self, screen: &str, details: &str) -> bool;
+    /// Ask `who`, an administrator, to confirm one root action. The panel
+    /// always carries the real location.
+    fn root_action(&mut self, panel: &str, who: &User) -> bool;
+    /// Ask the person which of several matches they mean. `None` cancels.
+    fn choose(&mut self, question: &str, options: &[String]) -> Option<usize>;
 }
 
 pub trait DecisionLog {

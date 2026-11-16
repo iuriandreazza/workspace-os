@@ -1,7 +1,7 @@
 ---
 title: "ADR 0011: Action plan format of the intent shell"
 type: adr
-status: accepted
+status: accepted, partially superseded by ADR 0014
 created: 2026-11-15
 updated: 2026-11-15
 tags: [slm, shell, plan, schema, capabilities, root, soul]

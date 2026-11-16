@@ -12,26 +12,23 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::action::{Access, Action, quoted_path};
-use crate::ports::{Host, Output};
+use crate::ports::{Entry, Found, Host, Output, Search};
+use crate::reference::Place;
 
 const MAX_READ_BYTES: u64 = 64 * 1024;
 const MAX_WALKED_ENTRIES: usize = 100_000;
 
 pub struct UnixHost {
     home: Option<PathBuf>,
-    cwd: PathBuf,
 }
 
 impl UnixHost {
-    pub fn new(home: Option<PathBuf>, cwd: PathBuf) -> Self {
-        Self { home, cwd }
+    pub fn new(home: Option<PathBuf>) -> Self {
+        Self { home }
     }
 
-    pub fn from_environment() -> std::io::Result<Self> {
-        Ok(Self::new(
-            std::env::var_os("HOME").map(PathBuf::from),
-            std::env::current_dir()?,
-        ))
+    pub fn from_environment() -> Self {
+        Self::new(std::env::var_os("HOME").map(PathBuf::from))
     }
 }
 
@@ -44,26 +41,6 @@ fn permitted(path: &Path, mode: libc::c_int) -> bool {
     unsafe { libc::access(c_path.as_ptr(), mode) == 0 }
 }
 
-/// Resolve `.` and `..` by name, so the path that is checked and shown is the
-/// one that is used, and `..` cannot hide that a path is a directory's parent.
-fn lexically_normal(path: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                // Above the root is the root.
-                if !out.pop() && !out.has_root() {
-                    out.push("..");
-                }
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
 fn parent_of(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -71,12 +48,25 @@ fn parent_of(path: &Path) -> &Path {
 }
 
 impl Host for UnixHost {
-    fn resolve(&self, path: &Path) -> PathBuf {
-        let expanded = match (path.strip_prefix("~"), &self.home) {
-            (Ok(rest), Some(home)) => home.join(rest),
-            _ => path.to_path_buf(),
+    fn place_roots(&self, place: Place) -> Vec<PathBuf> {
+        let Some(home) = &self.home else {
+            return Vec::new();
         };
-        lexically_normal(&self.cwd.join(expanded))
+        let folder = match place {
+            // On this host the person's files are the home directory.
+            Place::Home | Place::Everywhere => Some(home.clone()),
+            Place::Downloads => Some(home.join("Downloads")),
+            Place::Documents => Some(home.join("Documents")),
+            Place::Desktop => Some(home.join("Desktop")),
+            Place::Pictures => Some(home.join("Pictures")),
+            Place::Music => Some(home.join("Music")),
+            Place::Videos => Some(home.join("Videos")),
+        };
+        folder.into_iter().filter(|p| p.is_dir()).collect()
+    }
+
+    fn search(&self, roots: &[PathBuf], needle: &str) -> Result<Search, String> {
+        search(roots, needle, MAX_WALKED_ENTRIES)
     }
 
     fn allows(&self, access: Access, path: &Path) -> bool {
@@ -108,8 +98,15 @@ impl Host for UnixHost {
     }
 }
 
+/// The name only: errors reach the default view, which shows no location. The
+/// exact action, with its location, is in the log.
 fn io_error(path: &Path, error: std::io::Error) -> String {
-    format!("{}: {error}", quoted_path(path))
+    format!("{}: {error}", quoted_name(path))
+}
+
+fn quoted_name(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(|| "\"/\"".to_owned(), |name| quoted_path(Path::new(name)))
 }
 
 fn list(path: &Path) -> Result<Output, String> {
@@ -118,14 +115,11 @@ fn list(path: &Path) -> Result<Output, String> {
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .collect();
     paths.sort();
-    let text = paths
-        .iter()
-        .map(|p| quoted_path(p))
-        .collect::<Vec<_>>()
-        .join("\n");
     Ok(Output {
-        text,
-        paths,
+        found: paths
+            .into_iter()
+            .map(|path| Found { path, size: None })
+            .collect(),
         ..Output::default()
     })
 }
@@ -157,7 +151,6 @@ fn stat(path: &Path) -> Result<Output, String> {
     );
     Ok(Output {
         text,
-        paths: Vec::new(),
         ..Output::default()
     })
 }
@@ -165,7 +158,7 @@ fn stat(path: &Path) -> Result<Output, String> {
 fn read(path: &Path, limit: u64) -> Result<Output, String> {
     // Opening a named pipe or a device can block forever, so only regular files.
     if !fs::metadata(path).map_err(|e| io_error(path, e))?.is_file() {
-        return Err(format!("{} is not a regular file", quoted_path(path)));
+        return Err(format!("{} is not a regular file", quoted_name(path)));
     }
     let mut bytes = Vec::new();
     // One byte more than the limit tells a file that fits from one that was cut.
@@ -239,11 +232,6 @@ fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, 
     }
     files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     files.truncate(count);
-    let text = files
-        .iter()
-        .map(|(size, p)| format!("{size} {}", quoted_path(p)))
-        .collect::<Vec<_>>()
-        .join("\n");
     let mut notes = Vec::new();
     if truncated {
         notes.push(format!(
@@ -256,10 +244,72 @@ fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, 
         ));
     }
     Ok(Output {
-        text,
-        paths: files.into_iter().map(|(_, p)| p).collect(),
+        found: files
+            .into_iter()
+            .map(|(size, path)| Found {
+                path,
+                size: Some(size),
+            })
+            .collect(),
         notes,
+        ..Output::default()
     })
+}
+
+/// Names that contain `needle` below each root, looking only into directories
+/// the user may list. Says when it could not look at everything.
+fn search(roots: &[PathBuf], needle: &str, walk_limit: usize) -> Result<Search, String> {
+    let needle = needle.to_lowercase();
+    let mut entries = Vec::new();
+    let mut pending: Vec<PathBuf> = roots.to_vec();
+    let (mut walked, mut unreadable, mut truncated) = (0usize, 0usize, false);
+    while let Some(dir) = pending.pop() {
+        let Ok(listing) = fs::read_dir(&dir) else {
+            unreadable += 1;
+            continue;
+        };
+        for entry in listing.flatten() {
+            walked += 1;
+            if walked > walk_limit {
+                truncated = true;
+                break;
+            }
+            // `file_type` does not follow symlinks, so the walk stays inside the roots.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            if name.contains(&needle) {
+                entries.push(Entry {
+                    path: path.clone(),
+                    is_dir: kind.is_dir(),
+                });
+            }
+            if kind.is_dir() {
+                pending.push(path);
+            }
+        }
+        if truncated {
+            break;
+        }
+    }
+    let mut notes = Vec::new();
+    if truncated {
+        notes.push(format!(
+            "stopped after {walk_limit} entries: more matches may exist"
+        ));
+    }
+    if unreadable > 0 {
+        notes.push(format!(
+            "{unreadable} folders could not be searched: more matches may exist"
+        ));
+    }
+    Ok(Search { entries, notes })
 }
 
 #[cfg(test)]
@@ -273,8 +323,8 @@ mod tests {
         dir
     }
 
-    fn host(cwd: &Path) -> UnixHost {
-        UnixHost::new(Some(PathBuf::from("/home/ana")), cwd.to_path_buf())
+    fn host() -> UnixHost {
+        UnixHost::new(Some(PathBuf::from("/home/ana")))
     }
 
     #[test]
@@ -284,13 +334,17 @@ mod tests {
         fs::write(dir.join("small"), vec![0; 10]).unwrap();
         fs::write(dir.join("sub/big"), vec![0; 300]).unwrap();
         fs::write(dir.join("medium"), vec![0; 100]).unwrap();
-        let output = host(&dir)
+        let output = host()
             .execute(&Action::FindLargest {
                 path: dir.clone(),
                 count: 2,
             })
             .unwrap();
-        assert_eq!(output.paths, vec![dir.join("sub/big"), dir.join("medium")]);
+        assert_eq!(
+            output.paths().cloned().collect::<Vec<_>>(),
+            vec![dir.join("sub/big"), dir.join("medium")]
+        );
+        assert_eq!(output.found[0].size, Some(300));
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -302,7 +356,7 @@ mod tests {
         fs::write(locked.join("big"), vec![0; 500]).unwrap();
         fs::write(dir.join("small"), "x").unwrap();
         fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o0)).unwrap();
-        let output = host(&dir)
+        let output = host()
             .execute(&Action::FindLargest {
                 path: dir.clone(),
                 count: 1,
@@ -322,13 +376,13 @@ mod tests {
         let outside = temp_dir("symlink-outside");
         fs::write(outside.join("huge"), vec![0; 1000]).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
-        let output = host(&dir)
+        let output = host()
             .execute(&Action::FindLargest {
                 path: dir.clone(),
                 count: 5,
             })
             .unwrap();
-        assert!(output.paths.is_empty());
+        assert!(output.found.is_empty());
         fs::remove_dir_all(&dir).unwrap();
         fs::remove_dir_all(&outside).unwrap();
     }
@@ -340,7 +394,7 @@ mod tests {
         let c_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
         // SAFETY: `c_path` is a valid NUL-terminated string that outlives the call.
         assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
-        assert!(host(&dir).execute(&Action::Read { path: fifo }).is_err());
+        assert!(host().execute(&Action::Read { path: fifo }).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -348,7 +402,7 @@ mod tests {
     fn a_missing_directory_is_an_error_not_an_empty_result() {
         let dir = temp_dir("missing");
         assert!(
-            host(&dir)
+            host()
                 .execute(&Action::List {
                     path: dir.join("nope")
                 })
@@ -362,36 +416,12 @@ mod tests {
         let dir = temp_dir("readonly");
         let victim = dir.join("keep");
         fs::write(&victim, "x").unwrap();
-        let result = host(&dir).execute(&Action::Delete {
+        let result = host().execute(&Action::Delete {
             path: victim.clone(),
         });
         assert!(result.is_err());
         assert!(victim.exists());
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn resolves_the_home_shortcut_and_relative_paths() {
-        let host = host(Path::new("/work"));
-        assert_eq!(
-            host.resolve(Path::new("~/Downloads")),
-            PathBuf::from("/home/ana/Downloads")
-        );
-        assert_eq!(host.resolve(Path::new("src")), PathBuf::from("/work/src"));
-        assert_eq!(host.resolve(Path::new("/etc")), PathBuf::from("/etc"));
-    }
-
-    #[test]
-    fn dot_dot_is_resolved_and_the_root_can_never_be_removed() {
-        let host = host(Path::new("/work/sub"));
-        assert_eq!(host.resolve(Path::new("..")), PathBuf::from("/work"));
-        assert_eq!(host.resolve(Path::new("../../..")), PathBuf::from("/"));
-        assert_eq!(
-            host.resolve(Path::new("a/./b/../c")),
-            PathBuf::from("/work/sub/a/c")
-        );
-        assert!(!host.allows(Access::Delete, Path::new("/")));
-        assert!(!host.allows(Access::Write, Path::new("/")));
     }
 
     #[test]
@@ -405,9 +435,9 @@ mod tests {
         fs::set_permissions(&sub, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
         // SAFETY: `geteuid` has no preconditions and cannot fail.
         if unsafe { libc::geteuid() } != 0 {
-            assert!(!host(&dir).allows(Access::Write, &file));
-            assert!(host(&dir).allows(Access::Read, &file));
-            assert!(!host(&dir).allows(Access::Read, &sub));
+            assert!(!host().allows(Access::Write, &file));
+            assert!(host().allows(Access::Read, &file));
+            assert!(!host().allows(Access::Read, &sub));
         }
         fs::set_permissions(&sub, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         fs::remove_dir_all(&dir).unwrap();
@@ -418,7 +448,7 @@ mod tests {
         let dir = temp_dir("perm");
         let file = dir.join("f");
         fs::write(&file, "x").unwrap();
-        let host = host(&dir);
+        let host = host();
         assert!(host.allows(Access::Read, &file));
         assert!(host.allows(Access::Write, &file));
         assert!(host.allows(Access::Delete, &file));
@@ -473,8 +503,8 @@ mod tests {
         fs::write(&file, "x").unwrap();
         set_mode(&dir, 0o600);
         if !is_root() {
-            assert!(!host(&dir).allows(Access::Delete, &file));
-            assert!(!host(&dir).allows(Access::Write, &dir.join("new")));
+            assert!(!host().allows(Access::Delete, &file));
+            assert!(!host().allows(Access::Write, &dir.join("new")));
         }
         set_mode(&dir, 0o700);
         fs::remove_dir_all(&dir).unwrap();
@@ -485,7 +515,7 @@ mod tests {
         let dir = temp_dir("xbit");
         set_mode(&dir, 0o600);
         if !is_root() {
-            assert!(!host(&dir).allows(Access::Read, &dir));
+            assert!(!host().allows(Access::Read, &dir));
         }
         set_mode(&dir, 0o700);
         fs::remove_dir_all(&dir).unwrap();
@@ -493,7 +523,7 @@ mod tests {
 
     #[test]
     fn the_root_is_never_a_target_even_for_root() {
-        assert!(!host(Path::new("/work")).allows(Access::Write, Path::new("/")));
+        assert!(!host().allows(Access::Write, Path::new("/")));
     }
 
     #[test]
@@ -504,7 +534,7 @@ mod tests {
         fs::write(sub.join("huge"), vec![0; 5000]).unwrap();
         fs::write(dir.join("small"), "x").unwrap();
         set_mode(&sub, 0o444);
-        let output = host(&dir)
+        let output = host()
             .execute(&Action::FindLargest {
                 path: dir.clone(),
                 count: 1,
@@ -524,8 +554,8 @@ mod tests {
         fs::hard_link(dir.join("big"), dir.join("big2")).unwrap();
         fs::write(dir.join("small"), "x").unwrap();
         let output = find_largest(&dir, 2, 100).unwrap();
-        assert_eq!(output.paths.len(), 2);
-        assert!(output.paths.contains(&dir.join("small")));
+        assert_eq!(output.found.len(), 2);
+        assert!(output.paths().any(|p| *p == dir.join("small")));
     }
 
     #[test]
@@ -534,14 +564,110 @@ mod tests {
         let file = dir.join("f");
         fs::write(&file, "x").unwrap();
         set_mode(&file, 0o000);
-        assert!(host(&dir).allows(Access::Stat, &file));
-        assert!(host(&dir).allows(Access::Stat, &dir.join("missing")));
-        assert!(host(&dir).allows(Access::Stat, Path::new("/")));
+        assert!(host().allows(Access::Stat, &file));
+        assert!(host().allows(Access::Stat, &dir.join("missing")));
+        assert!(host().allows(Access::Stat, Path::new("/")));
         set_mode(&dir, 0o600);
         if !is_root() {
-            assert!(!host(&dir).allows(Access::Stat, &file));
+            assert!(!host().allows(Access::Stat, &file));
         }
         set_mode(&dir, 0o700);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn places_live_under_the_home_directory_and_only_when_they_exist() {
+        let home = temp_dir("places");
+        fs::create_dir(home.join("Downloads")).unwrap();
+        let host = UnixHost::new(Some(home.clone()));
+        assert_eq!(
+            host.place_roots(Place::Downloads),
+            vec![home.join("Downloads")]
+        );
+        assert_eq!(host.place_roots(Place::Home), vec![home.clone()]);
+        assert_eq!(host.place_roots(Place::Everywhere), vec![home.clone()]);
+        assert!(host.place_roots(Place::Music).is_empty());
+        assert!(UnixHost::new(None).place_roots(Place::Home).is_empty());
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_name_search_finds_names_that_contain_the_text_ignoring_case() {
+        let dir = temp_dir("search");
+        fs::create_dir(dir.join("Reports")).unwrap();
+        fs::write(dir.join("Reports/Budget-2024.PDF"), "x").unwrap();
+        fs::write(dir.join("other.txt"), "x").unwrap();
+        let found = search(std::slice::from_ref(&dir), "budget", 100).unwrap();
+        assert_eq!(found.entries.len(), 1);
+        assert_eq!(found.entries[0].path, dir.join("Reports/Budget-2024.PDF"));
+        assert!(!found.entries[0].is_dir);
+        assert!(
+            search(std::slice::from_ref(&dir), "reports", 100)
+                .unwrap()
+                .entries[0]
+                .is_dir
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_name_search_does_not_follow_a_symlink_and_reports_what_it_could_not_open() {
+        let dir = temp_dir("searchlimits");
+        let outside = temp_dir("searchlimits-outside");
+        fs::write(outside.join("secret.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+        let locked = dir.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("secret2.txt"), "x").unwrap();
+        set_mode(&locked, 0o000);
+        let found = search(std::slice::from_ref(&dir), "secret", 100).unwrap();
+        set_mode(&locked, 0o700);
+        if !is_root() {
+            assert!(found.entries.is_empty(), "{found:?}");
+            assert_eq!(found.notes.len(), 1, "{found:?}");
+        }
+        assert!(
+            search(std::slice::from_ref(&dir), "link", 100)
+                .unwrap()
+                .entries
+                .len()
+                == 1
+        );
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn a_name_search_stops_at_its_entry_limit_and_says_so() {
+        let dir = temp_dir("searchwalk");
+        for i in 0..5 {
+            fs::write(dir.join(format!("f{i}")), "x").unwrap();
+        }
+        assert_eq!(
+            search(std::slice::from_ref(&dir), "f", 3)
+                .unwrap()
+                .notes
+                .len(),
+            1
+        );
+        assert!(
+            search(std::slice::from_ref(&dir), "f", 5)
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_error_names_the_item_and_not_where_it_is() {
+        let dir = temp_dir("errname");
+        let message = list(&dir.join("secret-name")).unwrap_err();
+        assert!(message.contains("secret-name"));
+        assert!(
+            !message.contains(&dir.to_string_lossy().into_owned()),
+            "{message}"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }

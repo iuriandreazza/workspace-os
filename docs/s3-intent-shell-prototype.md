@@ -9,6 +9,10 @@ tags: [slm, shell, broker, capabilities, prototype]
 
 # S3: intent shell prototype on the host
 
+> S3b (`docs/s3b-path-free-shell.md`, ADR 0014) replaced the path arguments, the current
+> directory and the plain-text rendering described below with references, a resolver and
+> the terminal screen. The broker, the log and the tests of the refusal classes stay as written here.
+
 Roadmap item S3. The model proposes, deterministic code decides (ADR 0002):
 `intent-shell` turns a request into a plan in the ADR 0011 format, the broker
 validates every action, the person sees what would run and confirms, and every

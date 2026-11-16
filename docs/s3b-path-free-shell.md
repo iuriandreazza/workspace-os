@@ -1,0 +1,135 @@
+---
+title: "S3b: path-free resources and the terminal screen"
+type: report
+status: done
+created: 2026-11-16
+updated: 2026-11-16
+tags: [slm, shell, resolver, broker, screen]
+---
+
+# S3b: path-free resources and the terminal screen
+
+Roadmap item S3b, decided in ADR 0014. The person never navigates directories
+and the shell has no current directory: a plan names things with references,
+deterministic code resolves them before the broker, and the broker judges the
+real resource.
+
+## Run it
+
+Same as S3 (`docs/s3-intent-shell-prototype.md`, "Run it"): start `llama-server`,
+then `./scripts/intent-shell.sh` (add `--administrator` to be allowed to confirm
+root actions). `[d]` shows the details view of a plan. In a script, the answers
+are echoed so a transcript shows them.
+
+On this host the places live under `$HOME`: `downloads` is `~/Downloads`, and
+so on, and a place that does not exist is not found. `everywhere` is `$HOME`.
+
+## What changed
+
+```text
+request ─► model (output constrained by the schema, version 2)
+        ─► parse + semantic rules        a Spec: an action whose resources are references
+        ─► resolver                      reference ─► real locations (or: not found, ambiguous)
+        │     └─ ambiguous: the person chooses, the pick is logged, the broker judges it
+        ─► broker: capability ∩ user permissions, root, protected root     as in S3
+        ─► screen ─► confirm ─► root panel per root action ─► execute ─► log
+```
+
+- `reference.rs`: the reference types, and `Spec`, the action as the model
+  proposed it. `Action` (real locations only) is built from a `Spec` only by
+  the resolver and by the `from_step` expansion, so an unresolved reference
+  cannot reach `judge` or the host.
+- `resolve.rs`: places, name search (whole name ignoring case, otherwise names
+  that contain it, at most 20 candidates), new items, the person's choices. It
+  never asks whether the action is allowed.
+- `label.rs`: friendly names, `"report.pdf" (Downloads › "taxes")`. Two
+  locations never share a label; a name that looks like a place stays quoted.
+- `screen.rs`: header, table, notes, summary, details view, root panel and the
+  choice question, all pure functions with golden tests.
+- `host.rs`: `UnixHost` maps places to folders, searches only where the user
+  may list, does not follow symlinks, and says when it could not look
+  everywhere. Its errors name the item, not where it is.
+- The plan format is version 2 (`docs/schemas/`): `path` and `from_step`-by-path
+  are gone, references replace them, and 12 examples were added.
+
+## Findings along the way
+
+- **The shell sent the schema with its keys sorted.** `model.rs` parsed the
+  schema into a `serde_json::Value`, whose maps are sorted, and the grammar
+  `llama-server` builds follows the order of the properties. With the new
+  `name`, `in`, `kind` the model was forced to write `in`, `kind`, `name` and
+  produced junk (`"name":"}},"`). The schema now goes out as the file's own
+  text, and a test pins the order. S3 had the same defect, with less to lose.
+- **`pattern` on a name breaks the grammar.** `^[^/]{1,255}$` made the server
+  stop honouring the schema for a request, and reply with a 500. The schema
+  bounds the length and the rule that a name has no separator and is not `.` or
+  `..` is code (`check_rules`, mirrored in `validate.py`).
+- **A place at the filesystem root cannot reach the root as a target.** A
+  destination inside a place is the place joined with a name, and a search
+  returns children. The root is reachable only if a host lists `/` itself, so
+  the protection is tested there too.
+
+## Tests and the gate
+
+`./scripts/check.sh` runs 142 tests for `intent-shell`, none needing the model,
+including ambiguity (the person picks, cancels, a pick outside the candidates),
+a name that matches nothing, more than 20 matches, a visible file the user
+may not read or delete, a reference that tries to reach what a direct path
+would be refused, names with separators or `..`, a host that lies about
+matches, the search logged before it runs, and the screen.
+
+Mutation check, by hand: each change was applied, the whole suite run, the
+source restored. Every mutant was killed.
+
+| Mutation | Failing tests |
+|---|---|
+| first candidate chosen instead of reporting the ambiguity | 8 |
+| names may contain separators | 4 |
+| not found becomes an empty success | 3 |
+| the search is not logged | 1 |
+| the host's matching is trusted | 1 |
+| a pick outside the candidates is accepted | 1 |
+| an exact match does not win over "contains" | 1 |
+| more than 20 matches become a choice | 1 |
+| `.` and `..` accepted as names | 3 |
+| resolved resources are not judged | 24 |
+| protected root dropped | 2 |
+| user permission check dropped | 11 |
+| capability check dropped | 2 |
+| the root panel hides the exact action | 3 |
+| the plan screen shows real locations | 2 |
+| labels that collide are not separated | 1 |
+
+## What the model did (for S4, not fixed here)
+
+The eight intents of the S3 report, with "here" and `DIR` turned into "my
+downloads" or left as they were, Bonsai 8B, temperature 0, grammar-constrained.
+Every output was valid and none held a path.
+
+- "list the largest files here" and "show the 3 largest files": `fs.find_largest`
+  in `home` (the place the model picks for "no place"), with `count` 10 and 3.
+- "delete the two largest files in my downloads": the search and the delete
+  by reference, shown as three actions. "find the 2 largest files ... and
+  delete them": only the search.
+- "find the 2 largest ... then run stat on each": the search and a `from_step`
+  `fs.stat`, expanded to the two real files. S3 had invented literal paths.
+- "create a file notes.txt ...": `fs.write` on a `name`, not a `new_name`, so
+  the resolver reports that nothing was found. Adding a sentence to the prompt
+  did not change it.
+- "add the user bia to the group staff": no valid plan, nothing ran.
+- "delete the largest file ..., as administrator": the search with `elevate`,
+  held for root; the delete was not planned.
+
+## Limits and follow-ups
+
+- `everywhere` is `$HOME` on this host, so system files are out of reach until
+  the OS maps it differently. This is the adapter's choice (ADR 0014).
+- The resolver walks the tree for a name: at most 100,000 entries, with a note
+  when it stops. There is no index.
+- Table columns are aligned by characters, not by terminal cell width, so wide
+  characters misalign a row. Escaping and uniqueness do not depend on it.
+- The log records real locations. It is private to the user, as in S3.
+- A search runs again after each choice the person makes, so a plan with
+  several ambiguities searches several times.
+- S4 reuses the eight intents above as its first cases. S5 types the
+  references as flags (`--in downloads --name x`), as ADR 0014 says.

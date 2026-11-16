@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/iuriandreazza/workspace-os/docs/schemas/action-plan.schema.json",
-  "title": "Action plan, version 1",
-  "description": "What the intent shell model may emit (ADR 0011). Either a plan or a clarifying question. Structural rules only; ids, dependencies and references are checked by code (see the ADR).",
+  "title": "Action plan, version 2",
+  "description": "What the intent shell model may emit (ADR 0011, resources named by reference since ADR 0014). Either a plan or a clarifying question. Structural rules only; ids, dependencies, references and what a name may contain (no separator, not `.` or `..`) are checked by code (see the ADRs).",
   "oneOf": [
     { "$ref": "#/$defs/plan" },
     { "$ref": "#/$defs/clarify" }
@@ -14,7 +14,7 @@
       "required": ["kind", "version", "summary", "steps"],
       "properties": {
         "kind": { "const": "plan" },
-        "version": { "const": 1 },
+        "version": { "const": 2 },
         "summary": { "type": "string", "minLength": 1, "maxLength": 200 },
         "steps": {
           "type": "array",
@@ -30,7 +30,7 @@
       "required": ["kind", "version", "question"],
       "properties": {
         "kind": { "const": "clarify" },
-        "version": { "const": 1 },
+        "version": { "const": 2 },
         "question": { "type": "string", "minLength": 1, "maxLength": 300 }
       }
     },
@@ -40,16 +40,72 @@
       "maxItems": 15,
       "items": { "$ref": "#/$defs/stepId" }
     },
-    "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
-    "pathOrRef": {
+    "place": {
+      "enum": ["home", "downloads", "documents", "desktop", "pictures", "music", "videos", "everywhere"]
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "refPlace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["place"],
+      "properties": { "place": { "$ref": "#/$defs/place" } }
+    },
+    "refNamed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "in", "kind"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "in": { "$ref": "#/$defs/place" },
+        "kind": { "enum": ["file", "folder", "any"] }
+      }
+    },
+    "refFolder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "in", "kind"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "in": { "$ref": "#/$defs/place" },
+        "kind": { "const": "folder" }
+      }
+    },
+    "refNew": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["new_name", "in"],
+      "properties": {
+        "new_name": { "$ref": "#/$defs/name" },
+        "in": { "$ref": "#/$defs/place" }
+      }
+    },
+    "refFromStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from_step"],
+      "properties": { "from_step": { "$ref": "#/$defs/stepId" } }
+    },
+    "targetListable": {
       "oneOf": [
-        { "$ref": "#/$defs/path" },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["from_step"],
-          "properties": { "from_step": { "$ref": "#/$defs/stepId" } }
-        }
+        { "$ref": "#/$defs/refPlace" },
+        { "$ref": "#/$defs/refNamed" },
+        { "$ref": "#/$defs/refFromStep" }
+      ]
+    },
+    "targetExisting": {
+      "oneOf": [{ "$ref": "#/$defs/refNamed" }, { "$ref": "#/$defs/refFromStep" }]
+    },
+    "targetSearchable": {
+      "oneOf": [{ "$ref": "#/$defs/refPlace" }, { "$ref": "#/$defs/refNamed" }]
+    },
+    "targetWritable": {
+      "oneOf": [{ "$ref": "#/$defs/refNamed" }, { "$ref": "#/$defs/refNew" }]
+    },
+    "targetDestination": {
+      "oneOf": [
+        { "$ref": "#/$defs/refPlace" },
+        { "$ref": "#/$defs/refFolder" },
+        { "$ref": "#/$defs/refNew" }
       ]
     },
     "step": {
@@ -77,8 +133,8 @@
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path"],
-          "properties": { "path": { "$ref": "#/$defs/pathOrRef" } }
+          "required": ["target"],
+          "properties": { "target": { "$ref": "#/$defs/targetListable" } }
         },
         "depends_on": { "$ref": "#/$defs/dependsOn" },
         "elevate": { "type": "boolean" }
@@ -94,8 +150,8 @@
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path"],
-          "properties": { "path": { "$ref": "#/$defs/pathOrRef" } }
+          "required": ["target"],
+          "properties": { "target": { "$ref": "#/$defs/targetExisting" } }
         },
         "depends_on": { "$ref": "#/$defs/dependsOn" },
         "elevate": { "type": "boolean" }
@@ -111,8 +167,8 @@
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path"],
-          "properties": { "path": { "$ref": "#/$defs/pathOrRef" } }
+          "required": ["target"],
+          "properties": { "target": { "$ref": "#/$defs/targetExisting" } }
         },
         "depends_on": { "$ref": "#/$defs/dependsOn" },
         "elevate": { "type": "boolean" }
@@ -128,9 +184,9 @@
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path", "count"],
+          "required": ["target", "count"],
           "properties": {
-            "path": { "$ref": "#/$defs/path" },
+            "target": { "$ref": "#/$defs/targetSearchable" },
             "count": { "type": "integer", "minimum": 1, "maximum": 100 }
           }
         },
@@ -148,9 +204,9 @@
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path", "content", "mode"],
+          "required": ["target", "content", "mode"],
           "properties": {
-            "path": { "$ref": "#/$defs/path" },
+            "target": { "$ref": "#/$defs/targetWritable" },
             "content": { "type": "string", "maxLength": 65536 },
             "mode": { "enum": ["create", "overwrite", "append"] }
           }
@@ -171,8 +227,8 @@
           "additionalProperties": false,
           "required": ["from", "to"],
           "properties": {
-            "from": { "$ref": "#/$defs/pathOrRef" },
-            "to": { "$ref": "#/$defs/path" }
+            "from": { "$ref": "#/$defs/targetExisting" },
+            "to": { "$ref": "#/$defs/targetDestination" }
           }
         },
         "depends_on": { "$ref": "#/$defs/dependsOn" },
@@ -189,8 +245,8 @@
         "args": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path"],
-          "properties": { "path": { "$ref": "#/$defs/pathOrRef" } }
+          "required": ["target"],
+          "properties": { "target": { "$ref": "#/$defs/targetExisting" } }
         },
         "depends_on": { "$ref": "#/$defs/dependsOn" },
         "elevate": { "type": "boolean" }

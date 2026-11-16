@@ -8,6 +8,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
+use serde::Serialize;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::ports::{Planner, Retry};
@@ -16,14 +18,16 @@ const SCHEMA: &str = include_str!("../../docs/schemas/action-plan.schema.json");
 
 /// Static text first and the request last, so `cache_prompt` reuses the prefix (ADR 0011).
 const SYSTEM_PROMPT: &str = r#"You turn the user's request into one JSON document and output nothing else.
-A plan: {"kind":"plan","version":1,"summary":"...","steps":[{"id":"s1","action":"...","args":{...},"depends_on":[],"elevate":false}]}
-A question, only when the request cannot be done without guessing: {"kind":"clarify","version":1,"question":"..."}
+A plan: {"kind":"plan","version":2,"summary":"...","steps":[{"id":"s1","action":"...","args":{...},"depends_on":[],"elevate":false}]}
+A question, only when the request cannot be done without guessing: {"kind":"clarify","version":2,"question":"..."}
+Things are never named by a path. Name them with a reference, P being one of home, downloads, documents, desktop, pictures, music, videos, everywhere:
+a place {"place":P}; an existing item found by name {"name":"report.pdf","in":P,"kind":"file"} (kind: file, folder or any); an item to create {"new_name":"notes.txt","in":P}; what an earlier step found {"from_step":"s1"} (put s1 in depends_on).
+A name is a file name only, never a path. To create something that does not exist yet use new_name, never name. There is no current directory: when the user does not say where, use everywhere.
 Actions and their args:
-fs.list {path}; fs.stat {path}; fs.read {path}; fs.find_largest {path,count}; fs.write {path,content,mode: create|overwrite|append}; fs.move {from,to}; fs.delete {path}; process.run {program,argv}
+fs.list {target: place, name or from_step}; fs.stat {target: name or from_step}; fs.read {target: name or from_step}; fs.find_largest {target: place or name, count}; fs.write {target: name or new_name, content, mode: create|overwrite|append}; fs.move {from: name or from_step, to: place, folder name or new_name}; fs.delete {target: name or from_step}; process.run {program,argv}
 user.manage {operation: add|remove|add_to_group|remove_from_group,user,group or null}, system.configure {key,value} and soul.propose_change {rationale,new_text} have no elevate field.
 Rules: ids are s1, s2, ...; depends_on lists the step ids a step needs; elevate is true only when the user asks for administrator rights.
-To use the paths found by an earlier fs.list or fs.find_largest step, write the path as {"from_step":"s1"} and put s1 in depends_on.
-Paths may start with ~. "here" and "this directory" mean the working directory given in the request.
+A from_step reference only works after an fs.list or fs.find_largest step.
 Do not ask a question when the request is clear."#;
 
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(600);
@@ -31,33 +35,63 @@ const GENERATION_TIMEOUT: Duration = Duration::from_secs(600);
 pub struct LlamaPlanner {
     /// `host:port` of `llama-server`.
     pub address: String,
-    pub working_directory: String,
+}
+
+#[derive(Serialize)]
+struct RequestBody<'a> {
+    temperature: u8,
+    max_tokens: u32,
+    cache_prompt: bool,
+    messages: Vec<Value>,
+    response_format: ResponseFormat<'a>,
+}
+
+#[derive(Serialize)]
+struct ResponseFormat<'a> {
+    r#type: &'static str,
+    json_schema: JsonSchema<'a>,
+}
+
+#[derive(Serialize)]
+struct JsonSchema<'a> {
+    name: &'static str,
+    /// The schema as written in the file. Parsing it into a `Value` would sort
+    /// its keys, and the grammar the server builds follows the order of the
+    /// properties, so the model would have to write them alphabetically.
+    schema: &'a RawValue,
 }
 
 impl LlamaPlanner {
-    fn request_body(&self, request: &str, retry: Option<&Retry>) -> Value {
-        let schema: Value = serde_json::from_str(SCHEMA).unwrap_or(Value::Null);
+    fn request_body(&self, request: &str, retry: Option<&Retry>) -> String {
         let mut messages = vec![
             json!({"role": "system", "content": SYSTEM_PROMPT}),
-            json!({"role": "user", "content": format!("Working directory: {}\nRequest: {request}", self.working_directory)}),
+            json!({"role": "user", "content": format!("Request: {request}")}),
         ];
         if let Some(retry) = retry {
             messages.push(json!({"role": "assistant", "content": retry.previous_output}));
             messages.push(json!({"role": "user", "content": format!("That document was refused: {}. Reply with a corrected document.", retry.error)}));
         }
-        json!({
-            "temperature": 0,
-            "max_tokens": 1024,
-            "cache_prompt": true,
-            "messages": messages,
-            "response_format": {"type": "json_schema", "json_schema": {"name": "action_plan", "schema": schema}},
+        let schema = RawValue::from_string(SCHEMA.to_owned()).expect("the schema file is JSON");
+        serde_json::to_string(&RequestBody {
+            temperature: 0,
+            max_tokens: 1024,
+            cache_prompt: true,
+            messages,
+            response_format: ResponseFormat {
+                r#type: "json_schema",
+                json_schema: JsonSchema {
+                    name: "action_plan",
+                    schema: &schema,
+                },
+            },
         })
+        .expect("the request serialises")
     }
 }
 
 impl Planner for LlamaPlanner {
     fn plan(&self, request: &str, retry: Option<&Retry>) -> Result<String, String> {
-        let body = self.request_body(request, retry).to_string();
+        let body = self.request_body(request, retry);
         let response = post(&self.address, "/v1/chat/completions", &body)?;
         let value: Value = serde_json::from_str(&response)
             .map_err(|e| format!("server reply is not JSON: {e}"))?;
@@ -171,12 +205,11 @@ mod tests {
     fn the_request_carries_the_schema_and_ends_with_the_user_request() {
         let planner = LlamaPlanner {
             address: "127.0.0.1:1".into(),
-            working_directory: "/work".into(),
         };
-        let body = planner.request_body("list files", None);
+        let body: Value = serde_json::from_str(&planner.request_body("list files", None)).unwrap();
         assert_eq!(
             body["response_format"]["json_schema"]["schema"]["title"],
-            "Action plan, version 1"
+            "Action plan, version 2"
         );
         let last = body["messages"].as_array().unwrap().last().unwrap();
         assert!(
@@ -188,16 +221,28 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_goes_out_with_its_keys_in_the_order_of_the_file() {
+        let planner = LlamaPlanner {
+            address: "127.0.0.1:1".into(),
+        };
+        let body = planner.request_body("x", None);
+        let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        // The grammar follows property order: a name comes before where to look for it.
+        assert!(at(r#""name": { "$ref""#) < at(r#""in": { "$ref""#));
+        assert!(at(r#""kind": { "enum""#) > at(r#""in": { "$ref""#));
+    }
+
+    #[test]
     fn a_retry_adds_the_refused_output_and_the_error() {
         let planner = LlamaPlanner {
             address: "127.0.0.1:1".into(),
-            working_directory: "/work".into(),
         };
         let retry = Retry {
             previous_output: "{bad",
             error: "not JSON",
         };
-        let messages = planner.request_body("x", Some(&retry))["messages"].clone();
+        let body: Value = serde_json::from_str(&planner.request_body("x", Some(&retry))).unwrap();
+        let messages = body["messages"].clone();
         assert_eq!(messages.as_array().unwrap().len(), 4);
         assert!(
             messages[3]["content"]

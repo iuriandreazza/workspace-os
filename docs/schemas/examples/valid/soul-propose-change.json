@@ -1,2 +1,2 @@
-{"kind":"plan","version":1,"summary":"Propose a shorter, more direct tone for the system","steps":[
+{"kind":"plan","version":2,"summary":"Propose a shorter, more direct tone for the system","steps":[
  {"id":"s1","action":"soul.propose_change","args":{"rationale":"The user asked for shorter answers.","new_text":"I am the system. I answer briefly and precisely."},"depends_on":[]}]}
