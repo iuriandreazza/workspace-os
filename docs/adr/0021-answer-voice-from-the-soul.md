@@ -1,7 +1,7 @@
 ---
 title: "ADR 0021: The voice of the answers, written by the model from the SOUL"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-16
 updated: 2026-11-16
 tags: [shell, soul, persona, model, ux]
@@ -22,7 +22,7 @@ S10 and wait. This ADR only decides how an answer gets its voice, using the
 SOUL as it exists in S8 (a preset). ADR 0002 stands: the system works with no
 model, and the model never decides.
 
-## Decision (proposed)
+## Decision
 
 ### 1. A reply, written by the model after the facts are known
 
@@ -94,8 +94,10 @@ the SOUL are S8's remainder, S9 and S10.
 - S8's remainder (per-user personality), S9 and S10 build on the same prompt
   template and need no change to this decision.
 
-## Questions for the user
+## Decisions taken by the user (2026-11-16)
 
-1. Option A (a reply after every outcome)? Or only after executed plans?
-2. Default preset when no SOUL file exists: direct and technical?
-3. Should the reply be on by default, with `--no-reply` to turn it off?
+The user accepted the ADR as proposed:
+
+1. A reply after every outcome (option A), not only after executed plans.
+2. With no SOUL file the preset is "direct and technical".
+3. The reply is on by default, with `--no-reply` to turn it off.
