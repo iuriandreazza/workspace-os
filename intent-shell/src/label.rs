@@ -17,7 +17,8 @@ pub struct Labels {
 }
 
 impl Default for Labels {
-    /// No directory and no home: every location is shown absolute.
+    /// No directory and no home: every location is shown absolute (a session
+    /// at the root writes absolute locations too, see `display`).
     fn default() -> Self {
         Self::new(Path::new("/"), None)
     }
@@ -37,7 +38,11 @@ impl Labels {
         if path == self.cwd {
             return PathBuf::from(".");
         }
-        if let Ok(inside) = path.strip_prefix(&self.cwd) {
+        // Everything is inside `/`, and `etc/hosts` would read as a relative
+        // name: at the root the absolute location is the clear one.
+        if let Ok(inside) = path.strip_prefix(&self.cwd)
+            && self.cwd != Path::new("/")
+        {
             // A folder called `~` inside the directory must not read as the home.
             return if inside.starts_with("~") {
                 Path::new(".").join(inside)
@@ -153,6 +158,17 @@ mod tests {
         assert_ne!(
             labels.of(Path::new("/home/ana/Downloads/~/x")),
             labels.of(Path::new("/home/ana/x"))
+        );
+    }
+
+    #[test]
+    fn at_the_root_every_location_is_absolute() {
+        let at_root = Labels::new(Path::new("/"), None);
+        assert_eq!(at_root.of(Path::new("/etc/hosts")), r#""/etc/hosts""#);
+        assert_eq!(at_root.of(Path::new("/")), r#"".""#);
+        assert_eq!(
+            Labels::default().of(Path::new("/etc/hosts")),
+            r#""/etc/hosts""#
         );
     }
 

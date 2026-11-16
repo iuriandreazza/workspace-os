@@ -381,7 +381,7 @@ impl State {
             KeyCode::Down => select(self, (selected + 1).min(count.saturating_sub(1))),
             KeyCode::Enter => match lines.iter().find(|l| l.option == Some(selected)) {
                 Some(line) => {
-                    let note = format!("▸ chose {}", line.text.trim());
+                    let note = format!("▸ chose {}", line.label);
                     self.answer(&note, Reply::Choice(Some(selected)))
                 }
                 None => Effect::Nothing,
@@ -524,6 +524,7 @@ mod tests {
                 .map(|n| ChoiceLine {
                     text: format!("option {n}"),
                     option: Some(n - 1),
+                    label: String::new(),
                 })
                 .collect(),
         });
@@ -896,6 +897,7 @@ mod tests {
         let line = |text: &str, option| ChoiceLine {
             text: text.to_owned(),
             option,
+            label: text.trim().to_owned(),
         };
         let mut state = State::new("header".to_owned());
         state.on_event(Event::AskChoose {
@@ -915,6 +917,29 @@ mod tests {
         assert_eq!(
             tap(&mut state, KeyCode::Enter),
             Effect::Reply(Reply::Choice(Some(1)))
+        );
+    }
+
+    #[test]
+    fn the_history_says_which_location_was_chosen() {
+        let mut state = State::new("header".to_owned());
+        state.on_event(Event::AskChoose {
+            question: "Which one?".to_owned(),
+            lines: vec![ChoiceLine {
+                text: "└─ report.pdf".to_owned(),
+                option: Some(0),
+                label: "\"Downloads/report.pdf\"".to_owned(),
+            }],
+        });
+        state.clock_ms = DWELL_MS;
+        tap(&mut state, KeyCode::Enter);
+        assert!(
+            state
+                .blocks
+                .iter()
+                .any(|b| format!("{b:?}").contains("chose \\\"Downloads/report.pdf")),
+            "{:?}",
+            state.blocks
         );
     }
 

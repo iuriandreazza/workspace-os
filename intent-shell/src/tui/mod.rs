@@ -392,6 +392,7 @@ mod tests {
         ChoiceLine {
             text: "a".to_owned(),
             option: Some(0),
+            label: String::new(),
         }
     }
 

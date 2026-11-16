@@ -136,6 +136,9 @@ pub struct ChoiceLine {
     pub text: String,
     /// The index of the candidate this line stands for; `None` for context.
     pub option: Option<usize>,
+    /// For a candidate, its location as the screens write it, for the
+    /// history to say which one was chosen. Empty for context.
+    pub label: String,
 }
 
 pub trait Confirm {

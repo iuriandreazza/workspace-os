@@ -145,6 +145,7 @@ mod tests {
         let line = |text: &str, option| ChoiceLine {
             text: text.to_owned(),
             option,
+            label: text.trim().to_owned(),
         };
         assert_eq!(
             numbered(&[

@@ -296,6 +296,7 @@ mod tests {
                 .map(|n| ChoiceLine {
                     text: format!("choice {n}"),
                     option: Some(n - 1),
+                    label: String::new(),
                 })
                 .collect(),
         });
@@ -317,6 +318,7 @@ mod tests {
         let line = |text: &str, option| ChoiceLine {
             text: text.to_owned(),
             option,
+            label: text.trim().to_owned(),
         };
         let mut state = state_with(&[]);
         state.on_event(Event::AskChoose {

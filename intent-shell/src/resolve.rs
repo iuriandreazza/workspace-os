@@ -42,6 +42,8 @@ pub struct Ambiguity {
     pub slot: Slot,
     pub what: String,
     pub candidates: Vec<PathBuf>,
+    /// The candidates that are folders, so a choice can draw them as such.
+    pub folders: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,10 +218,15 @@ fn find_by_name(
         .map_err(ResolveError::SearchFailed)?;
     // A place is a container the plan may read, never a thing it may
     // remove or overwrite, so naming it does not find it.
-    let entries = search
+    let entries: Vec<Entry> = search
         .entries
         .into_iter()
         .filter(|e| !is_place_root(host, &e.path))
+        .collect();
+    let folders: Vec<PathBuf> = entries
+        .iter()
+        .filter(|e| e.is_dir)
+        .map(|e| e.path.clone())
         .collect();
     let matches = best_matches(entries, name, kind);
     // A search that did not finish must not look like one that did.
@@ -246,6 +253,7 @@ fn find_by_name(
                     slot,
                     what,
                     candidates: many.to_vec(),
+                    folders,
                 }));
             }
         },

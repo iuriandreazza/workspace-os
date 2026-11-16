@@ -817,7 +817,7 @@ fn the_tree_cuts_at_the_line_limit_and_says_how_many_it_left_out() {
     let shown = drawn("/h/Downloads", &entries, &TreeMarks::default(), &options);
     assert_eq!(shown.lines().count(), 1 + 3 + 1, "{shown}");
     assert!(
-        shown.ends_with("… 7 more (use a path or --depth to open)"),
+        shown.ends_with("… 7 more (name a path to open it)"),
         "{shown}"
     );
     let all = default_tree(&entries);
@@ -1237,5 +1237,34 @@ fn a_move_into_a_place_that_is_a_link_is_shown_where_the_file_lands() {
     assert_eq!(
         exact(&run),
         r#"fs.move from="/home/ana/Downloads/notes.txt" to="/home/ana/.priv/notes.txt""#
+    );
+}
+
+#[test]
+fn folder_candidates_are_drawn_as_folders_and_every_candidate_carries_its_location() {
+    let host = FakeHost::with_files(&[("/home/ana/a/films/x", 1), ("/home/ana/b/films/x", 1)])
+        .dir("/home/ana/a/films")
+        .dir("/home/ana/b/films");
+    let text = one_step(
+        "fs.stat",
+        r#"{"target":{"under_home":true,"name":"films","kind":"folder"}}"#,
+    );
+    let run = ask(&host, &mut session_in("/home/ana"), &text);
+    let lines = &run.answers.questions[0].1;
+    let candidates: Vec<_> = lines.iter().filter(|l| l.option.is_some()).collect();
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .all(|l| l.text.trim_end().ends_with("films/")),
+        "{lines:?}"
+    );
+    let labels: Vec<&str> = candidates.iter().map(|l| l.label.as_str()).collect();
+    assert_eq!(labels, [r#""a/films""#, r#""b/films""#]);
+    assert!(
+        lines
+            .iter()
+            .filter(|l| l.option.is_none())
+            .all(|l| l.label.is_empty())
     );
 }

@@ -292,7 +292,11 @@ pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<ChoiceLi
         .iter()
         .map(|path| TreeEntry {
             path: path.clone(),
-            kind: EntryKind::File,
+            kind: if ambiguity.folders.contains(path) {
+                EntryKind::Dir
+            } else {
+                EntryKind::File
+            },
             size: None,
             readable: true,
             protected: false,
@@ -489,6 +493,7 @@ fn bare(name: &std::ffi::OsStr) -> String {
 }
 
 struct TreeRow {
+    label: String,
     left: String,
     size: String,
     marks: String,
@@ -573,6 +578,7 @@ impl Walk<'_> {
             .map(size_text)
             .unwrap_or_default();
         TreeRow {
+            label: self.labels.of(&node.path),
             left: format!("{lead}{name}"),
             size,
             marks: marks.join(" · "),
@@ -647,6 +653,7 @@ pub fn tree(
         .trim_end()
         .to_owned(),
         option: None,
+        label: String::new(),
     }];
     let total = walk.rows.len();
     let cut = total > options.max_lines;
@@ -659,22 +666,28 @@ pub fn tree(
             .trim_end()
             .to_owned(),
             option: row.option,
+            label: if row.option.is_some() {
+                row.label
+            } else {
+                String::new()
+            },
         });
     }
     if cut {
         lines.push(ChoiceLine {
             text: format!(
-                " └─ … {} more (use a path or --depth to open)",
+                " └─ … {} more (name a path to open it)",
                 total - options.max_lines
             ),
             option: None,
+            label: String::new(),
         });
     }
     if walk.last_level_folders && options.depth != usize::MAX {
         lines.push(ChoiceLine {
-            text: " … folders at the last level may hold more (use a path or --depth to open)"
-                .to_owned(),
+            text: " … folders at the last level may hold more (name a path to open it)".to_owned(),
             option: None,
+            label: String::new(),
         });
     }
     lines
