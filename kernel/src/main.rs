@@ -4,11 +4,13 @@
 mod arch;
 mod board;
 mod drivers;
+mod log;
 mod memory;
 mod memory_image;
 
-use core::fmt::Write;
 use core::panic::PanicInfo;
+
+use log::klog;
 
 /// `handoff_address` is the device tree address (or zero) after a direct load
 /// and the boot info address after the bootloader; `entered_by_bootloader` is
@@ -27,7 +29,7 @@ pub extern "C" fn kernel_main(
             Ok(board) => board,
             Err((error, console_usable)) => {
                 if console_usable {
-                    let _ = writeln!(board::console(), "workspace-os kernel: {error}");
+                    klog!(Error, board::console(), "{error}");
                 }
                 arch::halt()
             }
@@ -41,15 +43,12 @@ pub extern "C" fn kernel_main(
     };
 
     let mut console = board::console();
-    let _ = writeln!(
-        console,
-        "workspace-os kernel: booted on aarch64 in EL{}",
-        arch::current_el()
-    );
+    log::banner(&mut console, arch::current_el());
+    klog!(Ok, console, "booted on aarch64 in EL{}", arch::current_el());
 
     match board.entry {
         board::Entry::Direct => {
-            let _ = writeln!(console, "workspace-os kernel: entry: direct load");
+            klog!(Ok, console, "entry: direct load");
         }
         board::Entry::Bootloader {
             version_major,
@@ -60,21 +59,24 @@ pub extern "C" fn kernel_main(
             rsdp,
             efi_system_table,
         } => {
-            let _ = writeln!(
+            klog!(
+                Ok,
                 console,
-                "workspace-os kernel: entry: bootloader, boot info {version_major}.{version_minor}, mode {boot_mode}, {map_entries} memory map entries"
+                "entry: bootloader, boot info {version_major}.{version_minor}, mode {boot_mode}, {map_entries} memory map entries"
             );
-            let _ = writeln!(
+            klog!(
+                Info,
                 console,
-                "workspace-os kernel: handoff: boot cpu {boot_cpu:#x}, rsdp {rsdp:#x}, efi system table {efi_system_table:#x}, x2|x3 {extra_entry_registers}"
+                "handoff: boot cpu {boot_cpu:#x}, rsdp {rsdp:#x}, efi system table {efi_system_table:#x}, x2|x3 {extra_entry_registers}"
             );
         }
     }
     if let Some(entries) = board.map_entries() {
         for entry in entries {
-            let _ = writeln!(
+            klog!(
+                Info,
                 console,
-                "workspace-os kernel: memory map: {:#x}..{:#x} {}",
+                "memory map: {:#x}..{:#x} {}",
                 entry.base,
                 entry.end(),
                 entry.kind().name()
@@ -94,35 +96,26 @@ pub extern "C" fn kernel_main(
             .flatten()
             .find(|entry| entry.kind() == bootinfo::MemoryKind::ReservedMapped)
             .map_or(-1, |entry| attribute(entry.base as usize));
-        let _ = writeln!(
+        klog!(Info, console, "sctlr_el1 {:#x}", arch::system_control());
+        klog!(Info, console, "mapping: runtime services {runtime:#04x}");
+        klog!(
+            Info,
             console,
-            "workspace-os kernel: sctlr_el1 {:#x}",
-            arch::system_control()
-        );
-        let _ = writeln!(
-            console,
-            "workspace-os kernel: mapping: runtime services {runtime:#04x}"
-        );
-        let _ = writeln!(
-            console,
-            "workspace-os kernel: mapping: kernel image {:#04x}, uart {:#04x}, boot info {:#04x}, tables at {:#x}",
+            "mapping: kernel image {:#04x}, uart {:#04x}, boot info {:#04x}, tables at {:#x}",
             attribute(arch::kernel_image().start),
             attribute(board.uart.base as usize),
             attribute(handoff_address),
             arch::translation_root()
         );
     }
-    let _ = writeln!(
+    klog!(
+        Ok,
         console,
-        "workspace-os kernel: memory {} MiB at {:#x}",
+        "memory {} MiB at {:#x}",
         board.memory.size >> 20,
         board.memory.base
     );
-    let _ = writeln!(
-        console,
-        "workspace-os kernel: uart pl011 at {:#x}",
-        board.uart.base
-    );
+    klog!(Ok, console, "uart pl011 at {:#x}", board.uart.base);
 
     let mut frames = match memory::init(&board) {
         Ok(frames) => frames,
@@ -131,8 +124,23 @@ pub extern "C" fn kernel_main(
     memory::report(&frames, &board, &mut console);
     memory::selftest(&mut frames, &board, &mut console);
 
+    let entry = match board.entry {
+        board::Entry::Direct => "direct load by the QEMU loader",
+        board::Entry::Bootloader { .. } => "UEFI bootloader, boot info",
+    };
+    log::summary(
+        &mut console,
+        &log::Summary {
+            entry,
+            memory_mib: board.memory.size >> 20,
+            free_frames: frames.free_frames(),
+            total_frames: frames.memory_frames(),
+            console: board.uart.base,
+        },
+    );
+
     arch::run_selftest();
-    let _ = writeln!(console, "workspace-os kernel: resumed after breakpoint");
+    klog!(Ok, console, "resumed after breakpoint");
 
     #[cfg(feature = "selftest-unhandled-class")]
     arch::raise_unhandled_class();
@@ -147,6 +155,6 @@ pub extern "C" fn kernel_main(
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     let mut console = board::console();
-    let _ = writeln!(console, "kernel panic: {info}");
+    klog!(Error, console, "kernel panic: {info}");
     arch::halt()
 }

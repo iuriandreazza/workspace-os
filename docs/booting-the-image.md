@@ -46,10 +46,12 @@ qemu-system-aarch64 -machine virt,acpi=off -cpu cortex-a72 -m 512M \
   -drive file=target/workspace-os.img,format=raw,if=virtio
 ```
 
-The firmware prints its own lines first. The bootloader's lines start with
-`boot` and a tag (`ok`, `info`, `>>`, `fail`), and the kernel's with `workspace-os kernel:`; the
-kernel's `entry: bootloader, boot info 1.0` line shows how it was entered, and
-`booted on aarch64 in EL1` is the banner. Leave QEMU with Ctrl-A then X.
+The firmware prints its own lines first. The bootloader draws a banner and
+logs lines that start with `boot` and a tag (`ok`, `info`, `>>`, `fail`), then
+a summary box; the kernel draws its own box and logs lines that start with
+`kernel` and the same kind of tag. The kernel's `entry: bootloader, boot info
+1.0` line shows how it was entered, and `booted on aarch64 in EL1` is the
+banner. Leave QEMU with Ctrl-A then X.
 
 Add `-accel hvf -cpu host` to run with the hypervisor instead of emulation.
 That combination was not tried; the gate uses emulation.
@@ -97,7 +99,7 @@ VBoxManage startvm workspace-os --type headless
 Read the output from the file the virtual serial port writes:
 
 ```bash
-tr -d '\r' < target/workspace-os-serial.log | grep -a workspace-os
+tr -d '\r' < target/workspace-os-serial.log | grep -a 'boot  \|kernel  '
 ```
 
 Stop and remove the machine with:

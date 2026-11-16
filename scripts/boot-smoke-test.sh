@@ -61,12 +61,12 @@
 #                     not be resumed like the kernel's own breakpoint
 set -euo pipefail
 
-readonly EXPECTED_BANNER="workspace-os kernel: booted on aarch64 in EL1"
+readonly EXPECTED_BANNER="booted on aarch64 in EL1"
 readonly DEFAULT_MEMORY_MIB=128
 readonly RAM_BASE="0x40000000"
-readonly UART_REPORT="workspace-os kernel: uart pl011 at 0x9000000"
+readonly UART_REPORT="uart pl011 at 0x9000000"
 readonly BREAKPOINT_REPORT="exception: breakpoint #0x800 at"
-readonly RESUME_MARKER="workspace-os kernel: resumed after breakpoint"
+readonly RESUME_MARKER="resumed after breakpoint"
 readonly PANIC_MARKER="kernel panic"
 readonly FRAME_SIZE=4096
 # `/memreserve/` entries the memreserve boot adds: 16 frames, then a range that
@@ -87,6 +87,13 @@ readonly KERNEL_ELF="$TARGET_DIR/aarch64-unknown-none-softfloat/debug/kernel"
 # -nodefaults: the default virtio network card needs an option ROM that
 # minimal QEMU installs (such as the CI runner) do not ship.
 readonly QEMU_MACHINE=(-machine virt -cpu cortex-a72 -nodefaults -display none -m "${DEFAULT_MEMORY_MIB}M")
+
+# plain_log: the serial log without carriage returns and colour codes, for the
+# checks that read a line as a whole. The text of a message is never split by a
+# colour code, so the plain `grep -F` checks read the log as it is.
+plain_log() {
+    tr -d '\r' < "$serial_log" | LC_ALL=C sed $'s/\033\\[[0-9;]*m//g'
+}
 
 cd "$(dirname "$0")/.."
 cargo build --quiet --target-dir "$TARGET_DIR"
@@ -194,10 +201,10 @@ expected_blob_size=""
 # amount of RAM and the layout the linker chose.
 check_frames() {
     local mib="$1" counts total reserved free
-    expect_once "workspace-os kernel: reserved kernel image $image_range" "kernel image reservation"
-    expect_once "workspace-os kernel: reserved boot stack $stack_range" "boot stack reservation"
+    expect_once "reserved kernel image $image_range" "kernel image reservation"
+    expect_once "reserved boot stack $stack_range" "boot stack reservation"
     expect_once "in memory map" "frame map report"
-    counts="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: frames: \([0-9]*\) in memory map, \([0-9]*\) reserved, \([0-9]*\) free$/\1 \2 \3/p')"
+    counts="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: \([0-9]*\) in memory map, \([0-9]*\) reserved, \([0-9]*\) free$/\1 \2 \3/p')"
     [[ -n "$counts" ]] || fail "frame map report has an unexpected format"
     read -r total reserved free <<< "$counts"
 
@@ -212,7 +219,7 @@ check_frames() {
     # The device tree blob must be reserved too, and the reserved count must
     # cover the kernel (image and stack) and the blob, whichever way it is built.
     local blob blob_start blob_end kernel_frames blob_frames
-    blob="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
+    blob="$(plain_log | sed -n 's/^  kernel  .\{4\}  reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
     [[ "$(echo "$blob" | wc -l)" -eq 1 && -n "$blob" ]] || fail "device tree reservation not reported exactly once"
     read -r blob_start blob_end <<< "$blob"
     # QEMU loads the tree at the start of RAM, with the size its header holds.
@@ -226,16 +233,16 @@ check_frames() {
     # The machine's own tree declares nothing else to reserve.
     [[ "$reserved" -eq $((kernel_frames + blob_frames + extra_reserved_frames)) ]] \
         || fail "$reserved frames reserved, expected $((kernel_frames + blob_frames + extra_reserved_frames))"
-    expect_once "workspace-os kernel: reserved by the device tree: $extra_reserved_ranges regions" \
+    expect_once "reserved by the device tree: $extra_reserved_ranges regions" \
         "device tree reservation count"
 
-    expect_once "workspace-os kernel: frames: exhausted after $free allocations, next request refused" \
+    expect_once "frames: exhausted after $free allocations, next request refused" \
         "exhaustion report"
-    expect_once "workspace-os kernel: frames: returned $free, $free free again" "return of every frame"
-    expect_once "workspace-os kernel: frames: double free refused" "double free refusal"
+    expect_once "frames: returned $free, $free free again" "return of every frame"
+    expect_once "frames: double free refused" "double free refusal"
 
     local reused ram_end
-    reused="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: frames: reused \(0x[0-9a-f]*\) after freeing it$/\1/p')"
+    reused="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: reused \(0x[0-9a-f]*\) after freeing it$/\1/p')"
     [[ "$(echo "$reused" | wc -l)" -eq 1 && -n "$reused" ]] || fail "frame reuse not reported exactly once"
     ram_end=$((RAM_BASE + mib * 1024 * 1024))
     [[ "$reused" -ge "$RAM_BASE" && "$reused" -lt "$ram_end" && $((reused % FRAME_SIZE)) -eq 0 ]] \
@@ -245,7 +252,7 @@ check_frames() {
 # check_boot NAME QEMU_IMAGE_ARGS...
 check_boot() {
     local expected_memory
-    expected_memory="workspace-os kernel: memory $(memory_mib_of "$@") MiB at $RAM_BASE"
+    expected_memory="memory $(memory_mib_of "$@") MiB at $RAM_BASE"
     start_qemu "$@"
 
     wait_for_banner
@@ -340,24 +347,24 @@ check_uefi_boot() {
     expect_once "$BREAKPOINT_REPORT" "breakpoint report"
     expect_once "$RESUME_MARKER" "resume after the breakpoint"
     # The origin of the entry is visible on the serial console.
-    expect_once "workspace-os kernel: entry: bootloader, boot info 1.0, mode 0," "entry through the bootloader"
+    expect_once "entry: bootloader, boot info 1.0, mode 0," "entry through the bootloader"
     if grep -qF "entry: direct load" "$serial_log"; then
         fail "kernel reports a direct load after a boot through the bootloader"
     fi
     # The processor identity, the tables and the registers the ADR fixes to zero:
     # the boot processor of QEMU `virt` is 0, ACPI is off, the system table is set.
-    expect_once "workspace-os kernel: handoff: boot cpu 0x0, rsdp 0x0, efi system table 0x" "handoff fields"
+    expect_once "handoff: boot cpu 0x0, rsdp 0x0, efi system table 0x" "handoff fields"
     if grep -qF "efi system table 0x0," "$serial_log"; then
         fail "boot info carries no EFI system table"
     fi
     expect_once ", x2|x3 0" "x2 and x3 at entry"
-    expect_once "workspace-os kernel: reserved kernel image $image_range" "kernel image reservation"
-    expect_once "workspace-os kernel: reserved boot stack $stack_range" "boot stack reservation"
+    expect_once "reserved kernel image $image_range" "kernel image reservation"
+    expect_once "reserved boot stack $stack_range" "boot stack reservation"
 
     # The kernel found an intact copy of the device tree, as big as the firmware's.
     local blob_size copy
-    blob_size="$(tr -d '\r' < "$serial_log" | sed -n 's/.*[^ ] *device tree at 0x[0-9a-f]* (\([0-9]*\) bytes).*/\1/p')"
-    copy="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
+    blob_size="$(plain_log | sed -n 's/.*[^ ] *device tree at 0x[0-9a-f]* (\([0-9]*\) bytes).*/\1/p')"
+    copy="$(plain_log | sed -n 's/^  kernel  .\{4\}  reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
     [[ -n "$blob_size" && "$(echo "$copy" | wc -l)" -eq 1 && -n "$copy" ]] || fail "device tree copy not reported exactly once"
     read -r copy_start copy_end <<< "$copy"
     [[ $((copy_end - copy_start)) -eq "$blob_size" ]] \
@@ -365,12 +372,12 @@ check_uefi_boot() {
 
     # The memory line comes from the bootloader's map: most of the machine's RAM.
     local reported
-    reported="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: memory \([0-9]*\) MiB at 0x40000000$/\1/p')"
+    reported="$(plain_log | sed -n 's/^  kernel  .\{4\}  memory \([0-9]*\) MiB at 0x40000000$/\1/p')"
     [[ "$(echo "$reported" | wc -l)" -eq 1 && -n "$reported" ]] || fail "memory report not found exactly once"
     [[ "$reported" -le "$mib" && "$reported" -ge $((mib * 9 / 10)) ]] \
         || fail "kernel reports $reported MiB of memory, expected most of ${mib} MiB"
 
-    counts="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: frames: \([0-9]*\) in memory map, \([0-9]*\) reserved, \([0-9]*\) free$/\1 \2 \3/p')"
+    counts="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: \([0-9]*\) in memory map, \([0-9]*\) reserved, \([0-9]*\) free$/\1 \2 \3/p')"
     [[ -n "$counts" ]] || fail "frame map report has an unexpected format"
     read -r total reserved free <<< "$counts"
     [[ "$total" -le $((mib * 1024 * 1024 / FRAME_SIZE)) && "$total" -ge $((mib * 1024 * 1024 / FRAME_SIZE * 9 / 10)) ]] \
@@ -401,7 +408,7 @@ check_uefi_boot() {
                 fi
                 ;;
         esac
-    done < <(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
     [[ "$entries" -gt 0 && "$kernel_entries" -eq 1 ]] || fail "memory map has $entries entries and $kernel_entries kernel entries"
     [[ "$total" -eq "$ram_frames" ]] || fail "allocator map holds $total frames but the memory map has $ram_frames of RAM"
     [[ "$reserved" -eq "$held_frames" ]] \
@@ -412,17 +419,17 @@ check_uefi_boot() {
     # The kernel runs on the bootloader's own tables, not the firmware's (the
     # root is the pool the bootloader printed), and what the tables map holds up
     # at the kernel, the UART and the boot info.
-    expect_once "workspace-os kernel: mapping: runtime services 0xff" "memory type of the runtime services regions"
+    expect_once "mapping: runtime services 0xff" "memory type of the runtime services regions"
     # SCTLR_EL1: MMU (bit 0), data cache (2) and instruction cache (12) on;
     # alignment check (1) and write-implies-execute-never (19) off.
     local sctlr
-    sctlr="$(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: sctlr_el1 \(0x[0-9a-f]*\)$/\1/p')"
+    sctlr="$(plain_log | sed -n 's/^  kernel  .\{4\}  sctlr_el1 \(0x[0-9a-f]*\)$/\1/p')"
     [[ -n "$sctlr" ]] || fail "SCTLR_EL1 not reported"
     [[ $(((sctlr >> 0) & 1)) -eq 1 && $(((sctlr >> 2) & 1)) -eq 1 && $(((sctlr >> 12) & 1)) -eq 1 \
         && $(((sctlr >> 1) & 1)) -eq 0 && $(((sctlr >> 19) & 1)) -eq 0 ]] \
         || fail "SCTLR_EL1 is $sctlr: expected MMU, D-cache and I-cache on, alignment checks and WXN off"
     local tables
-    tables="$(tr -d '\r' < "$serial_log" | sed -n 's/.*page tables at \(0x[0-9a-f]*\).*/\1/p')"
+    tables="$(plain_log | sed -n 's/.*page tables at \(0x[0-9a-f]*\).*/\1/p')"
     [[ -n "$tables" ]] || fail "bootloader did not report its page tables"
     # The tables are memory the bootloader owns and the kernel may reclaim later.
     local owned=0 table_start table_end table_kind
@@ -431,12 +438,12 @@ check_uefi_boot() {
             && $((table_start)) -le $((tables)) && $((tables)) -lt $((table_end)) ]]; then
             owned=1
         fi
-    done < <(tr -d '\r' < "$serial_log" | sed -n 's/^workspace-os kernel: memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
     [[ "$owned" -eq 1 ]] || fail "the page tables at $tables are not in a bootloader-reclaimable entry of the memory map"
-    expect_once "workspace-os kernel: mapping: kernel image 0xff, uart 0x00, boot info 0xff, tables at $tables" "memory types and root of the bootloader's map"
-    expect_once "workspace-os kernel: frames: exhausted after $free allocations, next request refused" "exhaustion report"
-    expect_once "workspace-os kernel: frames: returned $free, $free free again" "return of every frame"
-    expect_once "workspace-os kernel: frames: double free refused" "double free refusal"
+    expect_once "mapping: kernel image 0xff, uart 0x00, boot info 0xff, tables at $tables" "memory types and root of the bootloader's map"
+    expect_once "frames: exhausted after $free allocations, next request refused" "exhaustion report"
+    expect_once "frames: returned $free, $free free again" "return of every frame"
+    expect_once "frames: double free refused" "double free refusal"
 
     BOOT_TIMEOUT_SECONDS=10
     stop_qemu
@@ -451,7 +458,7 @@ check_uefi_refusal() {
         -drive "file=$disk_image,format=raw,if=virtio"
     wait_for_line "the firmware offers ACPI only"
     sleep "$SETTLE_SECONDS"
-    if grep -qF "workspace-os kernel:" "$serial_log"; then
+    if grep -qF "booted on aarch64" "$serial_log"; then
         fail "the kernel started on a machine that offers ACPI only"
     fi
     BOOT_TIMEOUT_SECONDS=10

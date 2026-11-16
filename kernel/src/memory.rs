@@ -9,6 +9,7 @@ use physmem::{Builder, FRAME_SIZE, FrameAllocator, FreeError, storage_words};
 
 use crate::arch;
 use crate::board::{Board, Entry};
+use crate::log::klog;
 
 /// The allocator manages a window of this many frames (4 GiB), counted from the
 /// lowest RAM address. Its bitmaps live in the kernel's `.bss`, so they are
@@ -110,12 +111,14 @@ pub fn init(board: &Board) -> Result<FrameAllocator<'static>, InitError> {
     Ok(frames)
 }
 
-pub fn report(frames: &FrameAllocator, board: &Board, out: &mut impl Write) {
+pub fn report(frames: &FrameAllocator, board: &Board, mut out: impl Write) {
     for (name, range) in fixed_reservations(board) {
-        let _ = writeln!(
+        klog!(
+            Info,
             out,
-            "workspace-os kernel: reserved {name} {:#x}..{:#x}",
-            range.start, range.end
+            "reserved {name} {:#x}..{:#x}",
+            range.start,
+            range.end
         );
     }
     let mut declared = 0;
@@ -125,20 +128,19 @@ pub fn report(frames: &FrameAllocator, board: &Board, out: &mut impl Write) {
         Entry::Direct => "the device tree",
         Entry::Bootloader { .. } => "the boot map and device tree",
     };
-    let _ = writeln!(
-        out,
-        "workspace-os kernel: reserved by {source}: {declared} regions"
-    );
+    klog!(Info, out, "reserved by {source}: {declared} regions");
     if frames.dropped_bytes() > 0 {
-        let _ = writeln!(
+        klog!(
+            Info,
             out,
-            "workspace-os kernel: {} MiB of memory lies outside the allocator window and is unused",
+            "{} MiB of memory lies outside the allocator window and is unused",
             frames.dropped_bytes() >> 20
         );
     }
-    let _ = writeln!(
+    klog!(
+        Info,
         out,
-        "workspace-os kernel: frames: {} in memory map, {} reserved, {} free",
+        "frames: {} in memory map, {} reserved, {} free",
         frames.memory_frames(),
         frames.reserved_frames(),
         frames.free_frames()
@@ -159,7 +161,7 @@ fn for_each_frame_in(range: Range<u64>, window: Range<u64>, mut visit: impl FnMu
 /// Exercises the allocator on the real memory map and panics if it misbehaves:
 /// drains it, checks that nothing reserved was handed out, returns everything,
 /// and reuses a frame. The allocator ends as it began.
-pub fn selftest(frames: &mut FrameAllocator, board: &Board, out: &mut impl Write) {
+pub fn selftest(frames: &mut FrameAllocator, board: &Board, mut out: impl Write) {
     let free_at_start = frames.free_frames();
 
     let mut handed_out = 0;
@@ -179,9 +181,10 @@ pub fn selftest(frames: &mut FrameAllocator, board: &Board, out: &mut impl Write
         frames.alloc().is_none(),
         "exhausted allocator handed out a frame"
     );
-    let _ = writeln!(
+    klog!(
+        Ok,
         out,
-        "workspace-os kernel: frames: exhausted after {handed_out} allocations, next request refused"
+        "frames: exhausted after {handed_out} allocations, next request refused"
     );
 
     // A reserved frame must not have been handed out: freeing it would succeed.
@@ -219,9 +222,10 @@ pub fn selftest(frames: &mut FrameAllocator, board: &Board, out: &mut impl Write
         "returned a different number of frames"
     );
     assert_eq!(frames.free_frames(), free_at_start, "frames were lost");
-    let _ = writeln!(
+    klog!(
+        Ok,
         out,
-        "workspace-os kernel: frames: returned {returned}, {} free again",
+        "frames: returned {returned}, {} free again",
         frames.free_frames()
     );
 
@@ -230,15 +234,12 @@ pub fn selftest(frames: &mut FrameAllocator, board: &Board, out: &mut impl Write
     assert_ne!(first, second, "the same frame was handed out twice");
     assert_eq!(frames.free(first), Ok(()));
     assert_eq!(frames.alloc(), Some(first), "a freed frame was not reused");
-    let _ = writeln!(
-        out,
-        "workspace-os kernel: frames: reused {first:#x} after freeing it"
-    );
+    klog!(Ok, out, "frames: reused {first:#x} after freeing it");
 
     assert_eq!(frames.free(second), Ok(()));
     assert_eq!(frames.free(second), Err(FreeError::NotAllocated));
     assert_eq!(frames.free(first + 1), Err(FreeError::Unaligned));
     assert_eq!(frames.free(first), Ok(()));
     assert_eq!(frames.free_frames(), free_at_start, "frames were lost");
-    let _ = writeln!(out, "workspace-os kernel: frames: double free refused");
+    klog!(Ok, out, "frames: double free refused");
 }
