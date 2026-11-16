@@ -34,8 +34,6 @@ use uefi::{cstr16, guid};
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\KERNEL.ELF");
 const DEVICE_TREE_GUID: uefi::Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 const PL011_COMPATIBLE: &str = "arm,pl011";
-/// A device tree is capped at 2 MiB by the boot protocols; refuse a bigger one.
-const MAX_DEVICE_TREE: usize = 2 << 20;
 /// Room for the memory map the kernel receives. The firmware's has some
 /// dozens of entries.
 const MAP_CAPACITY: usize = 2048;
@@ -47,6 +45,12 @@ const EXTRA_TABLES: usize = 64;
 enum Failure {
     Firmware(uefi::Error),
     Message(&'static str),
+    /// The firmware publishes ACPI (at this root pointer) and no device tree.
+    AcpiOnly(u64),
+    /// There is no kernel file on the partition.
+    KernelMissing,
+    /// A step on the kernel file failed: what was being done, and why.
+    KernelFile(&'static str, Status),
     Elf(elf::ElfError),
     Map(bootinfo::BuildError),
     Table(PageError),
@@ -63,6 +67,16 @@ impl core::fmt::Display for Failure {
         match self {
             Self::Firmware(error) => write!(f, "firmware: {error}"),
             Self::Message(text) => f.write_str(text),
+            Self::AcpiOnly(rsdp) => write!(
+                f,
+                "the firmware offers ACPI only (rsdp {rsdp:#x}): the kernel has no ACPI reader yet (on QEMU, use -machine virt,acpi=off)"
+            ),
+            Self::KernelMissing => {
+                write!(f, "{KERNEL_PATH} is not on the EFI system partition")
+            }
+            Self::KernelFile(action, status) => {
+                write!(f, "cannot {action} {KERNEL_PATH}: {status:?}")
+            }
             Self::Elf(error) => write!(f, "kernel image: {error}"),
             Self::Map(error) => write!(f, "{error}"),
             Self::Table(error) => write!(f, "{error}"),
@@ -94,7 +108,12 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
     ))?;
     let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(device)?;
     let mut root = fs.open_volume()?;
-    let handle = root.open(KERNEL_PATH, FileMode::Read, FileAttribute::empty())?;
+    let handle = root
+        .open(KERNEL_PATH, FileMode::Read, FileAttribute::empty())
+        .map_err(|e| match e.status() {
+            Status::NOT_FOUND => Failure::KernelMissing,
+            status => Failure::KernelFile("open", status),
+        })?;
     let mut file: RegularFile = handle
         .into_regular_file()
         .ok_or(Failure::Message("kernel path is a directory"))?;
@@ -105,10 +124,12 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
     let mut info_buffer = InfoBuffer([0u8; 256]);
     let size = file
         .get_info::<FileInfo>(&mut info_buffer.0)
-        .map_err(|e| Failure::Firmware(uefi::Error::new(e.status(), ())))?
+        .map_err(|e| Failure::KernelFile("read the size of", e.status()))?
         .file_size() as usize;
     let buffer = allocate(pages_for(size.max(1)))?;
-    let read = file.read(&mut buffer[..size])?;
+    let read = file
+        .read(&mut buffer[..size])
+        .map_err(|e| Failure::KernelFile("read", e.status()))?;
     if read != size {
         return Err(Failure::Message("short read of the kernel file"));
     }
@@ -119,6 +140,10 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
 /// Returns the plan, and leaves `plan.span()` bytes at `plan.base` allocated.
 fn load_kernel(file: &[u8]) -> Outcome<elf::LoadPlan> {
     let plan = elf::plan(file).map_err(Failure::Elf)?;
+    // Page zero cannot be a slice in Rust, and no firmware gives it away.
+    if plan.base == 0 {
+        return Err(Failure::Message("the kernel is linked at address 0"));
+    }
     let pages = pages_for(plan.span() as usize);
     boot::allocate_pages(
         AllocateType::Address(plan.base),
@@ -168,6 +193,8 @@ fn print_memory_map() {
 /// What the firmware publishes besides memory.
 struct Tables {
     device_tree: Option<(usize, usize)>,
+    /// The firmware published a device tree, usable or not.
+    device_tree_published: bool,
     rsdp: u64,
 }
 
@@ -185,10 +212,15 @@ fn find_tables() -> Tables {
             let fdt = unsafe { devicetree::Fdt::from_address(address) }.ok()?;
             Some((address, fdt.size()))
         });
-        let rsdp = find(ConfigTableEntry::ACPI2_GUID)
-            .or_else(|| find(ConfigTableEntry::ACPI_GUID))
-            .unwrap_or(0) as u64;
-        Tables { device_tree, rsdp }
+        let rsdp = bootinfo::select_rsdp(
+            find(ConfigTableEntry::ACPI2_GUID).map(|a| a as u64),
+            find(ConfigTableEntry::ACPI_GUID).map(|a| a as u64),
+        );
+        Tables {
+            device_tree,
+            device_tree_published: find(DEVICE_TREE_GUID).is_some(),
+            rsdp,
+        }
     })
 }
 
@@ -196,14 +228,26 @@ fn find_tables() -> Tables {
 /// console is too; this is the only way left to say why the boot stops.
 struct Uart(usize);
 
+const UART_FLAGS: usize = 0x18;
+const UART_TX_FIFO_FULL: u32 = 1 << 5;
+
 impl core::fmt::Write for Uart {
     fn write_str(&mut self, text: &str) -> core::fmt::Result {
         for byte in text.bytes() {
             // SAFETY: `self.0` is the PL011 the device tree named, mapped as
             // Device memory by the firmware and by our own map; the data
-            // register is at offset 0. The FIFO is not waited for: a byte lost
-            // in a failure message is acceptable.
-            unsafe { core::ptr::write_volatile(self.0 as *mut u8, byte) };
+            // register is at offset 0 and the flag register at 0x18, whose bit
+            // 5 says the transmit FIFO is full. Waiting on it keeps a message
+            // of any length from being cut after the first FIFO's worth.
+            unsafe {
+                while core::ptr::read_volatile((self.0 + UART_FLAGS) as *const u32)
+                    & UART_TX_FIFO_FULL
+                    != 0
+                {
+                    core::hint::spin_loop();
+                }
+                core::ptr::write_volatile(self.0 as *mut u8, byte);
+            }
         }
         Ok(())
     }
@@ -250,6 +294,31 @@ fn run() -> Outcome<core::convert::Infallible> {
 fn boot_kernel(boot_mode: u32) -> Outcome<core::convert::Infallible> {
     let kernel_file = read_kernel_file()?;
     let plan = load_kernel(kernel_file)?;
+    #[cfg(feature = "selftest-retry-after-failure")]
+    let outcome = if FIRST_RUN.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        Err(Failure::Message("forced failure of the first run"))
+    } else {
+        hand_over(&plan, boot_mode)
+    };
+    #[cfg(not(feature = "selftest-retry-after-failure"))]
+    let outcome = hand_over(&plan, boot_mode);
+    // Only a boot that failed gets here. The range is given back so that a
+    // second run in the same firmware session (the next boot entry) can load
+    // the kernel at the same address.
+    if let Some(base) = core::ptr::NonNull::new(plan.base as *mut u8) {
+        // SAFETY: `load_kernel` allocated exactly these pages and nothing
+        // refers to them after the failure.
+        let _ = unsafe { boot::free_pages(base, pages_for(plan.span() as usize)) };
+    }
+    outcome
+}
+
+#[cfg(feature = "selftest-retry-after-failure")]
+static FIRST_RUN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// Everything after the kernel is loaded, up to the jump into it, with
+/// `boot_mode` in the boot info.
+fn hand_over(plan: &elf::LoadPlan, boot_mode: u32) -> Outcome<core::convert::Infallible> {
     ui::ok(format_args!(
         "kernel loaded at {:#x}..{:#x}, entry {:#x}",
         plan.base, plan.end, plan.entry
@@ -257,11 +326,13 @@ fn boot_kernel(boot_mode: u32) -> Outcome<core::convert::Infallible> {
 
     let tables = find_tables();
     let Some((device_tree, device_tree_size)) = tables.device_tree else {
-        return Err(Failure::Message(if tables.rsdp != 0 {
-            "the firmware offers ACPI only: the kernel has no ACPI reader yet (on QEMU, use -machine virt,acpi=off)"
+        return Err(if tables.device_tree_published {
+            Failure::Message("the device tree the firmware published is not valid")
+        } else if tables.rsdp != 0 {
+            Failure::AcpiOnly(tables.rsdp)
         } else {
-            "the firmware publishes neither a device tree nor ACPI"
-        }));
+            Failure::Message("the firmware publishes neither a device tree nor ACPI")
+        });
     };
     // SAFETY: the blob was checked in `find_tables`.
     let fdt = unsafe { devicetree::Fdt::from_address(device_tree) }
@@ -269,9 +340,6 @@ fn boot_kernel(boot_mode: u32) -> Outcome<core::convert::Infallible> {
     let uart = fdt
         .device(PL011_COMPATIBLE)
         .map_err(|_| Failure::Message("the device tree names no PL011 console"))?;
-    if device_tree_size > MAX_DEVICE_TREE {
-        return Err(Failure::Message("the device tree is too large"));
-    }
     ui::ok(format_args!(
         "device tree at {device_tree:#x} ({device_tree_size} bytes), acpi rsdp {:#x}, pl011 at {:#x}",
         tables.rsdp, uart.base
@@ -331,6 +399,11 @@ fn boot_kernel(boot_mode: u32) -> Outcome<core::convert::Infallible> {
     info.kernel_size = plan.memory_size();
     info.efi_system_table =
         uefi::table::system_table_raw().map_or(0, |table| table.as_ptr() as u64);
+    // Only a kernel that must refuse the structure is booted with this.
+    #[cfg(feature = "selftest-unknown-boot-info-version")]
+    {
+        info.version_major = bootinfo::VERSION_MAJOR + 1;
+    }
     let info_address = info_page.as_ptr() as u64;
 
     let usable_bytes: u64 = entries[..count]
@@ -352,13 +425,14 @@ fn boot_kernel(boot_mode: u32) -> Outcome<core::convert::Infallible> {
     ui::go(format_args!("leaving boot services, entering the kernel"));
     let uart_base = uart.base as usize;
 
-    // Interrupts are masked first: the firmware's handlers must not run while
-    // the map is rebuilt.
-    cpu::mask_interrupts();
     // SAFETY: nothing below calls the firmware, and nothing uses boot
     // services memory in a way that depends on it staying valid, except this
     // function's own stack and code, which the map keeps mapped.
     let final_map = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
+    // Not before the call: the firmware's exit notifications may wait on an
+    // interrupt. Once it returns, its handlers must not run while the map is
+    // rebuilt.
+    cpu::mask_interrupts();
 
     let count =
         convert(&final_map, entries).unwrap_or_else(|reason| fail_on_uart(uart_base, reason));
@@ -418,13 +492,25 @@ fn convert(map: &impl uefi::mem::memory_map::MemoryMap, out: &mut [MemoryEntry])
 
 #[entry]
 fn main() -> Status {
-    match run() {
+    #[cfg(feature = "selftest-retry-after-failure")]
+    let result = match run() {
+        Err(failure) => {
+            ui::failure(format_args!("{failure}"));
+            run()
+        }
+        done => done,
+    };
+    #[cfg(not(feature = "selftest-retry-after-failure"))]
+    let result = run();
+    match result {
         Ok(never) => match never {},
         Err(failure) => {
             ui::failure(format_args!("{failure}"));
             boot::stall(Duration::from_secs(5));
             match failure {
                 Failure::Firmware(error) => error.status(),
+                Failure::KernelFile(_, status) => status,
+                Failure::KernelMissing => Status::NOT_FOUND,
                 _ => Status::LOAD_ERROR,
             }
         }

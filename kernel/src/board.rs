@@ -63,7 +63,7 @@ impl Board {
     pub fn for_each_memory_region(&self, mut visit: impl FnMut(Region)) -> Result<(), Error> {
         if let Some(map) = &self.map {
             map.iter()
-                .filter(|entry| is_ram(entry.kind()))
+                .filter(|entry| entry.kind().is_ram())
                 .for_each(|entry| {
                     visit(Region {
                         base: entry.base,
@@ -84,7 +84,7 @@ impl Board {
     pub fn for_each_reserved_region(&self, mut visit: impl FnMut(Region)) -> Result<(), Error> {
         if let Some(map) = &self.map {
             map.iter()
-                .filter(|entry| is_ram(entry.kind()) && entry.kind() != MemoryKind::Usable)
+                .filter(|entry| entry.kind().is_ram() && entry.kind() != MemoryKind::Usable)
                 .for_each(|entry| {
                     visit(Region {
                         base: entry.base,
@@ -97,18 +97,6 @@ impl Board {
             None => Ok(()),
         }
     }
-}
-
-/// RAM that something owns or may own later. Firmware regions that are not RAM
-/// (runtime services, MMIO, reserved) stay out of the allocator's map.
-fn is_ram(kind: MemoryKind) -> bool {
-    matches!(
-        kind,
-        MemoryKind::Usable
-            | MemoryKind::BootloaderReclaimable
-            | MemoryKind::AcpiReclaimable
-            | MemoryKind::Kernel
-    )
 }
 
 /// Reads the device tree and makes the console usable.
@@ -127,20 +115,14 @@ pub fn discover(boot_address: usize) -> Result<Board, Error> {
 
 /// What stops the kernel when the bootloader's handoff is unusable.
 pub enum HandoffError {
-    Info(bootinfo::Error),
-    UnsupportedArch(u32),
-    UnsupportedConsole(u32),
-    NoMemory,
+    Rejected(bootinfo::HandoffError),
     BadDeviceTree(devicetree::Error),
 }
 
 impl fmt::Display for HandoffError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Info(error) => write!(f, "{error}"),
-            Self::UnsupportedArch(arch) => write!(f, "boot info is for architecture {arch}"),
-            Self::UnsupportedConsole(kind) => write!(f, "unsupported console kind {kind}"),
-            Self::NoMemory => f.write_str("boot info holds no memory"),
+            Self::Rejected(error) => write!(f, "{error}"),
             Self::BadDeviceTree(error) => write!(f, "device tree copy: {error}"),
         }
     }
@@ -150,47 +132,29 @@ const PL011_SIZE: u64 = 0x1000;
 
 /// Reads the boot info the bootloader left at `address` and makes the console
 /// usable, with the console the frozen header names. On failure, the error
-/// comes with the console to report it on, when the header was valid enough to
-/// name one.
+/// comes with whether the console can report it, which holds when the header
+/// was valid enough to name a usable one. The checks themselves are
+/// `bootinfo::check`, tested on the host.
 pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, bool)> {
     // SAFETY: the boot code only takes this path when `x1` held the entry
     // magic, so `address` is the structure the bootloader built (ADR 0013).
-    let info = unsafe { BootInfo::from_address(address) };
-    let info = match info {
-        Ok(info) => info,
-        Err(
-            error @ bootinfo::Error::UnsupportedVersion {
-                console_kind,
-                console_base,
-                ..
-            },
-        ) => {
-            let usable = use_console(console_kind, console_base);
-            return Err((HandoffError::Info(error), usable));
+    let parsed = unsafe { BootInfo::from_address(address) };
+    let handoff = bootinfo::check(parsed, |info| {
+        // SAFETY: the structure comes from the bootloader, which keeps the map
+        // unchanged and in memory the allocator never hands out.
+        unsafe { info.memory_map() }
+    })
+    .map_err(|rejected| {
+        if let Some(base) = rejected.console {
+            CONSOLE_BASE.store(base, Ordering::Relaxed);
         }
-        Err(error) => return Err((HandoffError::Info(error), false)),
-    };
-    if !use_console(info.console_kind, info.console_base) {
-        return Err((HandoffError::UnsupportedConsole(info.console_kind), false));
-    }
-    if info.arch != bootinfo::ARCH_AARCH64 {
-        return Err((HandoffError::UnsupportedArch(info.arch), true));
-    }
-    // SAFETY: the structure comes from the bootloader, which keeps the map
-    // unchanged and in memory the allocator never hands out.
-    let map = unsafe { info.memory_map() }.map_err(|e| (HandoffError::Info(e), true))?;
-    map.validate(info.kernel_base, info.kernel_size)
-        .map_err(|e| (HandoffError::Info(bootinfo::Error::BadMemoryMap(e)), true))?;
-
-    let mut lowest = u64::MAX;
-    let mut total = 0u64;
-    for entry in map.iter().filter(|entry| is_ram(entry.kind())) {
-        lowest = lowest.min(entry.base);
-        total = total.saturating_add(entry.length);
-    }
-    if total == 0 {
-        return Err((HandoffError::NoMemory, true));
-    }
+        (
+            HandoffError::Rejected(rejected.error),
+            rejected.console.is_some(),
+        )
+    })?;
+    CONSOLE_BASE.store(handoff.console, Ordering::Relaxed);
+    let info = handoff.info;
 
     // The copy of the device tree is optional, and only its reservations are
     // used: the memory map is the authority for RAM.
@@ -206,8 +170,8 @@ pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, bool)> {
 
     Ok(Board {
         memory: Region {
-            base: lowest,
-            size: total,
+            base: handoff.ram_lowest,
+            size: handoff.ram_total,
         },
         uart: Region {
             base: info.console_base,
@@ -225,26 +189,14 @@ pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, bool)> {
             version_major: info.version_major,
             version_minor: info.version_minor,
             boot_mode: info.boot_mode,
-            map_entries: map.len(),
+            map_entries: handoff.map.len(),
             boot_cpu: info.boot_cpu,
             rsdp: info.rsdp,
             efi_system_table: info.efi_system_table,
         },
         fdt,
-        map: Some(map),
+        map: Some(handoff.map),
     })
-}
-
-/// Points the console at the UART the frozen header names. Only a PL011 is
-/// driven for now, and a base that does not fit the address space is not used.
-fn use_console(kind: u32, base: u64) -> bool {
-    match (kind, usize::try_from(base)) {
-        (bootinfo::CONSOLE_PL011, Ok(base)) if base != 0 => {
-            CONSOLE_BASE.store(base, Ordering::Relaxed);
-            true
-        }
-        _ => false,
-    }
 }
 
 fn read_device_tree(address: usize) -> Result<Board, Error> {
