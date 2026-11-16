@@ -71,7 +71,7 @@ request ─► model (output constrained by the schema, version 2)
 
 ## Tests and the gate
 
-`./scripts/check.sh` runs 174 tests for `intent-shell`, none needing the model,
+`./scripts/check.sh` runs 177 tests for `intent-shell`, none needing the model,
 including ambiguity (the person picks, cancels, a pick outside the candidates),
 a name that matches nothing, more than 20 matches, a visible file the user
 may not read or delete, a reference that tries to reach what a direct path
@@ -151,6 +151,9 @@ Every output was valid and none held a path.
 - A name stored in a different Unicode normalisation than the model wrote it
   (NFD against NFC, common for downloaded files on macOS) is not found: telling
   them apart needs a normalisation table, which is a dependency this item did not add.
+- The decision log is not protected from a delete that names it or a folder above
+  it; this matters once deletes run. The screen does not say whether a deleted
+  item is a folder.
 - A symlink to a folder is found as a file, not as a folder. `exists` and `same`
   look at metadata during resolution and are not logged; only searches and reads are.
 - `allows` ignores the sticky bit on the folder that holds an item, and the

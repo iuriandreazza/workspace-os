@@ -54,6 +54,8 @@ pub enum Refusal {
     ConfigKeyNotAllowed(String),
     ProtectedPath(PathBuf),
     MoveIntoItself(PathBuf),
+    /// An earlier action of the same plan already removes, moves or replaces this location.
+    ConflictsWithStep(StepId, PathBuf),
     /// A place is a container: it can be read, never removed, moved or overwritten whole.
     PlaceRoot(PathBuf),
     DependencyRefused(StepId),
@@ -90,6 +92,11 @@ impl fmt::Display for Refusal {
                     quoted_path(path)
                 )
             }
+            Self::ConflictsWithStep(step, path) => write!(
+                f,
+                "step {step} already removes, moves or replaces {}",
+                quoted_path(path)
+            ),
             Self::PlaceRoot(path) => write!(
                 f,
                 "{} is a whole place and cannot be removed, moved or overwritten",
@@ -123,6 +130,10 @@ impl Refusal {
             Self::MoveIntoItself(path) => {
                 format!("{} cannot be moved onto or into itself", labels.of(path))
             }
+            Self::ConflictsWithStep(step, path) => format!(
+                "step {step} already removes, moves or replaces {}",
+                labels.of(path)
+            ),
             Self::PlaceRoot(path) => format!(
                 "{} is a whole place and cannot be removed, moved or overwritten",
                 labels.of(path)
@@ -229,6 +240,9 @@ pub fn review(plan: &Plan, authority: &Authority, host: &dyn Host, choices: &Cho
         .collect();
     let mut done: HashMap<StepId, ReviewedStep> = HashMap::new();
     let mut steps = Vec::new();
+    // Each step is resolved against the filesystem as it is now, so two steps
+    // aimed at the same location would not see each other.
+    let mut claimed: HashMap<PathBuf, StepId> = HashMap::new();
 
     for index in plan.execution_order() {
         let step = &plan.steps[index];
@@ -254,10 +268,28 @@ pub fn review(plan: &Plan, authority: &Authority, host: &dyn Host, choices: &Cho
                     reviewed.items = resolved
                         .actions
                         .into_iter()
-                        .map(|action| ReviewedAction {
-                            verdict: judge(&action, step.elevate, authority, host),
-                            action,
-                            output: None,
+                        .map(|action| {
+                            let mut verdict = judge(&action, step.elevate, authority, host);
+                            if !matches!(verdict, Verdict::Refused(_)) {
+                                for path in changed_locations(&action) {
+                                    match claimed.get(path) {
+                                        Some(earlier) if *earlier != step.id => {
+                                            verdict = Verdict::Refused(Refusal::ConflictsWithStep(
+                                                earlier.clone(),
+                                                path.to_path_buf(),
+                                            ));
+                                        }
+                                        _ => {
+                                            claimed.insert(path.to_path_buf(), step.id.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            ReviewedAction {
+                                verdict,
+                                action,
+                                output: None,
+                            }
                         })
                         .collect();
                 }
@@ -391,6 +423,15 @@ fn from_step(
         )));
     }
     Ok(paths)
+}
+
+/// The locations an action removes, moves away, creates or replaces.
+fn changed_locations(action: &Action) -> Vec<&Path> {
+    match action {
+        Action::Delete { path } | Action::Write { path, .. } => vec![path],
+        Action::Move { from, to } => vec![from, to],
+        _ => Vec::new(),
+    }
 }
 
 pub(crate) fn judge(

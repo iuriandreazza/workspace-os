@@ -793,3 +793,44 @@ fn the_largest_files_of_a_place_in_two_folders_are_not_ranked_per_folder() {
     ));
     assert!(host.executed.borrow().is_empty());
 }
+
+#[test]
+fn two_steps_cannot_take_the_same_location() {
+    let host = files();
+    let to_z = |from: &str| {
+        format!(
+            r#"{{"from":{{"name":"{from}","in":"downloads","kind":"file"}},"to":{{"new_name":"z","in":"downloads"}}}}"#
+        )
+    };
+    let result = run(
+        &[&plan(&[
+            step("s1", "fs.move", &to_z("a"), "false"),
+            step("s2", "fs.move", &to_z("b"), "false"),
+        ])],
+        &host,
+        false,
+    );
+    let review = reviewed(&result.outcome);
+    assert_eq!(review.steps[0].items[0].verdict, Verdict::Allowed);
+    assert!(matches!(
+        review.steps[1].items[0].verdict,
+        Verdict::Refused(Refusal::ConflictsWithStep(..))
+    ));
+}
+
+#[test]
+fn a_step_cannot_act_on_what_an_earlier_step_removes() {
+    let host = files();
+    let result = run(
+        &[&plan(&[
+            step("s1", "fs.delete", &named("a"), "false"),
+            step("s2", "fs.delete", &named("a"), "false"),
+        ])],
+        &host,
+        false,
+    );
+    assert!(matches!(
+        reviewed(&result.outcome).steps[1].items[0].verdict,
+        Verdict::Refused(Refusal::ConflictsWithStep(..))
+    ));
+}
