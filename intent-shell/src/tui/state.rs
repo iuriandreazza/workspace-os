@@ -75,6 +75,11 @@ pub enum Effect {
     Quit,
 }
 
+/// After a question is drawn, answer keys are ignored for this long. A terminal
+/// without the kitty keyboard protocol reports a held or double-tapped `y` as
+/// fresh presses, and one of those must not answer a question not yet read.
+pub const DWELL_MS: u64 = 700;
+
 pub const ROOT_KEYS: &str = "[y] confirm this exact action   [n] refuse";
 
 /// How a line of the history is drawn.
@@ -97,6 +102,8 @@ pub struct State {
     pub width: u16,
     pub height: u16,
     pub clock_ms: u64,
+    /// When the current question was put to the person.
+    pub asked_ms: u64,
 }
 
 /// A character the person may type: one `printable` would leave as it is, so
@@ -127,6 +134,7 @@ impl State {
             width: 80,
             height: 24,
             clock_ms: 0,
+            asked_ms: 0,
         }
     }
 
@@ -177,6 +185,7 @@ impl State {
     /// something, so the caller can discard keys typed before it was drawn.
     pub fn on_event(&mut self, event: Event) -> bool {
         self.scroll = 0;
+        self.asked_ms = self.clock_ms;
         match event {
             Event::Busy(label) => self.busy(label),
             Event::AskPlan { screen, details } => {
@@ -266,8 +275,12 @@ impl State {
         Effect::Reply(reply)
     }
 
+    fn settled(&self) -> bool {
+        self.clock_ms.saturating_sub(self.asked_ms) >= DWELL_MS
+    }
+
     fn plan_key(&mut self, key: KeyEvent, details: &str) -> Effect {
-        if !deliberate(&key) {
+        if !deliberate(&key) || !self.settled() {
             return Effect::Nothing;
         }
         match key.code {
@@ -283,7 +296,7 @@ impl State {
     }
 
     fn root_key(&mut self, key: KeyEvent) -> Effect {
-        if !deliberate(&key) {
+        if !deliberate(&key) || !self.settled() {
             return Effect::Nothing;
         }
         match key.code {
@@ -305,7 +318,7 @@ impl State {
             };
             Effect::Nothing
         };
-        if !deliberate(&key) {
+        if !deliberate(&key) || !self.settled() {
             return Effect::Nothing;
         }
         match key.code {
@@ -429,6 +442,7 @@ mod tests {
             screen: "the plan".to_owned(),
             details: "the details".to_owned(),
         });
+        state.clock_ms = DWELL_MS;
         state
     }
 
@@ -437,6 +451,7 @@ mod tests {
         state.on_event(Event::AskRoot {
             panel: panel.to_owned(),
         });
+        state.clock_ms = DWELL_MS;
         state
     }
 
@@ -446,6 +461,7 @@ mod tests {
             question: "Which one?".to_owned(),
             options: (1..=count).map(|n| format!("option {n}")).collect(),
         });
+        state.clock_ms = DWELL_MS;
         state
     }
 
@@ -534,6 +550,48 @@ mod tests {
         assert_eq!(state.on_key(repeat), Effect::Nothing);
         let shifted = KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT);
         assert_eq!(asking_plan().on_key(shifted), Effect::Reply(Reply::Yes));
+    }
+
+    #[test]
+    fn a_key_arriving_right_after_a_question_does_not_answer_it() {
+        let mut state = State::new(String::new());
+        state.set_size(80, 24);
+        state.clock_ms = 5_000;
+        state.on_event(Event::AskRoot {
+            panel: "fs.delete the exact location".to_owned(),
+        });
+        for after in [0, 100, DWELL_MS - 1] {
+            state.clock_ms = 5_000 + after;
+            assert_eq!(state.on_key(press(KeyCode::Char('y'))), Effect::Nothing);
+            assert!(state.is_asking());
+        }
+        state.clock_ms = 5_000 + DWELL_MS;
+        assert_eq!(
+            state.on_key(press(KeyCode::Char('y'))),
+            Effect::Reply(Reply::Yes)
+        );
+    }
+
+    #[test]
+    fn a_double_tap_across_a_plan_and_its_root_question_confirms_only_the_plan() {
+        let mut state = State::new(String::new());
+        state.set_size(80, 24);
+        state.on_event(Event::AskPlan {
+            screen: "plan".to_owned(),
+            details: String::new(),
+        });
+        state.clock_ms = DWELL_MS;
+        assert_eq!(
+            state.on_key(press(KeyCode::Char('y'))),
+            Effect::Reply(Reply::Yes)
+        );
+        state.clock_ms += 10;
+        state.on_event(Event::AskRoot {
+            panel: "exact".to_owned(),
+        });
+        state.clock_ms += 50;
+        assert_eq!(state.on_key(press(KeyCode::Char('y'))), Effect::Nothing);
+        assert!(state.is_asking());
     }
 
     #[test]

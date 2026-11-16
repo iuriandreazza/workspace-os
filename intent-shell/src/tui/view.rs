@@ -270,6 +270,7 @@ mod tests {
             question: "Which?".to_owned(),
             options: (1..=20).map(|n| format!("choice {n}")).collect(),
         });
+        state.clock_ms = crate::tui::state::DWELL_MS;
         let screen = render(&state, 40, 12);
         assert!(screen.iter().any(|l| l == "▸ 1. choice 1"), "{screen:#?}");
         for _ in 0..15 {

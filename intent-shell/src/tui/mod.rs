@@ -28,7 +28,7 @@ use crate::broker::Authority;
 use crate::plain::Setup;
 use crate::ports::{Confirm, DecisionLog, Host, Planner, Retry, User};
 use crate::session::Shell;
-use state::{Effect, Event, Reply, State};
+use state::{Effect, Event, Mode, Reply, State};
 
 const TICK: Duration = Duration::from_millis(100);
 
@@ -272,22 +272,36 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
     let worker = thread::spawn(move || worker(setup, requests, event_tx, replies));
     let result = event_loop(&mut terminal, &mut state, &request_tx, &reply_tx, &events);
 
+    // Questions sent but not yet read from the channel still count as asked.
+    while let Ok(event) = events.try_recv() {
+        state.on_event(event);
+    }
     // Leaving at a question is a refusal, and the decision log must say so:
-    // closing the channels lets the worker's wait fail and record it.
-    let asked = state.is_asking();
+    // closing the channels lets the worker's wait fail and record it. A running
+    // step is waited for rather than killed half way. Only a wait for the
+    // model is abandoned, because nothing has run and the request is logged.
+    let waiting_for_model = matches!(
+        state.mode,
+        Mode::Busy {
+            label: "asking the model",
+            ..
+        }
+    );
     drop((request_tx, reply_tx));
-    if asked {
+    if !waiting_for_model {
         let _ = worker.join();
     }
     let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
 
+    // Written first: the screen may be gone (a closed terminal), and printing
+    // to it must not stop the transcript from being saved.
     let text = state.transcript();
-    print!("{text}");
     let written = transcript.map_or(Ok(()), |path| {
         write_transcript(path, &text)
             .map_err(|e| format!("cannot write the transcript {}: {e}", path.display()))
     });
+    let _ = write!(stdout(), "{text}");
     result.map_err(|e| format!("terminal error: {e}"))?;
     written
 }
