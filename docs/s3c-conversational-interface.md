@@ -9,6 +9,11 @@ tags: [shell, tui, ratatui, ux]
 
 # S3c: conversational terminal interface
 
+> Since S3e (`docs/s3e-directories-and-tree.md`, ADR 0018) the transcripts below
+> that mention `everywhere` or a location shown as `(Downloads)` are historical:
+> `everywhere` is `under_home` and locations are written relative to the
+> current directory or to `~`, with the tree view for listings and choices.
+
 Roadmap item S3c, decided in ADR 0015. The intent shell opens a chat-style
 screen on a terminal: the header on top, the history in the middle, the input
 line fixed at the bottom. Only the terminal adapter changed: `screen.rs`, the

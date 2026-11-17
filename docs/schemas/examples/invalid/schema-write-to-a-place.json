@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Overwrite a whole place","steps":[
+{"kind":"plan","version":3,"summary":"Overwrite a whole place","steps":[
  {"id":"s1","action":"fs.write","args":{"target":{"place":"documents"},"content":"x","mode":"overwrite"},"depends_on":[],"elevate":false}]}

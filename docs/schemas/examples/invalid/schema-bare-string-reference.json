@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"A plain string is not a reference","steps":[
+{"kind":"plan","version":3,"summary":"A plain string is not a reference","steps":[
  {"id":"s1","action":"fs.delete","args":{"target":"s1.path"},"depends_on":[],"elevate":false}]}

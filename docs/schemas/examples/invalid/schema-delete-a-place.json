@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Delete a whole place","steps":[
+{"kind":"plan","version":3,"summary":"Delete a whole place","steps":[
  {"id":"s1","action":"fs.delete","args":{"target":{"place":"documents"}},"depends_on":[],"elevate":false}]}

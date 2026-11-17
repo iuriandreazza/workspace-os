@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Go to a file","steps":[
+ {"id":"s1","action":"session.cd","args":{"target":{"name":"notes.txt","in":"home","kind":"file"}},"depends_on":[]}]}

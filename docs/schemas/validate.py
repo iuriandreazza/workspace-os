@@ -1,4 +1,4 @@
-"""Check the action plan schema against its examples (ADR 0011, ADR 0014).
+"""Check the action plan schema against its examples (ADR 0011, ADR 0014, ADR 0018).
 
 Run: uv run --with jsonschema python docs/schemas/validate.py
 
@@ -41,6 +41,10 @@ def semantic_errors(doc):
                 elif source in by_id and by_id[source]["action"] not in PATH_PRODUCERS:
                     errors.append(f"{source} does not produce paths")
             if isinstance(value, dict):
+                paths = [value.get("path"), (value.get("in") or {}).get("path") if isinstance(value.get("in"), dict) else None]
+                for text in paths:
+                    if text is not None and (len(text.encode()) > 4096 or "\0" in text):
+                        errors.append(f"{s['id']}: a path has 1 to 4096 bytes and no NUL")
                 name = value.get("name", value.get("new_name"))
                 if name is not None and (name in (".", "..") or "/" in name or "\0" in name or len(name.encode()) > 255):
                     errors.append(f"{s['id']}: {name!r} is not a single file name")
@@ -48,6 +52,8 @@ def semantic_errors(doc):
             has_group = s["args"]["group"] is not None
             if has_group != (s["args"]["operation"] in GROUP_OPERATIONS):
                 errors.append(f"{s['id']}: group must be set exactly for group operations")
+    if len(steps) > 1 and any(s["action"] == "session.cd" for s in steps):
+        errors.append("session.cd must be a plan of its own")
     if not errors and has_cycle(by_id):
         errors.append("dependency cycle")
     return errors

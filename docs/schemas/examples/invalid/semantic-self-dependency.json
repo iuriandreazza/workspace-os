@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Waits for itself","steps":[
+{"kind":"plan","version":3,"summary":"Waits for itself","steps":[
  {"id":"s1","action":"fs.list","args":{"target":{"place":"home"}},"depends_on":["s1"],"elevate":false}]}
