@@ -273,7 +273,13 @@ the right edge, in columns, as `ls -l` does.
   cannot hold one. Text a file or a note brought is escaped in the report
   (`session.rs`), so it cannot pass for a column either.
 
+Narrow screens: when the name does not fit beside the metadata, the last
+columns (date, then owner, then size) are left out one by one, and a name is cut
+with `…` only when it does not fit alone. The saved transcript is laid out at
+the width of its longest line, so it cuts nothing.
+
 Limits: the candidates of an ambiguity choice and a largest-files ranking carry
-no owner or date yet (they come from paths and sizes, not from a listing), so
-they show the size only; a name in a wide script (CJK) counts one column per
-character, so its line may be off by some columns.
+no owner or date yet (they come from paths and sizes, not from a listing). Cell
+widths are an approximation without a dependency: CJK and the common emoji count
+two, a combining mark or a joiner sequence counts one, so such a line may be a
+cell off. The owner is looked up once per entry, with no cache.

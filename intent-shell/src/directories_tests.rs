@@ -1376,8 +1376,9 @@ fn a_wider_screen_moves_the_metadata_to_its_edge_and_a_name_that_does_not_fit_is
     );
     let long = format!("{}{}5 KB", "x".repeat(50), screen::COLUMN_BREAK);
     let cut = screen::fit(&long, 30);
+    // A name that does not fit even alone is cut, and the metadata is left out.
     assert_eq!(cut.chars().count(), 30, "{cut}");
-    assert!(cut.contains('…') && cut.ends_with("  5 KB"), "{cut}");
+    assert!(cut.ends_with('…') && !cut.contains("KB"), "{cut}");
     assert_eq!(screen::fit("no columns here", 5), "no columns here");
 }
 
@@ -1411,7 +1412,7 @@ fn wide_names_are_measured_in_cells_cut_to_fit_and_never_push_the_metadata_off_t
     );
     let long = format!("{}{}5 KB", "日".repeat(30), screen::COLUMN_BREAK);
     let cut = screen::fit(&long, 20);
-    assert!(cut.ends_with("  5 KB") && cut.contains('…'), "{cut}");
+    assert!(cut.ends_with('…') && !cut.contains("KB"), "{cut}");
     assert!(
         cut.chars()
             .map(|c| if c as u32 > 0x2E80 { 2 } else { 1 })
@@ -1422,17 +1423,40 @@ fn wide_names_are_measured_in_cells_cut_to_fit_and_never_push_the_metadata_off_t
 }
 
 #[test]
-fn a_screen_too_narrow_for_the_metadata_keeps_the_name_short_and_the_line_whole() {
-    let line = format!(
-        "some-long-name{}5.0 KB  ana   2026-11-17 14:30",
-        screen::COLUMN_BREAK
+fn a_narrow_screen_leaves_out_the_last_columns_before_it_cuts_a_name() {
+    let brk = screen::COLUMN_BREAK;
+    let line = format!("some-long-name{brk}5.0 KB{brk}ana{brk}2026-11-17 14:30");
+    assert_eq!(screen::fit(&line, 60).chars().count(), 60);
+    // The date goes first, then the owner; the name stays whole.
+    assert_eq!(
+        screen::fit(&line, 34),
+        format!("some-long-name{}5.0 KB  ana", " ".repeat(9))
     );
-    let shown = screen::fit(&line, 20);
-    assert_eq!(shown.lines().count(), 1);
-    assert!(
-        shown.starts_with("s…") && shown.ends_with("2026-11-17 14:30"),
-        "{shown}"
-    );
+    assert_eq!(screen::fit(&line, 22), "some-long-name  5.0 KB");
+    assert_eq!(screen::fit(&line, 20), "some-long-name");
+    assert_eq!(screen::fit(&line, 30).lines().count(), 1);
+}
+
+#[test]
+fn a_row_with_a_missing_value_keeps_the_other_columns_where_they_are() {
+    let mut old = described("/h/Downloads/old.txt", 7, "ana", "");
+    old.created = None;
+    let shown = default_tree(&[
+        described("/h/Downloads/b.txt", 7, "ana", "2026-11-17 14:30"),
+        old,
+    ]);
+    let ends: Vec<usize> = shown
+        .lines()
+        .skip(1)
+        .map(|l| l.find("7 B").unwrap())
+        .collect();
+    assert_eq!(ends[0], ends[1], "{shown}");
+}
+
+#[test]
+fn wide_emoji_count_two_cells() {
+    let line = format!("✅ a{}5 KB", screen::COLUMN_BREAK);
+    assert_eq!(screen::fit(&line, 20).chars().count(), 19, "{line}");
 }
 
 #[test]

@@ -582,7 +582,7 @@ impl Walk<'_> {
         let (owner, created) = node.entry.as_ref().map_or_else(Default::default, |e| {
             (
                 crate::action::printable(e.owner.as_deref().unwrap_or_default(), false),
-                e.created.clone().unwrap_or_default(),
+                crate::action::printable(e.created.as_deref().unwrap_or_default(), false),
             )
         });
         let size = node
@@ -617,7 +617,7 @@ fn split(left: &str, right: &str) -> String {
 /// How many terminal cells a character takes: two for the wide scripts and
 /// emoji, one otherwise. An approximation that needs no dependency; a
 /// combining mark counts one, so a line with those may be a cell off.
-fn cells(c: char) -> usize {
+fn cells_of(c: char) -> usize {
     let wide = matches!(
         c as u32,
         0x1100..=0x115F
@@ -628,13 +628,48 @@ fn cells(c: char) -> usize {
             | 0xFF00..=0xFF60
             | 0xFFE0..=0xFFE6
             | 0x1F300..=0x1FAFF
+            | 0x1B000..=0x1B2FF
+            | 0x1F004
+            | 0x1F0CF
+            | 0x1F200..=0x1F251
+            | 0xFE10..=0xFE19
+            | 0x231A..=0x231B
+            | 0x23E9..=0x23EC
+            | 0x2614..=0x2615
+            | 0x2648..=0x2653
+            | 0x267F
+            | 0x2693
+            | 0x26A1
+            | 0x26AA..=0x26AB
+            | 0x26BD..=0x26BE
+            | 0x26C4..=0x26C5
+            | 0x26CE
+            | 0x26D4
+            | 0x26EA
+            | 0x26F2..=0x26F3
+            | 0x26F5
+            | 0x26FA
+            | 0x26FD
+            | 0x2705
+            | 0x270A..=0x270B
+            | 0x2728
+            | 0x274C
+            | 0x274E
+            | 0x2753..=0x2755
+            | 0x2757
+            | 0x2795..=0x2797
+            | 0x27B0
+            | 0x27BF
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
             | 0x20000..=0x3FFFD
     );
     1 + usize::from(wide)
 }
 
 fn text_cells(text: &str) -> usize {
-    text.chars().map(cells).sum()
+    text.chars().map(cells_of).sum()
 }
 
 fn pad(text: &str, width: usize, right_aligned: bool) -> String {
@@ -666,6 +701,8 @@ impl Columns {
         }
     }
 
+    /// The cells of a row, each padded to its column and separated by a
+    /// break, so `fit` can leave the last ones out on a narrow screen.
     fn right_of(&self, row: &TreeRow) -> String {
         let cells = [
             (pad(&row.size, self.size, true), self.size),
@@ -677,13 +714,21 @@ impl Columns {
             .filter(|(_, width)| *width > 0)
             .map(|(cell, _)| cell.as_str())
             .collect();
-        shown.join("  ").trim_end().to_owned()
+        if [&row.size, &row.owner, &row.created]
+            .iter()
+            .all(|c| c.is_empty())
+        {
+            return String::new();
+        }
+        shown.join(&COLUMN_BREAK.to_string())
     }
 }
 
-/// Lay the lines of `text` out for a screen `width` cells wide: what follows a
-/// `COLUMN_BREAK` goes to the right edge, and a name too long to leave room
-/// for it is cut with `…`. Lines with no break stay as they are.
+/// Lay the lines of `text` out for a screen `width` cells wide: the cells
+/// after the first `COLUMN_BREAK` go to the right edge, separated by two
+/// spaces. When the name does not fit beside them the last cells are left out,
+/// one by one, and the name is cut with `…` only when it does not fit alone.
+/// Lines with no break stay as they are.
 pub fn fit(text: &str, width: usize) -> String {
     text.split('\n')
         .map(|line| fit_line(line, width))
@@ -691,18 +736,36 @@ pub fn fit(text: &str, width: usize) -> String {
         .join("\n")
 }
 
+const GAP: usize = 2;
+
+fn joined(cells: &[&str]) -> String {
+    cells.join("  ")
+}
+
 fn fit_line(line: &str, width: usize) -> String {
-    const GAP: usize = 2;
-    let Some((left, right)) = line.split_once(COLUMN_BREAK) else {
+    let mut parts = line.split(COLUMN_BREAK);
+    let left = parts.next().unwrap_or_default();
+    let mut cells: Vec<&str> = parts.collect();
+    if cells.is_empty() {
         return line.to_owned();
-    };
-    let right_width = text_cells(right);
-    let room = width.saturating_sub(right_width + GAP).max(2);
+    }
+    let left_width = text_cells(left);
+    while !cells.is_empty() && left_width + GAP + text_cells(&joined(&cells)) > width {
+        cells.pop();
+    }
+    let right = joined(&cells);
     let mut left = left.to_owned();
-    if text_cells(&left) > room {
+    let room = width
+        .saturating_sub(if cells.is_empty() {
+            0
+        } else {
+            text_cells(&right) + GAP
+        })
+        .max(2);
+    if left_width > room {
         let mut kept = String::new();
         for c in left.chars() {
-            if text_cells(&kept) + cells(c) >= room {
+            if text_cells(&kept) + cells_of(c) >= room {
                 break;
             }
             kept.push(c);
@@ -710,10 +773,22 @@ fn fit_line(line: &str, width: usize) -> String {
         kept.push('…');
         left = kept;
     }
-    let pad = width
-        .saturating_sub(text_cells(&left) + right_width)
+    if cells.is_empty() {
+        return left;
+    }
+    let fill = width
+        .saturating_sub(text_cells(&left) + text_cells(&right))
         .max(GAP);
-    format!("{left}{}{right}", " ".repeat(pad))
+    format!("{left}{}{right}", " ".repeat(fill))
+}
+
+/// The width a text needs to keep every line whole, with its columns one gap
+/// apart: for a file, which has no screen to fit.
+pub fn natural_width(text: &str) -> usize {
+    text.lines()
+        .map(|line| text_cells(&line.replace(COLUMN_BREAK, "  ")))
+        .max()
+        .unwrap_or(0)
 }
 
 /// A listing, or paths with their folders around them, as a tree (ADR 0018,

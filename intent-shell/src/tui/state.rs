@@ -11,8 +11,6 @@ use super::wrap::{text_width, wrap};
 use crate::action::printable;
 use crate::ports::ChoiceLine;
 
-const TRANSCRIPT_WIDTH: usize = 80;
-
 /// An entry of the history. The text is already safe to print: it comes from
 /// `screen` and `Outcome::render`, which escape what the model and the machine
 /// wrote.
@@ -478,7 +476,13 @@ impl State {
                 }
                 Block::Outcome(text) => {
                     // A file has no width to lay the columns of a tree out for.
-                    out.push_str(crate::screen::fit(text.trim_end(), TRANSCRIPT_WIDTH).as_str());
+                    out.push_str(
+                        {
+                            let text = text.trim_end();
+                            crate::screen::fit(text, crate::screen::natural_width(text))
+                        }
+                        .as_str(),
+                    );
                     out.push('\n');
                 }
             }
