@@ -197,8 +197,9 @@ so the mechanical table stays the only definition of what a command means:
 
 After the path come the flags of the long command (`rm x --elevate`, `ls --after
 s1`). A reference given by flag instead (`ls --in downloads`) is used as it is, and
-`ls` adds its default `.` only when none is given. The path is one token: a second one is an error, and an unquoted path
-whose first character is not quoted or escaped and is `-` is refused (so `-'rf'` is too), because it is far more likely the person
+`ls` adds its default `.` only when none is given. `cd` and `rm` take a positional path only: with
+a reference by flag the error says to write `session cd` or `fs delete`. The path is one token: a second one is an error, and an unquoted path
+whose first character is `-` and not quoted or escaped is refused (so `-'rf'` is too), because it is far more likely the person
 typed a flag of the shell's own `rm -rf` than a file called `-rf`; quote it or
 write `./-rf` for that file.
 

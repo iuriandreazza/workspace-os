@@ -427,6 +427,7 @@ fn is_reference_flag(word: &Word) -> bool {
             "under-home",
             "new-name",
             "from-step",
+            "kind",
         ]
         .contains(&&word.text[2..])
 }
@@ -470,6 +471,12 @@ fn expand_alias(words: &[Word]) -> Result<Vec<Word>, CommandError> {
         }
         _ => match alias.default {
             Some(default) => (plain_word(default), rest),
+            None if rest.iter().any(is_reference_flag) => {
+                return Err(CommandError::new(format!(
+                    "{} takes a path, not a reference by flag; for that, write `{} {}`",
+                    alias.word, alias.group, alias.verb
+                )));
+            }
             None => {
                 return Err(CommandError::new(format!(
                     "{} needs a path, for example `{} {}`",
