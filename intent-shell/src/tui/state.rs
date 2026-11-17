@@ -445,9 +445,12 @@ impl State {
                 lines.push((Kind::Note, String::new()));
             }
             lines.extend(
-                wrap(&crate::screen::fit(&text, width), width)
-                    .into_iter()
-                    .map(|line| (kind, line)),
+                wrap(
+                    &crate::screen::fit_with(&text, width, super::wrap::cell_width),
+                    width,
+                )
+                .into_iter()
+                .map(|line| (kind, line)),
             );
         }
         lines

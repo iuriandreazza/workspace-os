@@ -1376,9 +1376,9 @@ fn a_wider_screen_moves_the_metadata_to_its_edge_and_a_name_that_does_not_fit_is
     );
     let long = format!("{}{}5 KB", "x".repeat(50), screen::COLUMN_BREAK);
     let cut = screen::fit(&long, 30);
-    // A name that does not fit even alone is cut, and the metadata is left out.
+    // The first cell is never left out: the name is cut for it.
     assert_eq!(cut.chars().count(), 30, "{cut}");
-    assert!(cut.ends_with('…') && !cut.contains("KB"), "{cut}");
+    assert!(cut.contains('…') && cut.ends_with("  5 KB"), "{cut}");
     assert_eq!(screen::fit("no columns here", 5), "no columns here");
 }
 
@@ -1412,7 +1412,7 @@ fn wide_names_are_measured_in_cells_cut_to_fit_and_never_push_the_metadata_off_t
     );
     let long = format!("{}{}5 KB", "日".repeat(30), screen::COLUMN_BREAK);
     let cut = screen::fit(&long, 20);
-    assert!(cut.ends_with('…') && !cut.contains("KB"), "{cut}");
+    assert!(cut.contains('…') && cut.ends_with("  5 KB"), "{cut}");
     assert!(
         cut.chars()
             .map(|c| if c as u32 > 0x2E80 { 2 } else { 1 })
@@ -1423,18 +1423,36 @@ fn wide_names_are_measured_in_cells_cut_to_fit_and_never_push_the_metadata_off_t
 }
 
 #[test]
-fn a_narrow_screen_leaves_out_the_last_columns_before_it_cuts_a_name() {
+fn a_narrow_screen_leaves_out_the_metadata_but_never_a_mark_and_cuts_the_name_for_it() {
     let brk = screen::COLUMN_BREAK;
-    let line = format!("some-long-name{brk}5.0 KB{brk}ana{brk}2026-11-17 14:30");
-    assert_eq!(screen::fit(&line, 60).chars().count(), 60);
-    // The date goes first, then the owner; the name stays whole.
-    assert_eq!(
-        screen::fit(&line, 34),
-        format!("some-long-name{}5.0 KB  ana", " ".repeat(9))
+    let line = format!("some-long-name{brk}⚠ asks · ROOT{brk}5.0 KB{brk}ana{brk}2026-11-17 14:30");
+    assert_eq!(screen::fit(&line, 80).chars().count(), 80);
+    // The date goes first, then the owner, then the size.
+    assert!(screen::fit(&line, 52).ends_with("5.0 KB  ana"));
+    assert!(screen::fit(&line, 38).ends_with("5.0 KB"));
+    for width in [28, 24, 20, 16] {
+        let shown = screen::fit(&line, width);
+        assert!(shown.ends_with("⚠ asks · ROOT"), "{width}: {shown}");
+        assert!(
+            !shown.contains("KB") && shown.contains('…'),
+            "{width}: {shown}"
+        );
+    }
+    assert_eq!(screen::fit(&line, 28).lines().count(), 1);
+}
+
+#[test]
+fn the_counts_of_the_header_survive_a_long_path() {
+    let line = format!(
+        "{}{}12 folders · 3 hidden",
+        "d".repeat(61),
+        screen::COLUMN_BREAK
     );
-    assert_eq!(screen::fit(&line, 22), "some-long-name  5.0 KB");
-    assert_eq!(screen::fit(&line, 20), "some-long-name");
-    assert_eq!(screen::fit(&line, 30).lines().count(), 1);
+    let shown = screen::fit(&line, 70);
+    assert!(
+        shown.ends_with("12 folders · 3 hidden") && shown.contains('…'),
+        "{shown}"
+    );
 }
 
 #[test]

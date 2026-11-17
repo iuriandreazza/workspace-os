@@ -499,6 +499,7 @@ fn bare(name: &std::ffi::OsStr) -> String {
 struct TreeRow {
     label: String,
     left: String,
+    marks: String,
     size: String,
     owner: String,
     created: String,
@@ -576,9 +577,6 @@ impl Walk<'_> {
         if self.marks.root.contains(&node.path) {
             marks.push("ROOT".to_owned());
         }
-        if !marks.is_empty() {
-            name = format!("{name}  {}", marks.join(" · "));
-        }
         let (owner, created) = node.entry.as_ref().map_or_else(Default::default, |e| {
             (
                 crate::action::printable(e.owner.as_deref().unwrap_or_default(), false),
@@ -594,6 +592,7 @@ impl Walk<'_> {
         TreeRow {
             label: self.labels.of(&node.path),
             left: format!("{lead}{name}"),
+            marks: marks.join(" · "),
             size,
             owner,
             created,
@@ -617,7 +616,7 @@ fn split(left: &str, right: &str) -> String {
 /// How many terminal cells a character takes: two for the wide scripts and
 /// emoji, one otherwise. An approximation that needs no dependency; a
 /// combining mark counts one, so a line with those may be a cell off.
-fn cells_of(c: char) -> usize {
+pub fn cells_of(c: char) -> usize {
     let wide = matches!(
         c as u32,
         0x1100..=0x115F
@@ -684,6 +683,7 @@ fn pad(text: &str, width: usize, right_aligned: bool) -> String {
 /// The metadata columns of a tree, each as wide as its widest cell. A column
 /// nobody has a value for is left out.
 struct Columns {
+    marks: usize,
     size: usize,
     owner: usize,
     created: usize,
@@ -695,6 +695,7 @@ impl Columns {
             rows.iter().map(|r| text_cells(cell(r))).max().unwrap_or(0)
         };
         Self {
+            marks: widest(|r| &r.marks),
             size: widest(|r| &r.size),
             owner: widest(|r| &r.owner),
             created: widest(|r| &r.created),
@@ -702,36 +703,47 @@ impl Columns {
     }
 
     /// The cells of a row, each padded to its column and separated by a
-    /// break, so `fit` can leave the last ones out on a narrow screen.
+    /// break. The first is the marks: `fit` never leaves it out, only the
+    /// metadata after it, because a mark says what a plan would do.
     fn right_of(&self, row: &TreeRow) -> String {
-        let cells = [
-            (pad(&row.size, self.size, true), self.size),
-            (pad(&row.owner, self.owner, false), self.owner),
-            (pad(&row.created, self.created, false), self.created),
-        ];
-        let shown: Vec<&str> = cells
-            .iter()
-            .filter(|(_, width)| *width > 0)
-            .map(|(cell, _)| cell.as_str())
-            .collect();
-        if [&row.size, &row.owner, &row.created]
+        if [&row.marks, &row.size, &row.owner, &row.created]
             .iter()
             .all(|c| c.is_empty())
         {
             return String::new();
         }
+        let cells = [
+            (pad(&row.marks, self.marks, false), self.marks),
+            (pad(&row.size, self.size, true), self.size),
+            (pad(&row.owner, self.owner, false), self.owner),
+            (pad(&row.created, self.created, false), self.created),
+        ];
+        let mut shown = vec![cells[0].0.as_str()];
+        shown.extend(
+            cells[1..]
+                .iter()
+                .filter(|(_, width)| *width > 0)
+                .map(|(cell, _)| cell.as_str()),
+        );
         shown.join(&COLUMN_BREAK.to_string())
     }
 }
 
 /// Lay the lines of `text` out for a screen `width` cells wide: the cells
 /// after the first `COLUMN_BREAK` go to the right edge, separated by two
-/// spaces. When the name does not fit beside them the last cells are left out,
-/// one by one, and the name is cut with `…` only when it does not fit alone.
-/// Lines with no break stay as they are.
+/// spaces. The first cell is never left out; when the name does not fit beside
+/// the cells the last ones are left out, one by one, and the name is cut with
+/// `…` only when it does not fit with the first cell alone. Lines with no
+/// break stay as they are.
 pub fn fit(text: &str, width: usize) -> String {
+    fit_with(text, width, cells_of)
+}
+
+/// `fit` measuring characters with `cell`, for a screen whose own table of
+/// widths is the one that counts (the interface wraps with ratatui's).
+pub fn fit_with(text: &str, width: usize, cell: fn(char) -> usize) -> String {
     text.split('\n')
-        .map(|line| fit_line(line, width))
+        .map(|line| fit_line(line, width, cell))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -739,33 +751,35 @@ pub fn fit(text: &str, width: usize) -> String {
 const GAP: usize = 2;
 
 fn joined(cells: &[&str]) -> String {
-    cells.join("  ")
+    let shown: Vec<&str> = cells.iter().copied().filter(|c| !c.is_empty()).collect();
+    shown.join("  ")
 }
 
-fn fit_line(line: &str, width: usize) -> String {
+fn fit_line(line: &str, width: usize, cell: fn(char) -> usize) -> String {
+    let measure = |text: &str| -> usize { text.chars().map(cell).sum() };
     let mut parts = line.split(COLUMN_BREAK);
     let left = parts.next().unwrap_or_default();
     let mut cells: Vec<&str> = parts.collect();
     if cells.is_empty() {
         return line.to_owned();
     }
-    let left_width = text_cells(left);
-    while !cells.is_empty() && left_width + GAP + text_cells(&joined(&cells)) > width {
+    let left_width = measure(left);
+    while cells.len() > 1 && left_width + GAP + measure(&joined(&cells)) > width {
         cells.pop();
     }
     let right = joined(&cells);
+    let right_width = measure(&right);
+    let reserved = if right.is_empty() {
+        0
+    } else {
+        right_width + GAP
+    };
+    let room = width.saturating_sub(reserved).max(2);
     let mut left = left.to_owned();
-    let room = width
-        .saturating_sub(if cells.is_empty() {
-            0
-        } else {
-            text_cells(&right) + GAP
-        })
-        .max(2);
     if left_width > room {
         let mut kept = String::new();
         for c in left.chars() {
-            if text_cells(&kept) + cells_of(c) >= room {
+            if measure(&kept) + cell(c) >= room {
                 break;
             }
             kept.push(c);
@@ -773,20 +787,25 @@ fn fit_line(line: &str, width: usize) -> String {
         kept.push('…');
         left = kept;
     }
-    if cells.is_empty() {
+    if right.is_empty() {
         return left;
     }
-    let fill = width
-        .saturating_sub(text_cells(&left) + text_cells(&right))
-        .max(GAP);
+    let fill = width.saturating_sub(measure(&left) + right_width).max(GAP);
     format!("{left}{}{right}", " ".repeat(fill))
 }
 
-/// The width a text needs to keep every line whole, with its columns one gap
-/// apart: for a file, which has no screen to fit.
+/// The width a text needs to keep every tree line whole, with its cells one
+/// gap apart: for a file, which has no screen to fit. Lines without a break
+/// are not counted, so a long line of content does not widen the tree.
 pub fn natural_width(text: &str) -> usize {
     text.lines()
-        .map(|line| text_cells(&line.replace(COLUMN_BREAK, "  ")))
+        .filter(|line| line.contains(COLUMN_BREAK))
+        .map(|line| {
+            let mut parts = line.split(COLUMN_BREAK);
+            let left = parts.next().unwrap_or_default();
+            let cells: Vec<&str> = parts.collect();
+            text_cells(left) + GAP + text_cells(&joined(&cells))
+        })
         .max()
         .unwrap_or(0)
 }
