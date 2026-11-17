@@ -44,8 +44,10 @@ fn is_details(answer: &str) -> bool {
 
 /// The tree of a choice with a number on each candidate, and none on the
 /// context around it.
+/// What the number takes in front of a line: `   NN. `.
+const NUMBER_COLUMN: usize = 7;
+
 fn numbered(lines: &[ChoiceLine], width: usize) -> Vec<String> {
-    const NUMBER_COLUMN: usize = 7;
     lines
         .iter()
         .map(|line| {
@@ -58,7 +60,17 @@ fn numbered(lines: &[ChoiceLine], width: usize) -> Vec<String> {
         .collect()
 }
 
-/// Columns of the terminal; 80 when output is not one.
+/// Columns to lay `text` out in, which is to be printed `indent` cells in: the
+/// terminal's, or, when output is redirected and has no width, what keeps every
+/// line whole.
+fn width_for(text: &str, indent: usize) -> usize {
+    if !io::stdout().is_terminal() {
+        return crate::screen::natural_width(text) + indent;
+    }
+    terminal_width()
+}
+
+/// Columns of the terminal; 80 when it does not say.
 fn terminal_width() -> usize {
     let mut size = libc::winsize {
         ws_row: 0,
@@ -105,7 +117,12 @@ impl Confirm for TerminalConfirm {
 
     fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize> {
         println!("\n  {question}");
-        for line in numbered(lines, terminal_width()) {
+        let text = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for line in numbered(lines, width_for(&text, NUMBER_COLUMN)) {
             println!("{line}");
         }
         let options = lines.iter().filter(|l| l.option.is_some()).count();
@@ -153,7 +170,8 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
             confirm: &mut confirm,
             log: &mut setup.log,
         };
-        println!("{}", fit(&shell.handle(request).render(), terminal_width()));
+        let outcome = shell.handle(request).render();
+        println!("{}", fit(&outcome, width_for(&outcome, 0)));
     }
 }
 

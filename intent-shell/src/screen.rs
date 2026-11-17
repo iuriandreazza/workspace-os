@@ -749,6 +749,8 @@ pub fn fit_with(text: &str, width: usize, cell: fn(char) -> usize) -> String {
 }
 
 const GAP: usize = 2;
+/// What a name keeps of its width when a mark needs room.
+const MIN_NAME: usize = 8;
 
 fn joined(cells: &[&str]) -> String {
     let shown: Vec<&str> = cells.iter().copied().filter(|c| !c.is_empty()).collect();
@@ -764,10 +766,32 @@ fn fit_line(line: &str, width: usize, cell: fn(char) -> usize) -> String {
         return line.to_owned();
     }
     let left_width = measure(left);
-    while cells.len() > 1 && left_width + GAP + measure(&joined(&cells)) > width {
+    // A blank first cell is only the padding of the marks column on a row
+    // with no mark: it goes like any other cell.
+    while !cells.is_empty()
+        && left_width + GAP + measure(&joined(&cells)) > width
+        && (cells.len() > 1 || cells[0].trim().is_empty())
+    {
         cells.pop();
     }
-    let right = joined(&cells);
+    let mut cells: Vec<String> = cells.iter().map(|c| (*c).to_owned()).collect();
+    // The name keeps a readable minimum; a mark too long for the rest is cut
+    // from its front, so the end of it (`⚠ asks`, `ROOT`) stays.
+    let min_name = left_width.min(MIN_NAME);
+    let first_room = width.saturating_sub(min_name + GAP).max(1);
+    if cells.len() == 1 && measure(&cells[0]) > first_room {
+        let mut tail: Vec<char> = Vec::new();
+        for c in cells[0].chars().rev() {
+            if tail.iter().map(|&t| cell(t)).sum::<usize>() + cell(c) >= first_room {
+                break;
+            }
+            tail.push(c);
+        }
+        tail.reverse();
+        cells[0] = format!("…{}", tail.into_iter().collect::<String>());
+    }
+    let refs: Vec<&str> = cells.iter().map(String::as_str).collect();
+    let right = joined(&refs);
     let right_width = measure(&right);
     let reserved = if right.is_empty() {
         0
@@ -777,15 +801,26 @@ fn fit_line(line: &str, width: usize, cell: fn(char) -> usize) -> String {
     let room = width.saturating_sub(reserved).max(2);
     let mut left = left.to_owned();
     if left_width > room {
-        let mut kept = String::new();
+        // The middle goes, so what tells two names apart (a year, an
+        // extension) stays at the end.
+        let budget = room - 1;
+        let head_budget = budget.div_ceil(2);
+        let mut head = String::new();
         for c in left.chars() {
-            if measure(&kept) + cell(c) >= room {
+            if measure(&head) + cell(c) > head_budget {
                 break;
             }
-            kept.push(c);
+            head.push(c);
         }
-        kept.push('…');
-        left = kept;
+        let mut tail: Vec<char> = Vec::new();
+        for c in left.chars().rev() {
+            if measure(&head) + tail.iter().map(|&t| cell(t)).sum::<usize>() + cell(c) > budget {
+                break;
+            }
+            tail.push(c);
+        }
+        tail.reverse();
+        left = format!("{head}…{}", tail.into_iter().collect::<String>());
     }
     if right.is_empty() {
         return left;

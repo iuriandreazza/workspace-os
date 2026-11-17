@@ -275,8 +275,10 @@ the right edge, in columns, as `ls -l` does.
 
 Narrow screens: when the name does not fit beside the metadata, the last
 columns (date, then owner, then size) are left out one by one. The marks are
-the first cell and are never left out: the name is cut with `…` for them. The saved transcript is laid out at
-the width of its longest line, so it cuts nothing.
+the first cell and are never left out: the name is cut with `…` for them. A name that is cut loses its middle, so an extension or a year at its end stays.
+The saved transcript, and `--plain` output that is redirected, are laid out at
+the width of their longest tree line, so they cut nothing. A tab inside what a
+file holds is shown as `\u0009` (it would pass for a column otherwise).
 
 Limits: the candidates of an ambiguity choice and a largest-files ranking carry
 no owner or date yet (they come from paths and sizes, not from a listing). Cell

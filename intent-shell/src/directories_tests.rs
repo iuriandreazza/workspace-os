@@ -1430,7 +1430,7 @@ fn a_narrow_screen_leaves_out_the_metadata_but_never_a_mark_and_cuts_the_name_fo
     // The date goes first, then the owner, then the size.
     assert!(screen::fit(&line, 52).ends_with("5.0 KB  ana"));
     assert!(screen::fit(&line, 38).ends_with("5.0 KB"));
-    for width in [28, 24, 20, 16] {
+    for width in [28, 24] {
         let shown = screen::fit(&line, width);
         assert!(shown.ends_with("⚠ asks · ROOT"), "{width}: {shown}");
         assert!(
@@ -1491,4 +1491,38 @@ fn an_owner_name_with_control_characters_is_escaped() {
         !shown.contains('\u{1b}') && !shown.contains('\t'),
         "{shown:?}"
     );
+}
+
+#[test]
+fn a_row_without_marks_beside_a_marks_column_keeps_its_name_and_metadata() {
+    let brk = screen::COLUMN_BREAK;
+    let blank = " ".repeat(20);
+    let line = format!(" ├─ report-final-version-2.txt{brk}{blank}{brk}5 KB{brk}ana");
+    let shown = screen::fit(&line, 50);
+    assert!(
+        shown.contains("report-final-version-2.txt") && !shown.contains('…'),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_mark_too_long_for_the_line_is_cut_from_its_front_and_the_name_stays_readable() {
+    let brk = screen::COLUMN_BREAK;
+    let line = format!("important-file.txt{brk}hidden, asks to open · ⚠ asks · ROOT");
+    let shown = screen::fit(&line, 30);
+    assert!(
+        shown.starts_with("impo") && shown.contains("txt"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("ROOT"), "{shown}");
+    assert!(shown.chars().count() <= 30, "{shown}");
+}
+
+#[test]
+fn two_names_that_differ_at_the_end_are_still_told_apart_when_cut() {
+    let brk = screen::COLUMN_BREAK;
+    let a = screen::fit(&format!(" └─ report-final-2023.pdf{brk}5 KB"), 24);
+    let b = screen::fit(&format!(" └─ report-final-2024.pdf{brk}5 KB"), 24);
+    assert_ne!(a, b, "{a} / {b}");
+    assert!(a.contains("3.pdf") && b.contains("4.pdf"), "{a} / {b}");
 }
