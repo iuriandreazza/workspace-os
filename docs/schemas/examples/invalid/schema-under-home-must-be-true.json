@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Not under home","steps":[
+ {"id":"s1","action":"fs.read","args":{"target":{"under_home":false,"name":"a.txt","kind":"file"}},"depends_on":[],"elevate":false}]}

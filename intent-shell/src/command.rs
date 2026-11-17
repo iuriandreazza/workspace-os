@@ -47,6 +47,9 @@ enum Arg {
     Reference(&'static str, &'static [Form]),
     /// The destination of a move, written with the same flags behind `--to-`.
     Destination(&'static str, &'static [Form]),
+    /// A folder the session enters: the flags of a reference, with a name
+    /// always a folder.
+    Directory(&'static str, &'static [Form]),
     Number(&'static str),
     Text(&'static str),
     /// A word the format checks, with the value to use when the flag is absent
@@ -79,35 +82,53 @@ impl Command {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Form {
     Place,
+    /// A path as typed (`--path`): the resolver expands `~` and cleans `.` and `..`.
+    Path,
     Named,
     /// A name whose `--kind` must be written, for what writes, removes or moves
     /// an item: nothing here is left to a default, and the screen does not say
     /// whether a match is a file or a folder.
     NamedKind,
+    /// A search below the home (`--under-home`), with the same kind rule as `Named`.
+    UnderHome,
+    UnderHomeKind,
     New,
     Step,
 }
 
+const WITHIN: &str = "(--{p}in PLACE | --{p}in-path PATH)";
+
 impl Form {
-    fn flags(self, prefix: &str) -> String {
+    /// The flags of this form as `help` and the errors write them. A folder
+    /// reference (a destination or the target of `cd`) has no kind to write.
+    fn flags(self, prefix: &str, folder: bool) -> String {
+        let within = WITHIN.replace("{p}", prefix);
+        let kind = |required: bool| match (folder, required) {
+            (true, _) => String::new(),
+            (false, true) => format!(" --{prefix}kind file|folder|any"),
+            (false, false) => format!(" [--{prefix}kind file|folder|any]"),
+        };
         match self {
             Self::Place => format!("--{prefix}in PLACE"),
-            // A destination is always a folder, so it has no kind to write.
-            Self::Named if !prefix.is_empty() => format!("--{prefix}name NAME --{prefix}in PLACE"),
-            Self::Named => {
-                format!("--{prefix}name NAME --{prefix}in PLACE [--{prefix}kind file|folder|any]")
+            Self::Path => format!("--{prefix}path PATH"),
+            Self::Named => format!("--{prefix}name NAME {within}{}", kind(false)),
+            Self::NamedKind => format!("--{prefix}name NAME {within}{}", kind(true)),
+            Self::UnderHome => format!("--{prefix}name NAME --{prefix}under-home{}", kind(false)),
+            Self::UnderHomeKind => {
+                format!("--{prefix}name NAME --{prefix}under-home{}", kind(true))
             }
-            Self::NamedKind => {
-                format!("--{prefix}name NAME --{prefix}in PLACE --{prefix}kind file|folder|any")
-            }
-            Self::New => format!("--{prefix}new-name NAME --{prefix}in PLACE"),
+            Self::New => format!("--{prefix}new-name NAME {within}"),
             Self::Step => format!("--{prefix}from-step sN"),
         }
     }
+
+    fn requires_kind(self) -> bool {
+        matches!(self, Self::NamedKind | Self::UnderHomeKind)
+    }
 }
 
-const READABLE: &[Form] = &[Form::Named, Form::Step];
-const REMOVABLE: &[Form] = &[Form::NamedKind, Form::Step];
+const READABLE: &[Form] = &[Form::Path, Form::Named, Form::UnderHome, Form::Step];
+const REMOVABLE: &[Form] = &[Form::Path, Form::NamedKind, Form::UnderHomeKind, Form::Step];
 const TARGET: Arg = Arg::Reference("target", READABLE);
 
 static COMMANDS: &[Command] = &[
@@ -117,7 +138,13 @@ static COMMANDS: &[Command] = &[
         elevate: true,
         args: &[Arg::Reference(
             "target",
-            &[Form::Place, Form::Named, Form::Step],
+            &[
+                Form::Place,
+                Form::Path,
+                Form::Named,
+                Form::UnderHome,
+                Form::Step,
+            ],
         )],
     },
     Command {
@@ -137,7 +164,10 @@ static COMMANDS: &[Command] = &[
         verb: "find_largest",
         elevate: true,
         args: &[
-            Arg::Reference("target", &[Form::Place, Form::Named]),
+            Arg::Reference(
+                "target",
+                &[Form::Place, Form::Path, Form::Named, Form::UnderHome],
+            ),
             Arg::Number("count"),
         ],
     },
@@ -146,7 +176,10 @@ static COMMANDS: &[Command] = &[
         verb: "write",
         elevate: true,
         args: &[
-            Arg::Reference("target", &[Form::NamedKind, Form::New]),
+            Arg::Reference(
+                "target",
+                &[Form::Path, Form::NamedKind, Form::UnderHomeKind, Form::New],
+            ),
             Arg::Text("content"),
             Arg::Choice("mode", Some("create"), "create|overwrite|append"),
         ],
@@ -157,7 +190,16 @@ static COMMANDS: &[Command] = &[
         elevate: true,
         args: &[
             Arg::Reference("from", REMOVABLE),
-            Arg::Destination("to", &[Form::Place, Form::Named, Form::New]),
+            Arg::Destination(
+                "to",
+                &[
+                    Form::Place,
+                    Form::Path,
+                    Form::Named,
+                    Form::UnderHome,
+                    Form::New,
+                ],
+            ),
         ],
     },
     Command {
@@ -165,6 +207,15 @@ static COMMANDS: &[Command] = &[
         verb: "delete",
         elevate: true,
         args: &[Arg::Reference("target", REMOVABLE)],
+    },
+    Command {
+        group: "session",
+        verb: "cd",
+        elevate: false,
+        args: &[Arg::Directory(
+            "target",
+            &[Form::Place, Form::Path, Form::Named, Form::UnderHome],
+        )],
     },
     Command {
         group: "process",
@@ -214,7 +265,9 @@ pub(crate) fn reference_forms(action: &str) -> Vec<(&'static str, Vec<&'static s
             .iter()
             .map(|form| match form {
                 Form::Place => "place",
+                Form::Path => "path",
                 Form::Named | Form::NamedKind => "named",
+                Form::UnderHome | Form::UnderHomeKind => "under_home",
                 Form::New => "new",
                 Form::Step => "step",
             })
@@ -227,9 +280,9 @@ pub(crate) fn reference_forms(action: &str) -> Vec<(&'static str, Vec<&'static s
             c.args
                 .iter()
                 .filter_map(|arg| match arg {
-                    Arg::Reference(key, forms) | Arg::Destination(key, forms) => {
-                        Some((*key, names(forms)))
-                    }
+                    Arg::Reference(key, forms)
+                    | Arg::Destination(key, forms)
+                    | Arg::Directory(key, forms) => Some((*key, names(forms))),
                     _ => None,
                 })
                 .collect()
@@ -267,6 +320,7 @@ pub(crate) fn arg_keys(action: &str) -> Vec<&'static str> {
                 .map(|arg| match arg {
                     Arg::Reference(key, _)
                     | Arg::Destination(key, _)
+                    | Arg::Directory(key, _)
                     | Arg::Number(key)
                     | Arg::Text(key)
                     | Arg::Choice(key, ..)
@@ -315,7 +369,8 @@ pub fn parse(line: &str) -> Result<Parsed, CommandError> {
     let mut documents = Vec::new();
     let mut actions = Vec::new();
     for (index, words) in steps.iter().enumerate() {
-        let (command, step) = parse_step(index + 1, words)?;
+        let words = expand_alias(words)?;
+        let (command, step) = parse_step(index + 1, &words)?;
         actions.push(command.action());
         documents.push(step);
     }
@@ -323,6 +378,92 @@ pub fn parse(line: &str) -> Result<Parsed, CommandError> {
         json!({"kind": "plan", "version": VERSION, "summary": summary(&actions), "steps": documents})
             .to_string(),
     ))
+}
+
+/// A short word for a command typed often: a path, then the flags of the
+/// command. It expands to the mechanical form before parsing, so the table
+/// above stays the only definition of what a command means (ADR 0022).
+struct Alias {
+    word: &'static str,
+    group: &'static str,
+    verb: &'static str,
+    /// The path when none is typed; `None` makes the path required.
+    default: Option<&'static str>,
+}
+
+const ALIASES: &[Alias] = &[
+    Alias {
+        word: "cd",
+        group: "session",
+        verb: "cd",
+        default: None,
+    },
+    Alias {
+        word: "ls",
+        group: "fs",
+        verb: "list",
+        default: Some("."),
+    },
+    Alias {
+        word: "rm",
+        group: "fs",
+        verb: "delete",
+        default: None,
+    },
+];
+
+fn plain_word(text: &str) -> Word {
+    Word {
+        text: text.to_owned(),
+        quoted: false,
+    }
+}
+
+fn expand_alias(words: &[Word]) -> Result<Vec<Word>, CommandError> {
+    let [first, rest @ ..] = words else {
+        return Ok(Vec::new());
+    };
+    let Some(alias) = ALIASES
+        .iter()
+        .find(|a| !first.quoted && a.word == first.text)
+    else {
+        return Ok(words.to_vec());
+    };
+    let (path, flags) = match rest {
+        // A path that starts with `-` is most likely a flag of the shell's own
+        // `rm -rf`: refuse it rather than delete a file with that name.
+        [path, ..] if !path.quoted && path.text.starts_with('-') && !is_flag(path) => {
+            return Err(CommandError::new(format!(
+                "{}: {:?} looks like a flag of the shell's {}; this one takes a path and the flags of `help` \
+                 (quote the path, or write ./{}, if it really starts with -)",
+                alias.word, path.text, alias.word, path.text
+            )));
+        }
+        [path, flags @ ..] if !is_flag(path) => (path.clone(), flags),
+        _ => match alias.default {
+            Some(default) => (plain_word(default), rest),
+            None => {
+                return Err(CommandError::new(format!(
+                    "{} needs a path, for example `{} notes/today.txt`",
+                    alias.word, alias.word
+                )));
+            }
+        },
+    };
+    if let Some(extra) = flags.first().filter(|w| !is_flag(w)) {
+        return Err(CommandError::new(format!(
+            "{}: one path only, and {:?} is a second; quote a path that has spaces",
+            alias.word, extra.text
+        )));
+    }
+    let mut expanded = vec![
+        plain_word(alias.group),
+        plain_word(alias.verb),
+        plain_word("--path"),
+        path,
+    ];
+    expanded.extend_from_slice(flags);
+    Ok(expanded)
 }
 
 /// The action names only, never what the person typed, so it cannot pass the
@@ -338,6 +479,7 @@ fn summary(actions: &[String]) -> String {
     }
 }
 
+#[derive(Clone)]
 struct Word {
     text: String,
     /// Whether any part was quoted: a quoted `--x` is a value, not a flag.
@@ -465,11 +607,32 @@ fn allowed_flags(command: &Command) -> Vec<String> {
     }
     for arg in command.args {
         match arg {
-            Arg::Reference(..) => {
-                allowed.extend(["in", "name", "kind", "new-name", "from-step"].map(str::to_owned));
-            }
-            Arg::Destination(..) => {
-                allowed.extend(["to-in", "to-name", "to-new-name"].map(str::to_owned));
+            Arg::Reference(..) => allowed.extend(
+                [
+                    "in",
+                    "in-path",
+                    "path",
+                    "name",
+                    "under-home",
+                    "kind",
+                    "new-name",
+                    "from-step",
+                ]
+                .map(str::to_owned),
+            ),
+            Arg::Destination(..) => allowed.extend(
+                [
+                    "to-in",
+                    "to-in-path",
+                    "to-path",
+                    "to-name",
+                    "to-under-home",
+                    "to-new-name",
+                ]
+                .map(str::to_owned),
+            ),
+            Arg::Directory(..) => {
+                allowed.extend(["in", "in-path", "path", "name", "under-home"].map(str::to_owned));
             }
             Arg::Number(key) | Arg::Text(key) | Arg::Choice(key, ..) | Arg::OptionalText(key) => {
                 allowed.push(flag_name(key));
@@ -543,6 +706,12 @@ fn parse_step(number: usize, words: &[Word]) -> Result<(&'static Command, Value)
             elevate = true;
             continue;
         }
+        if flag.ends_with("under-home") {
+            if flags.0.insert(flag.to_owned(), String::new()).is_some() {
+                return Err(CommandError::new(format!("{name}: --{flag} given twice")));
+            }
+            continue;
+        }
         let value = match tokens.next() {
             Some(value) if !is_flag(value) => value.text.clone(),
             _ => return Err(CommandError::new(format!("{name}: --{flag} needs a value"))),
@@ -587,8 +756,12 @@ fn build_arg(
             .ok_or_else(|| CommandError::new(format!("{name} needs --{flag}")))
     };
     Ok(match arg {
-        Arg::Reference(key, forms) => (*key, reference(name, flags, "", forms, depends_on)?),
-        Arg::Destination(key, forms) => (*key, reference(name, flags, "to-", forms, depends_on)?),
+        Arg::Reference(key, forms) => (*key, reference(name, flags, "", false, forms, depends_on)?),
+        Arg::Destination(key, forms) => (
+            *key,
+            reference(name, flags, "to-", true, forms, depends_on)?,
+        ),
+        Arg::Directory(key, forms) => (*key, reference(name, flags, "", true, forms, depends_on)?),
         Arg::Text(key) => (*key, Value::String(required(flags, key)?)),
         Arg::Number(key) => {
             let text = required(flags, key)?;
@@ -632,48 +805,76 @@ fn build_arg(
     })
 }
 
+/// Where a named or new item is: a place, or a path as typed.
+enum Within {
+    Place(String),
+    Path(String),
+}
+
+impl Within {
+    fn value(&self) -> Value {
+        match self {
+            Self::Place(place) => json!(place),
+            Self::Path(path) => json!({ "path": path }),
+        }
+    }
+}
+
 /// The flags of one reference, with `prefix` in front of each. Which forms an
-/// argument accepts is the format's rule, not this function's.
+/// argument accepts is the format's rule, not this function's: the check here
+/// only lets the error say which flags the action takes. `folder` is a
+/// destination or the target of `cd`, whose name is always a folder.
 fn reference(
     name: &str,
     flags: &mut Flags,
     prefix: &str,
+    folder: bool,
     forms: &[Form],
     depends_on: &mut Vec<String>,
 ) -> Result<Value, CommandError> {
-    let kind_required = forms.contains(&Form::NamedKind);
-    let value = reference_value(name, flags, prefix, forms, kind_required, depends_on)?;
-    let form = match (
-        value.get("place"),
-        value.get("from_step"),
-        value.get("new_name"),
-    ) {
-        (Some(_), ..) => Form::Place,
-        (_, Some(_), _) => Form::Step,
-        (.., Some(_)) => Form::New,
-        _ => Form::Named,
-    };
-    if forms.contains(&form) || (form == Form::Named && forms.contains(&Form::NamedKind)) {
+    let kind_required = forms.iter().any(|f| f.requires_kind());
+    let (form, value) = reference_value(
+        name,
+        flags,
+        prefix,
+        folder,
+        kind_required,
+        forms,
+        depends_on,
+    )?;
+    if forms.iter().any(|f| accepts(*f, form)) {
         return Ok(value);
     }
-    let takes: Vec<String> = forms.iter().map(|f| f.flags(prefix)).collect();
+    let takes: Vec<String> = forms.iter().map(|f| f.flags(prefix, folder)).collect();
     Err(CommandError::new(format!(
         "{name}: this reference is not accepted here; use {}",
         takes.join(" or ")
     )))
 }
 
+/// Whether an argument that lists `listed` takes a reference written as `written`
+/// (the kind rule is a property of the list, not of the written form).
+fn accepts(listed: Form, written: Form) -> bool {
+    match (listed, written) {
+        (Form::NamedKind, Form::Named) | (Form::UnderHomeKind, Form::UnderHome) => true,
+        (listed, written) => listed == written,
+    }
+}
+
 fn reference_value(
     name: &str,
     flags: &mut Flags,
     prefix: &str,
-    forms: &[Form],
+    folder: bool,
     kind_required: bool,
+    forms: &[Form],
     depends_on: &mut Vec<String>,
-) -> Result<Value, CommandError> {
-    let destination = !prefix.is_empty();
+) -> Result<(Form, Value), CommandError> {
     let mut take = |flag: &str| flags.take(&format!("{prefix}{flag}"));
     let place = take("in");
+    let place_path = take("in-path");
+    let path = take("path");
+    let under_home = take("under-home").is_some();
     let item = take("name");
     let new_item = take("new-name");
     let kind = take("kind");
@@ -685,64 +886,126 @@ fn reference_value(
     if let Some(kind) = &kind {
         check_word::<Kind>(name, &flag("kind"), kind, "file, folder, any")?;
     }
-    let needs_place =
-        |what: &str| CommandError::new(format!("{name}: {what} needs {}", flag("in")));
-    match (from_step, new_item, item, place, kind) {
-        (Some(step), None, None, None, None) => {
+    let within = match (place, place_path) {
+        (Some(_), Some(_)) => {
+            return Err(CommandError::new(format!(
+                "{name}: {} and {} are two ways to say where; give one",
+                flag("in"),
+                flag("in-path")
+            )));
+        }
+        (Some(place), None) => Some(Within::Place(place)),
+        (None, Some(path)) => Some(Within::Path(path)),
+        (None, None) => None,
+    };
+    let alone = |what: &str| CommandError::new(format!("{name}: {} stands alone", flag(what)));
+    let needs_where = |what: &str| {
+        CommandError::new(format!(
+            "{name}: {what} needs {} or {}",
+            flag("in"),
+            flag("in-path")
+        ))
+    };
+    let kind_of = |kind: Option<String>| -> Result<String, CommandError> {
+        match (folder, kind) {
+            (true, _) => Ok("folder".to_owned()),
+            (false, Some(kind)) => Ok(kind),
+            (false, None) if kind_required => Err(CommandError::new(format!(
+                "{name}: {} needs {}, because it writes, removes or moves what it names",
+                flag("name"),
+                flag("kind")
+            ))),
+            (false, None) => Ok("any".to_owned()),
+        }
+    };
+    match (from_step, path, under_home, new_item, item) {
+        (Some(step), None, false, None, None) if within.is_none() && kind.is_none() => {
             if !depends_on.contains(&step) {
                 depends_on.push(step.clone());
             }
-            Ok(json!({"from_step": step}))
+            Ok((Form::Step, json!({"from_step": step})))
         }
-        (Some(_), ..) => Err(CommandError::new(format!(
-            "{name}: --from-step stands alone"
+        (Some(_), ..) => Err(alone("from-step")),
+        (None, Some(path), false, None, None) if within.is_none() && kind.is_none() => {
+            Ok((Form::Path, json!({"path": path})))
+        }
+        (None, Some(_), ..) => Err(alone("path")),
+        (None, None, true, None, item) => {
+            if within.is_some() {
+                return Err(CommandError::new(format!(
+                    "{name}: {} searches below the home; it takes no {} or {}",
+                    flag("under-home"),
+                    flag("in"),
+                    flag("in-path")
+                )));
+            }
+            let item = item.ok_or_else(|| {
+                CommandError::new(format!(
+                    "{name}: {} needs {}",
+                    flag("under-home"),
+                    flag("name")
+                ))
+            })?;
+            Ok((
+                Form::UnderHome,
+                json!({"under_home": true, "name": item, "kind": kind_of(kind)?}),
+            ))
+        }
+        (None, None, true, Some(_), _) => Err(CommandError::new(format!(
+            "{name}: {} and {} are two different references",
+            flag("under-home"),
+            flag("new-name")
         ))),
-        (None, Some(_), Some(_), ..) => Err(CommandError::new(format!(
+        (None, None, false, Some(_), Some(_)) => Err(CommandError::new(format!(
             "{name}: {} and {} are two different references",
             flag("name"),
             flag("new-name")
         ))),
-        (None, Some(new_name), None, place, None) => {
-            let place = place.ok_or_else(|| needs_place(&flag("new-name")))?;
-            Ok(json!({"new_name": new_name, "in": place}))
+        (None, None, false, Some(new_name), None) => {
+            if kind.is_some() {
+                return Err(CommandError::new(format!(
+                    "{name}: {} goes with {}, not {}",
+                    flag("kind"),
+                    flag("name"),
+                    flag("new-name")
+                )));
+            }
+            let within = within.ok_or_else(|| needs_where(&flag("new-name")))?;
+            Ok((
+                Form::New,
+                json!({"new_name": new_name, "in": within.value()}),
+            ))
         }
-        (None, Some(_), None, _, Some(_)) => Err(CommandError::new(format!(
-            "{name}: {} goes with {}, not {}",
-            flag("kind"),
-            flag("name"),
-            flag("new-name")
-        ))),
-        (None, None, Some(item), place, kind) => {
-            let place = place.ok_or_else(|| needs_place(&flag("name")))?;
-            // A destination can only be a folder, so there is nothing to choose.
-            let kind = match (destination, kind) {
-                (true, _) => "folder".to_owned(),
-                (false, Some(kind)) => kind,
-                (false, None) if kind_required => {
-                    return Err(CommandError::new(format!(
-                        "{name}: {} needs {}, because it writes, removes or moves what it names",
-                        flag("name"),
-                        flag("kind")
-                    )));
-                }
-                (false, None) => "any".to_owned(),
-            };
-            Ok(json!({"name": item, "in": place, "kind": kind}))
+        (None, None, false, None, Some(item)) => {
+            let within = within.ok_or_else(|| needs_where(&flag("name")))?;
+            Ok((
+                Form::Named,
+                json!({"name": item, "in": within.value(), "kind": kind_of(kind)?}),
+            ))
         }
-        (None, None, None, Some(place), None) => Ok(json!({"place": place})),
-        (None, None, None, None, None) => Err(CommandError::new(format!(
-            "{name} needs a reference: {}",
-            forms
-                .iter()
-                .map(|f| f.flags(prefix))
-                .collect::<Vec<_>>()
-                .join(" or ")
-        ))),
-        (None, None, None, _, Some(_)) => Err(CommandError::new(format!(
-            "{name}: {} goes with {}",
-            flag("kind"),
-            flag("name")
-        ))),
+        (None, None, false, None, None) => match (within, kind) {
+            (Some(Within::Place(place)), None) => Ok((Form::Place, json!({"place": place}))),
+            (Some(Within::Path(_)), None) => Err(CommandError::new(format!(
+                "{name}: {} goes with {} or {}; to name a path, use {}",
+                flag("in-path"),
+                flag("name"),
+                flag("new-name"),
+                flag("path")
+            ))),
+            (_, Some(_)) => Err(CommandError::new(format!(
+                "{name}: {} goes with {}",
+                flag("kind"),
+                flag("name")
+            ))),
+            (None, None) => Err(CommandError::new(format!(
+                "{name} needs a reference: {}",
+                forms
+                    .iter()
+                    .map(|f| f.flags(prefix, folder))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ))),
+        },
     }
 }
 
@@ -775,8 +1038,9 @@ fn help() -> String {
         let mut last = String::new();
         for arg in command.args {
             let text = match arg {
-                Arg::Reference(_, forms) => forms_help(forms, ""),
-                Arg::Destination(_, forms) => forms_help(forms, "to-"),
+                Arg::Reference(_, forms) => forms_help(forms, "", false),
+                Arg::Destination(_, forms) => forms_help(forms, "to-", true),
+                Arg::Directory(_, forms) => forms_help(forms, "", true),
                 Arg::Number(key) => format!("--{} N", flag_name(key)),
                 Arg::Text(key) => format!("--{} TEXT", flag_name(key)),
                 Arg::Choice(key, Some(default), words) => {
@@ -805,8 +1069,21 @@ fn help() -> String {
         out.push_str(&line);
         out.push('\n');
     }
+    for alias in ALIASES {
+        let path = match alias.default {
+            Some(default) => {
+                format!("[PATH]  (the path is {default}, the current directory, when left out)")
+            }
+            None => "PATH".to_owned(),
+        };
+        out.push_str(&format!(
+            "  {} {path}  is  {} {} --path PATH\n",
+            alias.word, alias.group, alias.verb
+        ));
+    }
     out.push_str(&format!(
-        "A kind left out means any, and only where the line above shows it in brackets; a destination name is always a folder.\n\
+        "A kind left out means any, and only where the line above shows it in brackets; a destination name and the name of cd are always a folder.\n\
+         --path is a path as typed: absolute, ~, or relative to the current directory; --in-path is the same, as the folder of a name. --under-home searches below the home.\n\
          --from-step sN means what step sN found; flags after `--` belong to the program.\n\
          Places: {places}.\n\
          Steps are s1, s2, ... by position; --after sN makes a step wait for sN.\n\
@@ -816,7 +1093,7 @@ fn help() -> String {
     out
 }
 
-fn forms_help(forms: &[Form], prefix: &str) -> String {
-    let all: Vec<String> = forms.iter().map(|f| f.flags(prefix)).collect();
+fn forms_help(forms: &[Form], prefix: &str, folder: bool) -> String {
+    let all: Vec<String> = forms.iter().map(|f| f.flags(prefix, folder)).collect();
     format!("({})", all.join(" | "))
 }

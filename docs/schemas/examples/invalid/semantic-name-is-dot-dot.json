@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"A name that points at the parent folder","steps":[
+{"kind":"plan","version":3,"summary":"A name that points at the parent folder","steps":[
  {"id":"s1","action":"fs.stat","args":{"target":{"name":"..","in":"home","kind":"any"}},"depends_on":[],"elevate":false}]}

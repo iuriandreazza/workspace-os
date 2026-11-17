@@ -1,5 +1,5 @@
-//! Host prototype of the intent shell (roadmap items S3 and S3b, ADR 0002,
-//! 0007, 0011, 0014).
+//! Host prototype of the intent shell (roadmap items S3, S3b and S3e, ADR 0002,
+//! 0007, 0011, 0014, 0018).
 //!
 //! The model proposes a plan; deterministic code validates, shows, asks and
 //! only then runs. Everything outside `broker`, `plan` and `session` is an
@@ -35,3 +35,6 @@ mod pipeline_tests;
 
 #[cfg(test)]
 mod resolution_tests;
+
+#[cfg(test)]
+mod directories_tests;

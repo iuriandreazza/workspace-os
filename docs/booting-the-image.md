@@ -28,8 +28,9 @@ and `python3` only. The image is a build product and is never committed.
 Everything below needs **ACPI off** (`acpi=off` on QEMU, `--acpi off` on
 VirtualBox). With ACPI on, both firmwares publish only ACPI tables and no
 device tree; the kernel can read only the device tree (ADR 0010), so the
-bootloader stops with "the firmware offers ACPI only". The expected serial
-output is in `docs/adr/0013-boot-handoff-structure.md`, "Findings of K2b-2".
+bootloader stops with "the firmware offers ACPI only". A good boot prints the
+bootloader's banner and summary, then the kernel's banner and
+`entry: bootloader, boot info 1.0` (the gate checks the details).
 
 ## QEMU on a Mac with Apple silicon
 
@@ -54,7 +55,9 @@ a summary box; the kernel draws its own box and logs lines that start with
 banner. Leave QEMU with Ctrl-A then X.
 
 Add `-accel hvf -cpu host` to run with the hypervisor instead of emulation.
-That combination was not tried; the gate uses emulation.
+It boots through the EL1 path (tried by hand in K2b-3, with a start at EL2 it
+fails: the host does not allow nested virtualization); the gate uses
+emulation.
 
 ## QEMU emulating aarch64 on Linux x86_64
 
@@ -132,8 +135,25 @@ Things that matter, each found by running it:
   image. It waits for the x86_64 port (roadmap item K14).
 - VirtualBox on Linux x86_64 is therefore not covered; use QEMU there.
 
+## When the bootloader stops
+
+Before it leaves the boot services, the bootloader says why on the serial
+console and returns to the firmware after five seconds. A failure after that
+point (an invalid final memory map, an exhausted table pool) is written to the
+UART and the machine then waits: there is no console left to return to, so it
+needs a reset. The messages the gate provokes:
+
+| Message | Cause |
+|---|---|
+| `\KERNEL.ELF is not on the EFI system partition` | The image has no kernel at that path. |
+| `the kernel needs 0xA..0xB and the firmware refused it` | The firmware holds the kernel's load address (VirtualBox with 1024 MiB). The firmware's memory map is printed just before. |
+| `the kernel is linked at address 0` | The kernel image asks to be loaded at page zero. |
+| `the firmware offers ACPI only (rsdp 0x...)` | ACPI is on and no device tree is published: turn ACPI off. |
+
 ## What was not verified
 
-- `-accel hvf` and `-accel kvm` boots.
+- `-accel kvm` boots. `-accel hvf -cpu host` was run by hand on Apple silicon
+  (K2b-3) with the default EL1 start; it cannot start the bootloader at EL2
+  there. These runs are not in the gate.
 - A real Arm machine.
 - UEFI firmware other than QEMU's EDK2 and VirtualBox's.

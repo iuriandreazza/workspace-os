@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Append a line to the message of the day","steps":[
- {"id":"s1","action":"fs.write","args":{"target":{"name":"motd","in":"everywhere","kind":"file"},"content":"Maintenance on Friday.\n","mode":"append"},"depends_on":[],"elevate":true}]}
+{"kind":"plan","version":3,"summary":"Append a line to the message of the day","steps":[
+ {"id":"s1","action":"fs.write","args":{"target":{"path":"/etc/motd"},"content":"Maintenance on Friday.\n","mode":"append"},"depends_on":[],"elevate":true}]}

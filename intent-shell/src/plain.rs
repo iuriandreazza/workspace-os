@@ -6,8 +6,8 @@
 use std::io::{self, IsTerminal, Write};
 
 use crate::action::printable;
-use crate::ports::{Confirm, User};
-use crate::session::{Entry, Shell};
+use crate::ports::{ChoiceLine, Confirm, User};
+use crate::session::{Entry, SessionState, Shell};
 use crate::setup::{Setup, planner_of};
 
 struct TerminalConfirm;
@@ -41,6 +41,18 @@ fn is_details(answer: &str) -> bool {
     matches!(answer.trim(), "d" | "D" | "details")
 }
 
+/// The tree of a choice with a number on each candidate, and none on the
+/// context around it.
+fn numbered(lines: &[ChoiceLine]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| match line.option {
+            Some(index) => format!("   {:>2}. {}", index + 1, line.text),
+            None => format!("       {}", line.text),
+        })
+        .collect()
+}
+
 /// The one-based number the person typed, as an index into `count` options.
 fn parse_choice(answer: &str, count: usize) -> Option<usize> {
     let number: usize = answer.trim().parse().ok()?;
@@ -69,18 +81,19 @@ impl Confirm for TerminalConfirm {
         read_line().is_some_and(|answer| is_yes(&answer))
     }
 
-    fn choose(&mut self, question: &str, options: &[String]) -> Option<usize> {
+    fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize> {
         println!("\n  {question}");
-        for (index, option) in options.iter().enumerate() {
-            println!("   {}. {option}", index + 1);
+        for line in numbered(lines) {
+            println!("{line}");
         }
+        let options = lines.iter().filter(|l| l.option.is_some()).count();
         loop {
             print!("  number, or Enter to cancel > ");
             let answer = read_line()?;
             if answer.trim().is_empty() {
                 return None;
             }
-            match parse_choice(&answer, options.len()) {
+            match parse_choice(&answer, options) {
                 Some(index) => return Some(index),
                 None => println!("  not one of the options"),
             }
@@ -88,18 +101,20 @@ impl Confirm for TerminalConfirm {
     }
 }
 
-fn prompt(entry: Entry) -> &'static str {
+/// The prompt shows the directory, because the header is printed only once.
+fn prompt(entry: Entry, cwd: &str) -> String {
     match entry {
-        Entry::Command => "command> ",
-        Entry::Request => "intent> ",
+        Entry::Command => format!("command {cwd}> "),
+        Entry::Request => format!("intent {cwd}> "),
     }
 }
 
 pub fn run(mut setup: Setup) -> Result<(), String> {
     let mut confirm = TerminalConfirm;
-    println!("{}", setup.header());
+    let mut session = SessionState::start(&setup.host);
+    println!("{}", setup.header(&session));
     loop {
-        print!("{}", prompt(setup.entry()));
+        print!("{}", prompt(setup.entry(), &session.cwd_text(&setup.host)));
         let _ = io::stdout().flush();
         let mut request = String::new();
         match io::stdin().read_line(&mut request) {
@@ -118,6 +133,7 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
         }
         let entry = setup.entry();
         let mut shell = Shell {
+            session: &mut session,
             authority: &setup.authority,
             host: &setup.host,
             planner: planner_of(setup.planner.as_ref()),
@@ -130,12 +146,39 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Entry, is_details, is_yes, parse_choice, prompt};
+    use super::{Entry, is_details, is_yes, numbered, parse_choice, prompt};
+    use crate::ports::ChoiceLine;
 
     #[test]
-    fn the_prompt_says_whether_a_model_is_listening() {
-        assert_eq!(prompt(Entry::Request), "intent> ");
-        assert_eq!(prompt(Entry::Command), "command> ");
+    fn the_prompt_says_whether_a_model_is_listening_and_where_the_session_is() {
+        assert_eq!(
+            prompt(Entry::Request, "~/Documents"),
+            "intent ~/Documents> "
+        );
+        assert_eq!(prompt(Entry::Command, "~"), "command ~> ");
+    }
+
+    #[test]
+    fn only_the_candidates_of_a_choice_are_numbered() {
+        let line = |text: &str, option| ChoiceLine {
+            text: text.to_owned(),
+            option,
+            label: text.trim().to_owned(),
+        };
+        assert_eq!(
+            numbered(&[
+                line(" ~    2 folders", None),
+                line(" ├─ Documents/", None),
+                line(" │  └─ report.pdf", Some(0)),
+                line(" └─ report.pdf", Some(1)),
+            ]),
+            [
+                "        ~    2 folders",
+                "        ├─ Documents/",
+                "    1.  │  └─ report.pdf",
+                "    2.  └─ report.pdf",
+            ]
+        );
     }
 
     #[test]

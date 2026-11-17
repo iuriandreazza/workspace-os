@@ -3,14 +3,14 @@ title: "S5: deterministic fallback shell"
 type: report
 status: done
 created: 2026-11-16
-updated: 2026-11-16
+updated: 2026-11-17
 tags: [shell, commands, broker, recovery, no-model]
 ---
 
 # S5: deterministic fallback shell
 
 Roadmap item S5, with the command syntax in ADR 0022. The same actions of the
-plan format (ADR 0011, references of ADR 0014) are typed as commands with no
+plan format (ADR 0011, references of ADR 0014, paths and `session.cd` of ADR 0018) are typed as commands with no
 model loaded. A typed line becomes the plan document a model would emit, and
 from there it is the model's pipeline: resolver, broker, plan screen as dry run,
 the question of ADR 0016, a panel for each root action, execution and the
@@ -34,7 +34,11 @@ cargo run --target "$(rustc -vV | sed -n 's/^host: //p')" -p intent-shell --no-d
 fs find_largest --in downloads --count 3
 fs delete --name big.iso --in downloads --kind file
 fs delete --name big.iso --in downloads --kind file --elevate
-fs write --new-name notes.txt --in documents --content 'two words' --mode append
+fs list --path ~/Downloads/films
+fs read --name budget.csv --under-home --kind file
+session cd --path ~/Downloads
+cd ~/Downloads; ls; rm films/old.mkv          # short words for the three most typed
+fs write --new-name notes.txt --in-path ~/Documents --content 'two words' --mode append
 fs move --name a.txt --in documents --kind file --to-name archive --to-in documents
 fs find_largest --in downloads --count 2; fs delete --from-step s1
 process run --program tar -- -czf backup.tgz docs
@@ -42,10 +46,21 @@ user manage --operation add_to_group --user bia --group staff
 ```
 
 The flags are the arguments of the schema with `_` written as `-`. References
-are `--in P` (a place), `--name N --in P [--kind ...]`, `--new-name N --in P`
-and `--from-step sN`. `--after sN` orders steps. Nothing is expanded (no `~`,
-globs or `$`), and a path cannot be written (ADR 0014). The two defaults are
-`--kind any` where an action only reads (`fs write` on a name, `fs delete` and the source of `fs move` require `--kind`) and `--mode create`. The full grammar is in ADR 0022.
+are `--in P` (a place), `--path P` (a path as typed), `--name N --in P|--in-path P
+[--kind ...]`, `--name N --under-home [--kind ...]`, `--new-name N --in P|--in-path P`
+and `--from-step sN`. `--after sN` orders steps. The command layer expands
+nothing (no `~`, globs or `$`): a `--path` goes to the format as typed and the
+resolver expands the `~` and cleans `.` and `..`, then the broker judges where it
+lands. The defaults are `--kind any` where an action only reads (`fs write` on a
+name, `fs delete` and the source of `fs move` require `--kind`; a `--path` has no
+kind) and `--mode create`. The full grammar is in ADR 0022.
+
+`cd PATH`, `ls [PATH]` and `rm PATH` expand to `session cd --path`, `fs list --path`
+(the current directory when left out) and `fs delete --path` before parsing. ADR 0018
+also names `tree --depth N`; it is not provided, because the format has no depth to
+carry (ADR 0022, section 5). The prompt of the line adapter shows the directory
+(`command ~/Downloads> `), and the header of the interface follows a `cd`, as for a
+model session.
 
 ## What shares code with the model path
 
@@ -64,8 +79,8 @@ model text ───────────────────────
   planner that panics if asked.
 - A typed plan carries `Origin::Typed`; the plan screen then says `Typed commands:`
   where a model plan says `The model says:`. Nothing else on the screen changes.
-- The log records one `command` event (the line, the document it became, whether
-  it was accepted and the error) where a model plan records `request` and
+- The log records one `command` event (the line, the current directory, the document
+  it became, whether it was accepted and the error) where a model plan records `request` and
   `model_output`. A typed command is never logged as a model decision. From
   `plan_accepted` on the events are the same.
 - `Setup.planner` is an `Option`: `None` is this shell. The conversational
@@ -80,9 +95,17 @@ interface). `command_tests.rs`, none needing a model:
 - every plan example of the format (`docs/schemas/examples/valid`) is produced by
   a command line with identical steps, and a test fails when an example has no
   line or the other way round;
-- every action in the schema's `step` list has a command and no command is
+- every action in the schema's `step` list (now with `session.cd`) has a command and no command is
   invented (the schema is read in the test), and `--elevate` is accepted exactly
   where the root rule says a step may ask for root;
+- the paths, `--in-path`, `--under-home` and `session cd`: about 30 refused lines
+  (a `--path` is alone, `--in` and `--in-path` are two ways to say where, a lone
+  `--in-path`, no kind where one is required, a NUL, an empty path, 4097 bytes), a
+  path and a root deletion judged by the broker as for the model, and a typed `cd`
+  that changes where the next line resolves, is logged, and stays put for a file,
+  a missing folder or a line that mixes it with other steps;
+- the short words equal their long forms, refuse a missing or second path and
+  refuse `rm -rf x`, so a shell habit never deletes a file named `-rf`;
 - quoting, escapes and about 35 malformed lines, each refused with the reason, and
   19 more that are well formed as words and refused either by the command layer or,
   behind it, by the format (a count of 0, a name with `..`, a group on `add`, a
@@ -121,6 +144,11 @@ Mutation check, by hand (each change applied, the suite run, the source restored
 | a session with no model still reads requests | the interface and binary tests |
 | the interface waits for a model under no model | the state test |
 | a session with a model reads commands, or uses the no-model planner, or loses its planner in `main` | `tests/model_session.rs` |
+| `--in-path` written as a place (after the merge with S3e) | 2 tests |
+| the short word `rm` takes `-rf` as a path | 1 test |
+| the name of `cd` is not forced to a folder | 2 tests |
+| `--under-home` ignored | 3 tests |
+| `ls` with no path lists the home, not the current directory | 1 test |
 
 ## Limits and follow-ups
 
@@ -141,10 +169,11 @@ Mutation check, by hand (each change applied, the suite run, the source restored
   reports `... is not executable in this prototype`. That is the host's state,
   not the shell's: every such command is parsed, resolved, judged and confirmed
   exactly as the model's.
-- The syntax targets plan version 2. ADR 0018 (paths, a current directory,
-  `session.cd`, version 3) is an item of its own; ADR 0022 says how the same
-  table grows (`--path`, `--under-home`, `session cd`, and the `cd`/`ls`/`tree`/`rm`
-  words as aliases that make the same documents).
+- The syntax targets plan version 3 (S3e). The branch was written against version 2
+  and merged with S3e; the merge brought `--path`, `--in-path`, `--under-home`,
+  `session cd` and the short words in, and the gate tests that compare the table
+  with the schema are what showed what was missing.
+- `tree` and `--depth` (ADR 0018) are not typeable: the format has no depth.
 - A line is one request: a plan of several steps is written on one line with `;`.
   A long `fs write` content is a long line.
 - No history, completion or line editing in the line adapter; the interface has

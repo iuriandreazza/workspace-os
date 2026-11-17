@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Go to the films folder","steps":[
+ {"id":"s1","action":"session.cd","args":{"target":{"under_home":true,"name":"films","kind":"folder"}},"depends_on":[]}]}

@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Delete a system file as an administrator","steps":[
+ {"id":"s1","action":"fs.delete","args":{"target":{"path":"/var/log/old.log"}},"depends_on":[],"elevate":true}]}

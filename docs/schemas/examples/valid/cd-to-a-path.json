@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Go to the downloads folder","steps":[
+ {"id":"s1","action":"session.cd","args":{"target":{"path":"~/Downloads"}},"depends_on":[]}]}

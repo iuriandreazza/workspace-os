@@ -14,7 +14,7 @@ use crate::pipeline_tests::{DELETE_LARGEST, LARGEST, files, plan, step};
 use crate::plan::{Document, Origin, Plan, parse_checked};
 use crate::ports::{Planner, Retry};
 use crate::screen::{View, plan_screen};
-use crate::session::{ItemResult, Outcome, Shell};
+use crate::session::{ItemResult, Outcome, SessionState, Shell};
 use crate::testing::{Answers, FakeHost, MemoryLog, ScriptedPlanner, user};
 
 fn docs(file: &str) -> String {
@@ -49,8 +49,17 @@ fn refused(line: &str) -> String {
 /// Each example of the format and the line that produces the same steps.
 const EXAMPLES: &[(&str, &str)] = &[
     (
+        "cd-to-a-folder-under-home.json",
+        "session cd --name films --under-home",
+    ),
+    ("cd-to-a-path.json", "session cd --path ~/Downloads"),
+    (
         "chain-through-a-folder.json",
         "fs list --name holiday --in pictures --kind folder; fs stat --from-step s1",
+    ),
+    (
+        "delete-an-absolute-path-as-root.json",
+        "fs delete --path /var/log/old.log --elevate",
     ),
     (
         "delete-largest-with-reference.json",
@@ -58,21 +67,32 @@ const EXAMPLES: &[(&str, &str)] = &[
     ),
     (
         "elevated-write.json",
-        "fs write --name motd --in everywhere --kind file --content \"Maintenance on Friday.\\n\" --mode append --elevate",
+        "fs write --path /etc/motd --content \"Maintenance on Friday.\\n\" --mode append --elevate",
     ),
     (
         "independent-steps.json",
         "fs move --name report.txt --in documents --kind file --to-name archive --to-in documents; \
          fs write --new-name notes.txt --in documents --content 'Report archived.'",
     ),
+    ("largest-files.json", "fs find_largest --path ~ --count 5"),
+    ("list-a-path.json", "fs list --path ~/Downloads/films"),
     (
-        "largest-files.json",
-        "fs find_largest --in everywhere --count 5",
+        "move-into-a-path.json",
+        "fs move --path report.pdf --to-path ~/Documents",
+    ),
+    (
+        "name-inside-a-path.json",
+        "fs stat --name report.pdf --in-path ~/Documents --kind file",
+    ),
+    (
+        "new-item-in-a-path.json",
+        "fs write --new-name notes.txt --in-path ~/Documents --content hello",
     ),
     (
         "read-by-name.json",
-        "fs read --name budget.csv --in everywhere --kind file",
+        "fs read --name budget.csv --under-home --kind file",
     ),
+    ("relative-path.json", "fs read --path notes/today.txt"),
     (
         "run-program.json",
         "process run --program tar -- -czf backup.tgz docs",
@@ -214,7 +234,7 @@ fn what_cannot_be_read_as_a_command_is_refused_with_the_reason_and_runs_nothing(
         ("", "type a command"),
         ("   ", "type a command"),
         ("fs", "group and an action"),
-        ("rm -rf /", "unknown command"),
+        ("chmod -R 777 /", "unknown command"),
         ("delete the big files", "unknown command"),
         ("fs.list --in home", "unknown command"),
         ("fs list ; ", "step is empty"),
@@ -303,7 +323,7 @@ fn the_format_refuses_what_the_model_would_be_refused() {
         ("user manage --operation add_to_group --user bob", "group"),
         ("user manage --operation add --user BOB", "invalid form"),
         ("system configure --key 'Bad Key' --value x", "invalid form"),
-        ("fs list --in everywhere --after s1", "depends on itself"),
+        ("fs list --in home --after s1", "depends on itself"),
         ("fs list --in home --after s9", "unknown step"),
     ] {
         let why = refused(line);
@@ -363,7 +383,7 @@ fn help_lists_every_command_and_runs_nothing() {
 struct NeverAsked;
 
 impl Planner for NeverAsked {
-    fn plan(&self, _request: &str, _retry: Option<&Retry>) -> Result<String, String> {
+    fn plan(&self, _request: &str, _cwd: &str, _retry: Option<&Retry>) -> Result<String, String> {
         panic!("the model was asked in the deterministic shell")
     }
 }
@@ -383,6 +403,7 @@ fn typed(
 ) -> Trace {
     let (mut answers, mut log) = (answers, log);
     let outcome = Shell {
+        session: &mut SessionState::start(host),
         authority: &Authority::full(user(administrator)),
         host,
         planner: &NeverAsked,
@@ -407,6 +428,7 @@ fn modelled(
     let (mut answers, mut log) = (answers, log);
     let planner = ScriptedPlanner::new(&[json]);
     let outcome = Shell {
+        session: &mut SessionState::start(host),
         authority: &Authority::full(user(administrator)),
         host,
         planner: &planner,
@@ -464,7 +486,9 @@ fn seen(trace: &Trace, host: &FakeHost) -> Value {
         "events": events,
         "executed": host.executed.borrow().clone(),
         "root_panels": trace.answers.root_asked,
-        "questions": trace.answers.questions,
+        "questions": trace.answers.questions.iter().map(|(question, lines)| {
+            (question, lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>())
+        }).collect::<Vec<_>>(),
         "outcome": outcome,
     })
 }
@@ -924,7 +948,9 @@ fn the_forms_each_argument_takes_are_the_ones_the_schema_allows() {
     let defs = &schema["$defs"];
     let form_of = |reference: &str| match reference.rsplit('/').next().unwrap() {
         "refPlace" => "place",
+        "refPath" => "path",
         "refNamed" | "refFolder" => "named",
+        "refUnderHome" | "refUnderHomeFolder" => "under_home",
         "refNew" => "new",
         "refFromStep" => "step",
         other => panic!("{other}"),
@@ -972,7 +998,7 @@ fn the_forms_each_argument_takes_are_the_ones_the_schema_allows() {
             "{action}"
         );
     }
-    assert_eq!(checked, 8);
+    assert_eq!(checked, 9);
 }
 
 #[test]
@@ -1080,7 +1106,9 @@ fn errors_name_what_to_type_and_what_is_wrong() {
         why.contains("--in PLACE") && !why.contains("--from-step"),
         "{why}"
     );
-    assert!(refused("fs write --content x").contains("--new-name NAME --in PLACE"));
+    assert!(
+        refused("fs write --content x").contains("--new-name NAME (--in PLACE | --in-path PATH)")
+    );
     assert!(refused("fs move --name a --in home --kind file").contains("--to-in PLACE"));
     let why = refused("fs find_largest --in home --count 5000000000");
     assert!(why.contains("--count") && why.contains("1 to 100"), "{why}");
@@ -1232,4 +1260,280 @@ fn a_line_the_format_refuses_is_logged_with_its_document_and_the_reason() {
         .as_str()
         .expect("the document is in the record");
     assert!(json.contains("\"count\":0"), "{json}");
+}
+
+// --- paths, `--under-home`, `session cd` and the short words (ADR 0018, ADR 0022) ---
+
+fn home_host() -> FakeHost {
+    FakeHost::with_files(&[
+        ("/home/ana/Downloads/films/new.mkv", 2_300),
+        ("/home/ana/Downloads/notes.txt", 5),
+        ("/var/log/old.log", 3),
+    ])
+    .dir("/home/ana/Downloads")
+    .dir("/home/ana/Downloads/films")
+    .dir("/var/log")
+    .place(crate::reference::Place::Downloads, "/home/ana/Downloads")
+}
+
+fn one_step_plan(action: &str, args: &str, elevate: bool) -> String {
+    let elevate = if action == "session.cd" {
+        String::new()
+    } else {
+        format!(r#","elevate":{elevate}"#)
+    };
+    format!(
+        r#"{{"kind":"plan","version":3,"summary":"{action}","steps":[{{"id":"s1","action":"{action}","args":{args},"depends_on":[]{elevate}}}]}}"#
+    )
+}
+
+#[test]
+fn a_path_lists_and_ranks_through_the_same_pipeline_as_the_models_path() {
+    let json = one_step_plan(
+        "fs.list",
+        r#"{"target":{"path":"~/Downloads/films"}}"#,
+        false,
+    );
+    let seen = same_both_ways(
+        "fs list --path ~/Downloads/films",
+        &json,
+        home_host,
+        false,
+        Answers::yes,
+    );
+    assert_eq!(seen["executed"].as_array().unwrap().len(), 1, "{seen}");
+}
+
+#[test]
+fn a_path_to_a_system_folder_is_judged_by_the_broker_not_by_the_command_layer() {
+    // The command layer names `/var/log`; asking for root does not help a person
+    // who is not an administrator, exactly as for the model's plan.
+    let json = one_step_plan(
+        "fs.delete",
+        r#"{"target":{"path":"/var/log/old.log"}}"#,
+        true,
+    );
+    let seen = same_both_ways(
+        "fs delete --path /var/log/old.log --elevate",
+        &json,
+        home_host,
+        false,
+        Answers::yes,
+    );
+    assert!(seen["executed"].as_array().unwrap().is_empty(), "{seen}");
+    assert!(seen["root_panels"].as_array().unwrap().is_empty(), "{seen}");
+    // An administrator gets the panel, and its own confirmation, as for the model.
+    let seen = same_both_ways(
+        "fs delete --path /var/log/old.log --elevate",
+        &json,
+        home_host,
+        true,
+        Answers::yes,
+    );
+    assert_eq!(seen["root_panels"].as_array().unwrap().len(), 1, "{seen}");
+}
+
+#[test]
+fn a_typed_cd_enters_the_folder_like_the_models_and_a_refused_one_stays_put() {
+    let host = home_host();
+    let mut session = SessionState {
+        cwd: "/home/ana".into(),
+    };
+    let go = |session: &mut SessionState, line: &str| {
+        let (mut answers, mut log) = (Answers::yes(), MemoryLog::default());
+        let outcome = Shell {
+            session,
+            authority: &Authority::full(user(false)),
+            host: &host,
+            planner: &NeverAsked,
+            confirm: &mut answers,
+            log: &mut log,
+        }
+        .handle_command(line);
+        (outcome, log)
+    };
+    let (outcome, log) = go(&mut session, "cd ~/Downloads");
+    assert!(matches!(outcome, Outcome::Executed { asked: false, .. }));
+    assert!(outcome.render().contains("now in ~/Downloads"));
+    assert!(log.events.iter().any(|e| e["event"] == "cd"));
+    let command = &log.events[0];
+    assert_eq!(command["event"], "command");
+    assert_eq!(command["cwd"], "\"/home/ana\"");
+    // A relative path now starts from there.
+    let (outcome, _) = go(&mut session, "ls films");
+    let Outcome::Executed { review, .. } = &outcome else {
+        panic!("{}", outcome.render())
+    };
+    assert_eq!(
+        review.steps[0].items[0].action.describe(),
+        r#"fs.list path="/home/ana/Downloads/films""#
+    );
+    // A file, a missing folder and a folder name that is not there leave it where it was.
+    for line in [
+        "cd notes.txt",
+        "cd nowhere",
+        "session cd --name nowhere --under-home",
+    ] {
+        let (outcome, _) = go(&mut session, line);
+        assert!(!matches!(outcome, Outcome::Executed { .. }), "{line}");
+    }
+    assert_eq!(session.cwd, std::path::PathBuf::from("/home/ana/Downloads"));
+    // A `cd` is a plan of its own, as for the model.
+    let (outcome, _) = go(&mut session, "cd ~; fs list --in home");
+    assert!(
+        matches!(outcome, Outcome::BadCommand(_)),
+        "{}",
+        outcome.render()
+    );
+    assert_eq!(session.cwd, std::path::PathBuf::from("/home/ana/Downloads"));
+}
+
+#[test]
+fn the_short_words_expand_to_the_mechanical_commands_and_nothing_else() {
+    let same = |short: &str, long: &str| {
+        assert_eq!(plan_of(short).steps, plan_of(long).steps, "{short}");
+    };
+    same("cd ~/Downloads", "session cd --path ~/Downloads");
+    same("ls", "fs list --path .");
+    same("ls ~/Downloads", "fs list --path ~/Downloads");
+    same(
+        "ls; ls --after s1",
+        "fs list --path .; fs list --path . --after s1",
+    );
+    same("rm notes/old.txt", "fs delete --path notes/old.txt");
+    same(
+        "rm notes/old.txt --elevate",
+        "fs delete --path notes/old.txt --elevate",
+    );
+    // A quoted path is one path, and a quoted `--x` is a path, not a flag.
+    same(
+        "rm 'my notes/a b.txt'",
+        "fs delete --path 'my notes/a b.txt'",
+    );
+    same("ls '--odd'", "fs list --path '--odd'");
+    // The summary says what the action is, as for the long form.
+    assert_eq!(plan_of("rm x").summary, "fs.delete");
+}
+
+#[test]
+fn a_short_word_refuses_what_it_cannot_say_and_never_guesses_a_flag_of_the_shells_own() {
+    for (line, mention) in [
+        ("cd", "needs a path"),
+        ("rm", "needs a path"),
+        ("rm --elevate", "needs a path"),
+        ("rm -rf /", "looks like a flag"),
+        ("rm -f x", "looks like a flag"),
+        ("ls -la", "looks like a flag"),
+        ("ls a b", "one path only"),
+        ("cd a b", "one path only"),
+        ("ls --path x", "twice"),
+        ("'rm' x", "without quotes"),
+        ("r\\m x", "without quotes"),
+        ("tree", "group and an action"),
+    ] {
+        let why = refused(line);
+        assert!(why.contains(mention), "{line:?}: {why}");
+    }
+    // A file really named `-x` is written so that it cannot be mistaken for a flag.
+    assert_eq!(
+        plan_of("rm ./-x").steps,
+        plan_of("fs delete --path ./-x").steps
+    );
+    assert_eq!(
+        plan_of("rm '-x'").steps,
+        plan_of("fs delete --path -x").steps
+    );
+}
+
+#[test]
+fn the_new_references_are_refused_where_the_format_refuses_them() {
+    for (line, mention) in [
+        ("fs list --path a --in home", "stands alone"),
+        ("fs list --path a --name b", "stands alone"),
+        ("fs list --path a --kind file", "stands alone"),
+        ("fs list --path a --under-home", "stands alone"),
+        ("fs list --path a --path b", "twice"),
+        ("fs list --in home --in-path a", "two ways to say where"),
+        ("fs list --in-path a", "to name a path, use --path"),
+        ("fs list --under-home", "needs --name"),
+        ("fs list --name a --under-home --in home", "takes no --in"),
+        ("fs list --name a --under-home --in-path x", "takes no --in"),
+        (
+            "fs list --new-name a --under-home",
+            "two different references",
+        ),
+        ("fs list --name a --under-home --under-home", "twice"),
+        ("fs list --name a --in-path", "needs a value"),
+        ("fs list --name a", "needs --in or --in-path"),
+        (
+            "fs write --new-name a --content x",
+            "needs --in or --in-path",
+        ),
+        ("fs write --name a --under-home --content x", "needs --kind"),
+        ("fs delete --name a --under-home", "needs --kind"),
+        ("fs delete --name a --in-path ~ ", "needs --kind"),
+        ("fs move --path a --to-under-home", "needs --to-name"),
+        (
+            "fs move --path a --to-in-path ~",
+            "to name a path, use --to-path",
+        ),
+        (
+            "fs move --path a --to-name b --to-in home --to-kind folder",
+            "unknown flag",
+        ),
+        ("fs move --path a --to-path b --to-in home", "stands alone"),
+        ("session cd --from-step s1", "unknown flag"),
+        ("session cd --new-name a --in home", "unknown flag"),
+        (
+            "session cd --name a --in home --kind folder",
+            "unknown flag",
+        ),
+        ("session cd --path ~ --elevate", "unknown flag"),
+        ("session cd", "needs a reference"),
+        ("fs list --path ''", "1 to 4096"),
+        ("fs list --path 'a\u{0}b'", "NUL"),
+    ] {
+        let why = refused(line);
+        assert!(why.contains(mention), "{line:?}: {why}");
+    }
+    let long = format!("fs list --path {}", "a".repeat(4097));
+    assert!(refused(&long).contains("4096"), "{}", refused(&long));
+}
+
+#[test]
+fn a_name_in_a_folder_or_below_the_home_is_a_folder_for_cd_and_for_a_destination() {
+    let json = |line: &str| {
+        let Ok(Parsed::Plan(json)) = command::parse(line) else {
+            panic!("{line}")
+        };
+        serde_json::from_str::<Value>(&json).unwrap()["steps"][0]["args"].clone()
+    };
+    assert_eq!(
+        json("session cd --name films --in-path ~/Downloads")["target"],
+        serde_json::json!({"name": "films", "in": {"path": "~/Downloads"}, "kind": "folder"})
+    );
+    assert_eq!(
+        json("fs move --path a --to-name films --to-under-home")["to"],
+        serde_json::json!({"under_home": true, "name": "films", "kind": "folder"})
+    );
+}
+
+#[test]
+fn help_lists_the_short_words_and_the_new_flags_and_only_flags_that_are_accepted() {
+    let Ok(Parsed::Help(text)) = command::parse("help") else {
+        panic!("help")
+    };
+    for needle in [
+        "session cd",
+        "cd PATH",
+        "ls [PATH]",
+        "rm PATH",
+        "--path PATH",
+        "--in-path PATH",
+        "--under-home",
+        "--to-path PATH",
+    ] {
+        assert!(text.contains(needle), "{needle}\n{text}");
+    }
+    assert!(!text.contains("everywhere"), "{text}");
 }

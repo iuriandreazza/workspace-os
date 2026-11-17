@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Find the report below the films folder","steps":[
+ {"id":"s1","action":"fs.stat","args":{"target":{"name":"report.pdf","in":{"path":"~/Documents"},"kind":"file"}},"depends_on":[],"elevate":false}]}

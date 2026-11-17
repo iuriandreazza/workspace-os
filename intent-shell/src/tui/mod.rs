@@ -26,8 +26,8 @@ use ratatui::crossterm::execute;
 
 use crate::broker::Authority;
 use crate::model::NoModel;
-use crate::ports::{Confirm, DecisionLog, Host, Planner, Retry, User};
-use crate::session::{Entry, Shell};
+use crate::ports::{ChoiceLine, Confirm, DecisionLog, Host, Planner, Retry, User};
+use crate::session::{Entry, SessionState, Shell};
 use crate::setup::Setup;
 use state::{Effect, Event, Mode, Reply, State};
 
@@ -65,13 +65,14 @@ impl Confirm for ChannelConfirm {
         self.ask(event) == Some(Reply::Yes)
     }
 
-    fn choose(&mut self, question: &str, options: &[String]) -> Option<usize> {
+    fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize> {
         let event = Event::AskChoose {
             question: question.to_owned(),
-            options: options.to_vec(),
+            lines: lines.to_vec(),
         };
+        let count = lines.iter().filter(|l| l.option.is_some()).count();
         match self.ask(event) {
-            Some(Reply::Choice(Some(index))) if index < options.len() => Some(index),
+            Some(Reply::Choice(Some(index))) if index < count => Some(index),
             _ => None,
         }
     }
@@ -84,14 +85,21 @@ struct ProgressPlanner<'a> {
 }
 
 impl Planner for ProgressPlanner<'_> {
-    fn plan(&self, request: &str, retry: Option<&Retry>) -> Result<String, String> {
+    fn plan(&self, request: &str, cwd: &str, retry: Option<&Retry>) -> Result<String, String> {
         let _ = self.events.send(Event::Busy("asking the model"));
-        let answer = self.inner.plan(request, retry);
+        let answer = self.inner.plan(request, cwd, retry);
         // From here the shell reviews and may search: it is no longer only a
         // wait for the model, so leaving waits for it (see `run`).
         let _ = self.events.send(Event::Busy("working"));
         answer
     }
+}
+
+/// The channels between the worker and the interface.
+struct Wires {
+    requests: Receiver<String>,
+    events: Sender<Event>,
+    replies: Receiver<Reply>,
 }
 
 /// Runs the shell for each request until the interface closes the channel.
@@ -101,10 +109,14 @@ fn serve(
     host: &dyn Host,
     model: Option<&dyn Planner>,
     log: &mut dyn DecisionLog,
-    requests: Receiver<String>,
-    events: Sender<Event>,
-    replies: Receiver<Reply>,
+    wires: Wires,
+    header: &dyn Fn(&str) -> String,
 ) {
+    let Wires {
+        requests,
+        events,
+        replies,
+    } = wires;
     let entry = Entry::for_model(model.is_some());
     let planner = ProgressPlanner {
         inner: model.unwrap_or(&NoModel),
@@ -114,6 +126,7 @@ fn serve(
         events: events.clone(),
         replies,
     };
+    let mut session = SessionState::start(host);
     for request in requests {
         if entry == Entry::Command {
             // With no model nothing else says the shell is working, and leaving
@@ -121,6 +134,7 @@ fn serve(
             let _ = events.send(Event::Busy("working"));
         }
         let outcome = Shell {
+            session: &mut session,
             authority,
             host,
             planner: &planner,
@@ -129,6 +143,8 @@ fn serve(
         }
         .handle_as(entry, &request)
         .render();
+        // A `cd` changes where the session is, which the header says.
+        let _ = events.send(Event::Header(header(&session.cwd_text(host))));
         if events.send(Event::Outcome(outcome)).is_err() {
             return;
         }
@@ -141,6 +157,7 @@ fn worker(
     events: Sender<Event>,
     replies: Receiver<Reply>,
 ) {
+    let header = setup.header_fn();
     let Setup {
         authority,
         host,
@@ -148,14 +165,18 @@ fn worker(
         mut log,
         ..
     } = setup;
+    let wires = Wires {
+        requests,
+        events,
+        replies,
+    };
     serve(
         &authority,
         &host,
         planner.as_ref().map(|p| p as &dyn Planner),
         &mut log,
-        requests,
-        events,
-        replies,
+        wires,
+        &header,
     );
 }
 
@@ -284,7 +305,10 @@ fn write_transcript(path: &Path, text: &str) -> std::io::Result<()> {
 /// Open the interface and run until the person quits. The history is printed
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
-    let mut state = State::for_entry(setup.header(), setup.entry());
+    let mut state = State::for_entry(
+        setup.header(&SessionState::start(&setup.host)),
+        setup.entry(),
+    );
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
@@ -398,13 +422,21 @@ mod tests {
         );
     }
 
+    fn a_choice() -> ChoiceLine {
+        ChoiceLine {
+            text: "a".to_owned(),
+            option: Some(0),
+            label: String::new(),
+        }
+    }
+
     #[test]
     fn a_closed_interface_refuses_and_cancels() {
         let (mut confirm, events, replies) = confirm();
         drop(replies);
         assert!(!confirm.plan("screen", "details"));
         assert!(!confirm.root_action("panel", &user()));
-        assert_eq!(confirm.choose("which", &["a".to_owned()]), None);
+        assert_eq!(confirm.choose("which", &[a_choice()]), None);
         drop(events);
         assert!(!confirm.plan("screen", "details"));
     }
@@ -415,16 +447,16 @@ mod tests {
         replies.send(Reply::Choice(Some(0))).unwrap();
         assert!(!confirm.plan("screen", "details"));
         replies.send(Reply::Yes).unwrap();
-        assert_eq!(confirm.choose("which", &["a".to_owned()]), None);
+        assert_eq!(confirm.choose("which", &[a_choice()]), None);
     }
 
     #[test]
     fn a_choice_outside_the_list_is_a_cancel() {
         let (mut confirm, _events, replies) = confirm();
         replies.send(Reply::Choice(Some(5))).unwrap();
-        assert_eq!(confirm.choose("which", &["a".to_owned()]), None);
+        assert_eq!(confirm.choose("which", &[a_choice()]), None);
         replies.send(Reply::Choice(Some(0))).unwrap();
-        assert_eq!(confirm.choose("which", &["a".to_owned()]), Some(0));
+        assert_eq!(confirm.choose("which", &[a_choice()]), Some(0));
     }
 
     #[test]
@@ -444,9 +476,12 @@ mod tests {
             &files(),
             Some(&ScriptedPlanner::new(&[DELETE_LARGEST])),
             &mut log,
-            requests,
-            events_tx,
-            replies,
+            Wires {
+                requests,
+                events: events_tx,
+                replies,
+            },
+            &|cwd| format!("header in {cwd}"),
         );
         let seen: Vec<Event> = events.try_iter().collect();
         assert!(seen.iter().any(|e| matches!(e, Event::AskPlan { .. })));
@@ -482,9 +517,12 @@ mod tests {
             &files(),
             None,
             &mut log,
-            requests,
-            events_tx,
-            replies,
+            Wires {
+                requests,
+                events: events_tx,
+                replies,
+            },
+            &|cwd| format!("header in {cwd}"),
         );
         let seen: Vec<Event> = events.try_iter().collect();
         assert!(

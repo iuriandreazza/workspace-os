@@ -1,0 +1,3 @@
+{"kind":"plan","version":3,"summary":"Go to downloads and list it","steps":[
+ {"id":"s1","action":"session.cd","args":{"target":{"path":"~/Downloads"}},"depends_on":[]},
+ {"id":"s2","action":"fs.list","args":{"target":{"path":"."}},"depends_on":["s1"],"elevate":false}]}

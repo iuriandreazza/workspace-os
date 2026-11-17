@@ -6,4 +6,4 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 host_target="$(rustc -vV | sed -n 's/^host: //p')"
-exec cargo test -p intent-shell --target "$host_target" --test live_model -- --ignored --nocapture
+exec cargo test -p intent-shell --target "$host_target" --test live_model -- --ignored --nocapture --test-threads=1

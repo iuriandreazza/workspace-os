@@ -52,7 +52,7 @@ fn fake_server() -> (
                 }
             }
             let content =
-                r#"{"kind":"clarify","version":2,"question":"Which folder do you mean?"}"#;
+                r#"{"kind":"clarify","version":3,"question":"Which folder do you mean?"}"#;
             let body =
                 serde_json::json!({"choices": [{"message": {"content": content}}]}).to_string();
             let reply = format!(
@@ -99,13 +99,13 @@ fn with_a_model_a_request_goes_to_the_model_and_is_not_read_as_a_command() {
     let _ = fs::remove_dir_all(&home);
     assert!(output.status.success(), "{out}");
     assert!(out.contains(&format!("model  \"{address}\"")), "{out}");
-    assert!(out.contains("intent> "), "{out}");
+    assert!(out.contains("intent ~> "), "{out}");
     assert!(
         out.contains("The model asks: \"Which folder do you mean?\""),
         "{out}"
     );
     assert!(
-        !out.contains("Not a command") && !out.contains("command> "),
+        !out.contains("Not a command") && !out.contains("command ~> "),
         "{out}"
     );
     assert_eq!(served, 1, "the model was asked once");

@@ -8,7 +8,7 @@ use crate::log::JsonlLog;
 use crate::model::{LlamaPlanner, NoModel};
 use crate::ports::Planner;
 use crate::screen::{self, Header};
-use crate::session::Entry;
+use crate::session::{Entry, SessionState};
 
 static NO_MODEL: NoModel = NoModel;
 
@@ -28,13 +28,31 @@ impl Setup {
         Entry::for_model(self.planner.is_some())
     }
 
-    pub fn header(&self) -> String {
-        screen::header(&Header {
-            user: &self.authority.user.name,
-            administrator: self.authority.user.administrator,
-            model: model_label(self.planner.as_ref()),
-            log: &self.log_name,
-        })
+    /// The header for the directory the session is in now.
+    pub fn header(&self, session: &SessionState) -> String {
+        self.header_fn()(&session.cwd_text(&self.host))
+    }
+
+    /// The header as a function of the directory, owning what it needs, so a
+    /// worker thread can rebuild it after a `cd`.
+    pub fn header_fn(&self) -> impl Fn(&str) -> String + use<> {
+        let (user, administrator) = (
+            self.authority.user.name.clone(),
+            self.authority.user.administrator,
+        );
+        let (model, log_name) = (
+            model_label(self.planner.as_ref()).to_owned(),
+            self.log_name.clone(),
+        );
+        move |cwd| {
+            screen::header(&Header {
+                user: &user,
+                administrator,
+                model: &model,
+                cwd,
+                log: &log_name,
+            })
+        }
     }
 }
 
@@ -81,17 +99,18 @@ mod tests {
         }));
         assert_eq!(with.entry(), Entry::Request);
         let asked = planner_of(with.planner.as_ref())
-            .plan("x", None)
+            .plan("x", "~", None)
             .unwrap_err();
         assert!(!asked.contains("no model is loaded"), "{asked}");
         let without = setup(None);
         assert_eq!(without.entry(), Entry::Command);
         let answer = planner_of(without.planner.as_ref())
-            .plan("x", None)
+            .plan("x", "~", None)
             .unwrap_err();
         assert!(answer.contains("no model is loaded"), "{answer}");
-        assert!(with.header().contains("127.0.0.1:1"));
-        assert!(without.header().contains("none (commands only)"));
+        let start = SessionState::start(&with.host);
+        assert!(with.header(&start).contains("127.0.0.1:1"));
+        assert!(without.header(&start).contains("none (commands only)"));
     }
 
     #[test]
@@ -105,6 +124,7 @@ mod tests {
             user: "ana",
             administrator: false,
             model: model_label(None),
+            cwd: "~",
             log: "d.jsonl",
         });
         assert!(header.contains("none (commands only)"), "{header}");

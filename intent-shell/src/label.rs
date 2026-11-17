@@ -1,239 +1,191 @@
-//! Friendly names for real locations (ADR 0014).
+//! How a location is written for the person (ADR 0018, decision 2).
 //!
-//! The default view shows `"report.pdf" (Downloads)`, never a path. Two
-//! different locations never get the same label: when they would, more of the
-//! folders above them are added until they differ.
+//! The default views show a location relative to the current directory when it
+//! is inside it, as `~/…` when it is elsewhere in the home, and absolute
+//! otherwise. The exact absolute location stays in the details view and in the
+//! root panel. Two different locations never read the same, because the three
+//! forms are different spellings of one absolute path.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-use crate::action::{quoted, quoted_path};
-use crate::ports::Host;
-use crate::reference::Place;
+use crate::action::quoted_path;
 
-/// A place and the folder it lives in, from the host.
-struct Root {
-    /// What the person sees: the place, or for a place that lives in several
-    /// folders the name of the folder, so the two are never mistaken.
-    title: String,
-    path: PathBuf,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Labels {
+    cwd: PathBuf,
+    home: Option<PathBuf>,
 }
 
-/// The label of each location that will be shown, and the real location
-/// behind it for the details view.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Labels(BTreeMap<PathBuf, String>);
+impl Default for Labels {
+    /// No directory and no home: every location is shown absolute (a session
+    /// at the root writes absolute locations too, see `display`).
+    fn default() -> Self {
+        Self::new(Path::new("/"), None)
+    }
+}
 
 impl Labels {
-    pub fn build<'a>(host: &dyn Host, paths: impl IntoIterator<Item = &'a Path>) -> Self {
-        let roots = roots(host);
-        let paths: BTreeSet<PathBuf> = paths.into_iter().map(Path::to_path_buf).collect();
-        let mut depth: BTreeMap<PathBuf, usize> = paths
-            .iter()
-            .map(|p| (p.clone(), first_depth(&roots, p)))
-            .collect();
-        // Each round adds one folder to every label that still collides; a
-        // location has finitely many folders, so this ends.
-        loop {
-            let mut groups: BTreeMap<String, Vec<&PathBuf>> = BTreeMap::new();
-            for path in &paths {
-                groups
-                    .entry(render(&roots, path, depth[path]))
-                    .or_default()
-                    .push(path);
-            }
-            let growable: Vec<PathBuf> = groups
-                .values()
-                .filter(|group| group.len() > 1)
-                .flatten()
-                .filter(|p| depth[**p] < folders(&roots, p).len())
-                .map(|p| (*p).clone())
-                .collect();
-            if growable.is_empty() {
-                break;
-            }
-            for path in growable {
-                *depth.entry(path).or_default() += 1;
-            }
+    pub fn new(cwd: &Path, home: Option<PathBuf>) -> Self {
+        Self {
+            cwd: cwd.to_path_buf(),
+            home,
         }
-        Self(
-            paths
-                .iter()
-                .map(|p| (p.clone(), render(&roots, p, depth[p])))
-                .collect(),
-        )
     }
 
-    /// The label to show for `path`. A location nobody asked to label is shown
-    /// as the unlabelled place it is, never as its path.
+    /// The location as text for a screen, relative where that is shorter and
+    /// still unambiguous. Not quoted: a tree prints names bare.
+    pub fn display(&self, path: &Path) -> PathBuf {
+        if path == self.cwd {
+            return PathBuf::from(".");
+        }
+        // Everything is inside `/`, and `etc/hosts` would read as a relative
+        // name: at the root the absolute location is the clear one.
+        if let Ok(inside) = path.strip_prefix(&self.cwd)
+            && self.cwd != Path::new("/")
+        {
+            // A folder called `~` inside the directory must not read as the home.
+            return if inside.starts_with("~") {
+                Path::new(".").join(inside)
+            } else {
+                inside.to_path_buf()
+            };
+        }
+        match self.home.as_deref().map(|home| path.strip_prefix(home)) {
+            Some(Ok(inside)) if inside.as_os_str().is_empty() => PathBuf::from("~"),
+            Some(Ok(inside)) => Path::new("~").join(inside),
+            _ => path.to_path_buf(),
+        }
+    }
+
+    /// The location quoted like any string from the machine, for a table.
     pub fn of(&self, path: &Path) -> String {
-        self.0
-            .get(path)
-            .cloned()
-            .unwrap_or_else(|| format!("{} (elsewhere)", quoted_name(path)))
+        quoted_path(&self.display(path))
     }
-}
 
-fn roots(host: &dyn Host) -> Vec<Root> {
-    Place::ALL
-        .into_iter()
-        .filter(|place| *place != Place::Everywhere)
-        .flat_map(|place| {
-            let folders = host.place_roots(place);
-            let several = folders.len() > 1;
-            folders.into_iter().map(move |path| Root {
-                title: match path.file_name() {
-                    Some(name) if several => name.to_string_lossy().into_owned(),
-                    _ => place.title().to_owned(),
-                },
-                path,
-            })
-        })
-        .collect()
-}
-
-/// The most specific place that holds `path`.
-fn home_of<'a>(roots: &'a [Root], path: &Path) -> Option<&'a Root> {
-    roots
-        .iter()
-        .filter(|r| path.starts_with(&r.path) && path != r.path)
-        .max_by_key(|r| r.path.components().count())
-}
-
-/// The item's own name, byte-exact like `quoted_path`, so names that differ
-/// only in bytes that are not UTF-8 stay different.
-fn quoted_name(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(|| quoted("/"), |name| quoted_path(Path::new(name)))
-}
-
-/// The folders between the place (or the filesystem root) and the item.
-fn folders(roots: &[Root], path: &Path) -> Vec<String> {
-    let base = home_of(roots, path).map_or(Path::new("/"), |r| r.path.as_path());
-    let parent = path.parent().unwrap_or(Path::new("/"));
-    parent
-        .strip_prefix(base)
-        .unwrap_or(parent)
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(name) => Some(quoted_path(Path::new(name))),
-            _ => None,
-        })
-        .collect()
-}
-
-/// A place gives a place name and one folder for free; elsewhere gives none.
-fn first_depth(roots: &[Root], path: &Path) -> usize {
-    usize::from(home_of(roots, path).is_some()).min(folders(roots, path).len())
-}
-
-fn render(roots: &[Root], path: &Path, depth: usize) -> String {
-    if let Some(root) = roots.iter().find(|r| r.path == path) {
-        return root.title.clone();
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
     }
-    let all = folders(roots, path);
-    let shown = &all[all.len() - depth.min(all.len())..];
-    let home = home_of(roots, path);
-    let place = home.map_or("elsewhere", |r| r.title.as_str());
-    let mut container = vec![place.to_owned()];
-    // Elsewhere hides every folder until two labels need telling apart.
-    if shown.len() < all.len() && (home.is_some() || !shown.is_empty()) {
-        container.push("…".to_owned());
+
+    /// The current directory itself: `~` or `~/Downloads`, never `.`.
+    pub fn cwd_text(&self) -> PathBuf {
+        match &self.home {
+            Some(home) if &self.cwd == home => PathBuf::from("~"),
+            Some(home) => self
+                .cwd
+                .strip_prefix(home)
+                .map_or_else(|_| self.cwd.clone(), |inside| Path::new("~").join(inside)),
+            None => self.cwd.clone(),
+        }
     }
-    container.extend(shown.iter().cloned());
-    format!("{} ({})", quoted_name(path), container.join(" › "))
+
+    /// Outside the person's home: the system's space, which the tree marks.
+    pub fn is_system(&self, path: &Path) -> bool {
+        !self
+            .home
+            .as_deref()
+            .is_some_and(|home| path.starts_with(home))
+    }
+
+    /// A folder above the home, such as `/`: it holds both spaces, so it is
+    /// not marked as the system's.
+    pub fn holds_home(&self, path: &Path) -> bool {
+        self.home
+            .as_deref()
+            .is_some_and(|home| home.starts_with(path))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeHost;
 
-    fn host() -> FakeHost {
-        FakeHost::default()
-            .place(Place::Downloads, "/home/ana/Downloads")
-            .place(Place::Documents, "/home/ana/Documents")
-            .place(Place::Home, "/home/ana")
-    }
-
-    fn label(paths: &[&str]) -> Vec<String> {
-        let host = host();
-        let labels = Labels::build(&host, paths.iter().map(|p| Path::new(*p)));
-        paths.iter().map(|p| labels.of(Path::new(p))).collect()
+    fn labels() -> Labels {
+        Labels::new(
+            Path::new("/home/ana/Downloads"),
+            Some(PathBuf::from("/home/ana")),
+        )
     }
 
     #[test]
-    fn a_label_names_the_item_and_its_place_and_no_path() {
+    fn inside_the_current_directory_a_location_is_relative_to_it() {
+        let labels = labels();
         assert_eq!(
-            label(&["/home/ana/Downloads/big.iso"]),
-            [r#""big.iso" (Downloads)"#]
+            labels.of(Path::new("/home/ana/Downloads/films/a.mkv")),
+            r#""films/a.mkv""#
         );
-        assert_eq!(
-            label(&["/home/ana/Documents/taxes/a.pdf"]),
-            [r#""a.pdf" (Documents › "taxes")"#]
-        );
-        assert_eq!(label(&["/etc/hosts"]), [r#""hosts" (elsewhere)"#]);
+        assert_eq!(labels.of(Path::new("/home/ana/Downloads")), r#"".""#);
     }
 
     #[test]
-    fn a_place_in_two_folders_does_not_mix_them_up() {
-        let mut host = FakeHost::default();
-        host.places.insert(
-            Place::Videos,
-            vec![PathBuf::from("/h/Videos"), PathBuf::from("/h/Movies")],
+    fn elsewhere_in_the_home_it_starts_with_a_tilde() {
+        let labels = labels();
+        assert_eq!(
+            labels.of(Path::new("/home/ana/Documents/r.pdf")),
+            r#""~/Documents/r.pdf""#
         );
-        let labels = Labels::build(
-            &host,
-            [Path::new("/h/Videos/a/log"), Path::new("/h/Movies/a/log")],
+        assert_eq!(labels.of(Path::new("/home/ana")), r#""~""#);
+    }
+
+    #[test]
+    fn outside_the_home_it_is_absolute_and_a_system_location() {
+        let labels = labels();
+        assert_eq!(labels.of(Path::new("/etc/hosts")), r#""/etc/hosts""#);
+        assert!(labels.is_system(Path::new("/etc/hosts")));
+        assert!(!labels.is_system(Path::new("/home/ana/x")));
+        assert!(!labels.is_system(Path::new("/home/ana")));
+    }
+
+    #[test]
+    fn a_sibling_that_only_shares_a_prefix_is_not_inside() {
+        let labels = labels();
+        assert_eq!(
+            labels.of(Path::new("/home/ana/Downloads2/x")),
+            r#""~/Downloads2/x""#
+        );
+        assert_eq!(
+            labels.of(Path::new("/home/anabel/x")),
+            r#""/home/anabel/x""#
+        );
+    }
+
+    #[test]
+    fn a_folder_called_tilde_inside_the_directory_does_not_read_as_the_home() {
+        let labels = labels();
+        assert_eq!(
+            labels.of(Path::new("/home/ana/Downloads/~/x")),
+            r#""./~/x""#
         );
         assert_ne!(
-            labels.of(Path::new("/h/Videos/a/log")),
-            labels.of(Path::new("/h/Movies/a/log"))
+            labels.of(Path::new("/home/ana/Downloads/~/x")),
+            labels.of(Path::new("/home/ana/x"))
         );
     }
 
     #[test]
-    fn the_most_specific_place_wins() {
+    fn at_the_root_every_location_is_absolute() {
+        let at_root = Labels::new(Path::new("/"), None);
+        assert_eq!(at_root.of(Path::new("/etc/hosts")), r#""/etc/hosts""#);
+        assert_eq!(at_root.of(Path::new("/")), r#"".""#);
         assert_eq!(
-            label(&["/home/ana/Documents/x"]),
-            [r#""x" (Documents)"#],
-            "not Home"
-        );
-        assert_eq!(label(&["/home/ana/notes"]), [r#""notes" (Home)"#]);
-    }
-
-    #[test]
-    fn two_locations_never_share_a_label() {
-        let shown = label(&[
-            "/a/b/log",
-            "/c/d/log",
-            "/home/ana/Documents/x/y/log",
-            "/home/ana/Documents/z/y/log",
-        ]);
-        let unique: BTreeSet<&String> = shown.iter().collect();
-        assert_eq!(unique.len(), shown.len(), "{shown:?}");
-        assert!(
-            shown[0].contains(r#""b""#) && shown[1].contains(r#""d""#),
-            "{shown:?}"
+            Labels::default().of(Path::new("/etc/hosts")),
+            r#""/etc/hosts""#
         );
     }
 
     #[test]
-    fn a_name_that_looks_like_a_place_stays_inside_its_quotes() {
-        let shown = label(&["/etc/report.pdf (Downloads)"]);
-        assert_eq!(shown, [r#""report.pdf (Downloads)" (elsewhere)"#]);
-        let real = label(&["/home/ana/Downloads/report.pdf"]);
-        assert_ne!(shown, real);
+    fn the_current_directory_is_written_without_a_dot() {
+        assert_eq!(labels().cwd_text(), PathBuf::from("~/Downloads"));
+        let at_home = Labels::new(Path::new("/home/ana"), Some(PathBuf::from("/home/ana")));
+        assert_eq!(at_home.cwd_text(), PathBuf::from("~"));
+        assert_eq!(Labels::default().cwd_text(), PathBuf::from("/"));
     }
 
     #[test]
-    fn a_non_utf8_name_does_not_collide_with_another() {
+    fn names_that_are_not_text_stay_different() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
-        let a = PathBuf::from(OsStr::from_bytes(b"/x/a\xff"));
-        let b = PathBuf::from(OsStr::from_bytes(b"/x/a\xfe"));
-        let host = host();
-        let labels = Labels::build(&host, [a.as_path(), b.as_path()]);
-        assert_ne!(labels.of(&a), labels.of(&b));
+        let a = PathBuf::from(OsStr::from_bytes(b"/x/\xff"));
+        let b = PathBuf::from(OsStr::from_bytes(b"/x/\xfe"));
+        assert_ne!(Labels::default().of(&a), Labels::default().of(&b));
     }
 }

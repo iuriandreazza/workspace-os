@@ -164,7 +164,7 @@ Rules about content:
 - **MMU on, instruction and data caches on**, 4 KiB granule, with an identity
   map in `TTBR0_EL1` built by the bootloader: every address in the memory map
   maps to itself, RAM as Normal write-back cacheable and everything else the
-  firmware described as MMIO as Device, read, write and execute. `MAIR_EL1`,
+  firmware described as MMIO as Device, read and write, never execute. `MAIR_EL1`,
   `TCR_EL1` and `SCTLR_EL1` are set consistently with that map and are
   otherwise unspecified. `TTBR1_EL1` is unused.
 - The page tables are in memory of kind BootloaderReclaimable. The kernel must
@@ -303,7 +303,8 @@ on Apple silicon). No decision above changed.
   EL2, which the bootloader leaves itself (it programs EL1's translation
   registers from EL2's and returns to the kernel with `eret`). The
   bootloader keeps the firmware's `MAIR_EL1` and `TCR_EL1` and only installs a
-  new `TTBR0_EL1`, so it never changes the translation setup while it runs on it.
+  new `TTBR0_EL1`, so it never changes `MAIR_EL1` or `TCR_EL1` while it runs on them (K2b-3
+  also turns the MMU off around the `TTBR0_EL1` write).
 - **Load address on VirtualBox.** RAM starts at `0x08000000` and the firmware
   reserves `0x3c170000..0x44000000` on a 1024 MiB machine, which covers
   `0x40200000`. The VM needs 2048 MiB (tested) or more; this is stricter than
@@ -316,11 +317,7 @@ on Apple silicon). No decision above changed.
   `proc-macro2` and `unicode-ident` are MIT or MIT/Apache-2.0 (used under MIT).
   `ucs2` 0.3.3 is MPL-2.0, which lists GPL-2.0 as a permitted secondary licence
   for a combined work; its files stay under the MPL.
-- **Limits of K2b-2, known and kept.** On the EL1 path `TTBR0_EL1` is
-  replaced and the TLB invalidated right after, with no break-before-make: a
-  core that raises a TLB conflict abort for entries of different block sizes
-  would hang before the kernel installs vectors. Not reproducible on QEMU; K4
-  replaces the tables anyway. The identity map covers the first
+- **Limits of K2b-2, known and kept.** The identity map covers the first
   512 GiB (or what `TCR_EL1` translates, if less): Normal memory beyond it
   stops the boot with a message, and a Device above it is unmapped. Firmware
   regions of kinds AcpiReclaimable, AcpiNvs and ReservedMapped are mapped
@@ -330,3 +327,69 @@ on Apple silicon). No decision above changed.
   file buffer is allocated before the kernel's own range, which assumes a
   firmware that allocates top-down (the range failing is reported with the
   firmware's memory map).
+- **Limits found in the K2b-3 review, known and kept.** The page tables map
+  Device memory only below the same 512 GiB (or `TCR_EL1` range) as RAM, and
+  the bootloader does not check the UART's base against it: a PL011 above it
+  hangs the kernel's first console write. `build_memory_map` refuses a raw
+  firmware map of more than 2048 descriptors before merging neighbours (real
+  firmware has a few dozen). A failure after the kernel is loaded gives back the
+  kernel's range only; the file buffer, the device tree copy and the tables stay
+  allocated until the firmware exits, which matters only to a firmware that
+  boots the next entry in the same session. A device tree published but not
+  valid is reported as such; no firmware here provokes it, so no boot tests it.
+
+## Findings of K2b-3
+
+K2b-3 closed what PR 15 left open, and read the processor-level code of the
+bootloader against ARMv8-A.
+
+- **Break-before-make on the EL1 path: fixed.** K2b-2 replaced `TTBR0_EL1`
+  with the MMU on and invalidated the TLB afterwards. The firmware's tables
+  and the bootloader's both identity map the same addresses, possibly with
+  blocks of different sizes, so between the register write and the
+  invalidation the TLB could hold entries of both: a TLB conflict, which the
+  architecture lets abort or return unpredictable translations. The switch
+  now runs with `SCTLR_EL1.M` clear (an identity-mapped window of register
+  operations only, no memory access), writes `TTBR0_EL1`, invalidates the
+  TLB, and turns the MMU back on. The MMU-off window needs no cache
+  maintenance: nothing is read or written in it, and the tables, the boot info
+  and the map were cleaned to the point of coherency before it.
+- **TLB invalidation on the EL2 path: widened.** `tlbi alle1` replaces
+  `tlbi vmalle1`: what EL1's TLB holds out of reset is unknown, and the
+  narrower form only reaches the current VMID. No break is needed there: the
+  EL1 regime is not running when its registers are written.
+- **Read and found right.** Cache maintenance (`dc cvac` over the tables, the
+  boot info and the map, then `dsb ish`; `dc cvau`, `ic ialluis`, `dsb ish`,
+  `isb` over the kernel image); `isb` after each system register write the
+  next instruction depends on; the `TCR_EL2` to `TCR_EL1` conversion (T0SZ,
+  IRGN0, ORGN0, SH0, TG0 copied, the physical address size moved to IPS,
+  `EPD1` set, `TBI`, `HA` and `HD` dropped); the `SCTLR_EL1` reserved-as-one
+  bits and the bits turned on and off; the EL2 trap controls cleared before
+  `eret`.
+- **What no test here can show.** QEMU's TCG models neither caches nor TLBs, so
+  a missing clean, a missing invalidation or a TLB conflict passes every boot
+  of the gate (removing `tlbi vmalle1` or `tlbi alle1` leaves the gate green).
+  Only hardware, or an accelerator that runs on it, validates this code. On
+  Apple silicon `qemu-system-aarch64 -accel hvf -cpu host` boots the image
+  through the EL1 path with the code above (recorded by hand in the pull
+  request; not in the gate, because CI runs on x86_64). HVF cannot start the
+  bootloader at EL2 on that machine ("Nested virtualization not supported"),
+  so the EL2 path has no hardware evidence; KVM and real Arm hardware are not
+  tried.
+- **Failure paths, now in the gate.** A partition without `\KERNEL.ELF`, a
+  kernel linked past the end of RAM and a kernel linked where the firmware
+  keeps its own memory each stop the boot with a message that names the file or
+  the range; an ACPI-only machine is refused and shows the root pointer; a
+  bootloader handing over a boot info of version 2.0 is refused by the kernel
+  on the console the header names. The kernel's checks on the structure are
+  `bootinfo::check`, tested on the host for every refusal.
+- **Not covered, known.** `rsdp` is non-zero in no successful boot: QEMU's
+  EDK2 never publishes a device tree together with ACPI (tried: `acpi=on` with
+  `-dtb`, `acpi=auto`, `gic-version=3`), so the choice of the pointer
+  (`bootinfo::select_rsdp`) and its path through the structure to the kernel's
+  check are tested on the host, and a real non-zero value only reaches the
+  refusal message. The assignment `info.rsdp = tables.rsdp` and the kernel's
+  report of it are covered by no test. The kernel's refusal of a device tree
+  copy that is corrupt (`BadDeviceTree`) lives in the kernel, which the host
+  cannot build, and no boot provokes it.
+

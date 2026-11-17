@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"List the films folder","steps":[
+ {"id":"s1","action":"fs.list","args":{"target":{"path":"~/Downloads/films"}},"depends_on":[],"elevate":false}]}

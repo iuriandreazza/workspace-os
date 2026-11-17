@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Read a file in the current directory","steps":[
+ {"id":"s1","action":"fs.read","args":{"target":{"path":"notes/today.txt"}},"depends_on":[],"elevate":false}]}

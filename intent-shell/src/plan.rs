@@ -1,4 +1,4 @@
-//! Parsing and checking what the model emitted (ADR 0011).
+//! Parsing and checking what the model emitted (ADR 0011, ADR 0018).
 //!
 //! `parse` is the structural half, equivalent to `docs/schemas/action-plan.schema.json`;
 //! `check_rules` is the semantic half, equivalent to `docs/schemas/validate.py`.
@@ -14,11 +14,13 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::action::{Action, RootRule, UserOperation, WriteMode};
-use crate::reference::{Direct, Kind, Place, Spec, Target, is_single_name};
+use crate::reference::{Direct, Kind, Place, Spec, Target, Within, is_path_text, is_single_name};
 
 pub const MAX_STEPS: usize = 16;
-/// Version 2 replaced paths with references (ADR 0014).
-pub const VERSION: u32 = 2;
+/// Version 2 replaced paths with references (ADR 0014). Version 3 adds paths as
+/// one more reference, `under_home` in place of `everywhere`, and `session.cd`
+/// (ADR 0018); a version 2 document is refused like version 1 was.
+pub const VERSION: u32 = 3;
 const MAX_DEPENDENCIES: usize = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -209,9 +211,20 @@ fn structs_are_objects(plan: &Value) -> Result<(), PlanError> {
         let args = step.get("args");
         let step_is_object = step.is_object();
         let args_are_object = args.is_none_or(Value::is_object);
-        let path_is_array = ["target", "from", "to"]
-            .iter()
-            .any(|key| args.and_then(|a| a.get(key)).is_some_and(Value::is_array));
+        let path_is_array = ["target", "from", "to"].iter().any(|key| {
+            let reference = args.and_then(|a| a.get(key));
+            reference.is_some_and(Value::is_array)
+                || reference
+                    .and_then(|r| r.get("in"))
+                    .is_some_and(Value::is_array)
+        });
+        // `in` is a place (a string) or a path (an object with `path`); serde
+        // would also read `{"home": null}` as a place.
+        let within_is_not_a_path = ["target", "from", "to"].iter().any(|key| {
+            args.and_then(|a| a.get(key))
+                .and_then(|r| r.get("in"))
+                .is_some_and(|v| v.is_object() && v.get("path").is_none())
+        });
         // Unit enums are strings; serde also reads `{"create": null}`.
         let enum_is_not_string = ["mode", "operation"].iter().any(|key| {
             args.and_then(|a| a.get(key))
@@ -222,17 +235,17 @@ fn structs_are_objects(plan: &Value) -> Result<(), PlanError> {
                 "steps, args and references must be JSON objects",
             ));
         }
-        // Place, kind and `in` are unit enums inside a reference.
+        // Place and kind are unit enums inside a reference (`in` is a place or a path).
         let reference_enum_is_not_string = ["target", "from", "to"].iter().any(|key| {
-            ["place", "in", "kind"].iter().any(|field| {
+            ["place", "kind"].iter().any(|field| {
                 args.and_then(|a| a.get(key))
                     .and_then(|r| r.get(field))
                     .is_some_and(|v| !v.is_string())
             })
         });
-        if enum_is_not_string || reference_enum_is_not_string {
+        if enum_is_not_string || reference_enum_is_not_string || within_is_not_a_path {
             return Err(PlanError::new(
-                "mode, operation, place, in and kind must be strings",
+                "mode, operation, place and kind must be strings",
             ));
         }
     }
@@ -290,9 +303,33 @@ fn account_name(field: &str, text: &str) -> Result<(), PlanError> {
 #[serde(untagged)]
 enum RawTarget {
     Place(RawPlace),
+    Path(RawPath),
+    UnderHome(RawUnderHome),
     Named(RawNamed),
     New(RawNew),
     FromStep(RawFromStep),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPath {
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawUnderHome {
+    under_home: bool,
+    name: String,
+    kind: Kind,
+}
+
+/// A place is a string and a path is an object.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawWithin {
+    Place(Place),
+    Path(RawPath),
 }
 
 #[derive(Deserialize)]
@@ -306,7 +343,7 @@ struct RawPlace {
 struct RawNamed {
     name: String,
     #[serde(rename = "in")]
-    within: Place,
+    within: RawWithin,
     kind: Kind,
 }
 
@@ -315,7 +352,7 @@ struct RawNamed {
 struct RawNew {
     new_name: String,
     #[serde(rename = "in")]
-    within: Place,
+    within: RawWithin,
 }
 
 #[derive(Deserialize)]
@@ -328,6 +365,8 @@ struct RawFromStep {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Form {
     Place,
+    Path,
+    UnderHome,
     Named,
     New,
     FromStep,
@@ -337,6 +376,8 @@ impl RawTarget {
     fn form(&self) -> Form {
         match self {
             Self::Place(_) => Form::Place,
+            Self::Path(_) => Form::Path,
+            Self::UnderHome(_) => Form::UnderHome,
             Self::Named(_) => Form::Named,
             Self::New(_) => Form::New,
             Self::FromStep(_) => Form::FromStep,
@@ -351,11 +392,22 @@ impl RawTarget {
         }
         Ok(match self {
             Self::Place(p) => Target::Direct(Direct::Place(p.place)),
+            Self::Path(p) => Target::Direct(Direct::Path(path_text(field, p.path)?)),
+            Self::UnderHome(n) => {
+                if !n.under_home {
+                    return Err(PlanError::new("under_home must be true"));
+                }
+                single_name(field, &n.name)?;
+                Target::Direct(Direct::UnderHome {
+                    name: n.name,
+                    kind: n.kind,
+                })
+            }
             Self::Named(n) => {
                 single_name(field, &n.name)?;
                 Target::Direct(Direct::Named {
                     name: n.name,
-                    within: n.within,
+                    within: n.within.convert(field)?,
                     kind: n.kind,
                 })
             }
@@ -363,12 +415,32 @@ impl RawTarget {
                 single_name(field, &n.new_name)?;
                 Target::Direct(Direct::New {
                     name: n.new_name,
-                    within: n.within,
+                    within: n.within.convert(field)?,
                 })
             }
             Self::FromStep(r) => Target::FromStep(StepId::parse(&r.from_step)?),
         })
     }
+}
+
+impl RawWithin {
+    fn convert(self, field: &str) -> Result<Within, PlanError> {
+        Ok(match self {
+            Self::Place(place) => Within::Place(place),
+            Self::Path(p) => Within::Path(path_text(field, p.path)?),
+        })
+    }
+}
+
+/// The structural half of "a path is bounded": the schema bounds it in
+/// characters. That it fits in PATH_MAX bytes and holds no NUL is a rule
+/// (`check_rules`): the grammar the model is constrained by cannot carry a
+/// `pattern` for it (llama-server fails on one), as for names. Where a path
+/// leads, and whether a `..` may leave the root, is for the resolver, which
+/// knows the directory.
+fn path_text(field: &str, path: String) -> Result<String, PlanError> {
+    bounded(field, &path, 1, crate::reference::MAX_PATH_BYTES)?;
+    Ok(path)
 }
 
 /// The structural half of "a name is one entry": the schema bounds the length
@@ -480,7 +552,7 @@ fn convert_step(raw: RawStep) -> Result<Step, PlanError> {
 }
 
 fn convert_spec(name: &str, args: Value) -> Result<Spec, PlanError> {
-    use Form::{FromStep, Named, New, Place};
+    use Form::{FromStep, Named, New, Path, Place, UnderHome};
     let target = |args: Value, allowed: &[Form], build: fn(Target) -> Spec| {
         Ok(build(
             from_value::<TargetArgs>(args)?
@@ -490,19 +562,34 @@ fn convert_spec(name: &str, args: Value) -> Result<Spec, PlanError> {
     };
     let plain = |action| Ok(Spec::Plain(action));
     match name {
-        "fs.list" => target(args, &[Place, Named, FromStep], |target| Spec::List {
-            target,
+        "fs.list" => target(args, &[Place, Path, Named, UnderHome, FromStep], |target| {
+            Spec::List { target }
         }),
-        "fs.stat" => target(args, &[Named, FromStep], |target| Spec::Stat { target }),
-        "fs.read" => target(args, &[Named, FromStep], |target| Spec::Read { target }),
-        "fs.delete" => target(args, &[Named, FromStep], |target| Spec::Delete { target }),
+        "fs.stat" => target(args, &[Path, Named, UnderHome, FromStep], |target| {
+            Spec::Stat { target }
+        }),
+        "fs.read" => target(args, &[Path, Named, UnderHome, FromStep], |target| {
+            Spec::Read { target }
+        }),
+        "fs.delete" => target(args, &[Path, Named, UnderHome, FromStep], |target| {
+            Spec::Delete { target }
+        }),
+        "session.cd" => {
+            let target = from_value::<TargetArgs>(args)?
+                .target
+                .convert("target", &[Place, Path, Named, UnderHome])?;
+            only_folders("target", &target)?;
+            Ok(Spec::Cd { target })
+        }
         "fs.find_largest" => {
             let a: FindLargestArgs = from_value(args)?;
             if !(1..=100).contains(&a.count) {
                 return Err(PlanError::new("count must be 1 to 100"));
             }
             Ok(Spec::FindLargest {
-                target: a.target.convert("target", &[Place, Named])?,
+                target: a
+                    .target
+                    .convert("target", &[Place, Path, Named, UnderHome])?,
                 count: a.count,
             })
         }
@@ -510,21 +597,19 @@ fn convert_spec(name: &str, args: Value) -> Result<Spec, PlanError> {
             let a: WriteArgs = from_value(args)?;
             bounded("content", &a.content, 0, 65536)?;
             Ok(Spec::Write {
-                target: a.target.convert("target", &[Named, New])?,
+                target: a.target.convert("target", &[Path, Named, UnderHome, New])?,
                 content: a.content,
                 mode: a.mode,
             })
         }
         "fs.move" => {
             let a: MoveArgs = from_value(args)?;
-            let to = a.to.convert("to", &[Place, Named, New])?;
-            if let Target::Direct(Direct::Named { kind, .. }) = &to
-                && *kind != Kind::Folder
-            {
-                return Err(PlanError::new("to: a named destination must be a folder"));
-            }
+            let to = a.to.convert("to", &[Place, Path, Named, UnderHome, New])?;
+            only_folders("to", &to)?;
             Ok(Spec::Move {
-                from: a.from.convert("from", &[Named, FromStep])?,
+                from: a
+                    .from
+                    .convert("from", &[Path, Named, UnderHome, FromStep])?,
                 to,
             })
         }
@@ -588,6 +673,18 @@ fn convert_spec(name: &str, args: Value) -> Result<Spec, PlanError> {
     }
 }
 
+/// A name that has to be found and then used as a directory must say it is a folder.
+fn only_folders(field: &str, target: &Target) -> Result<(), PlanError> {
+    if let Target::Direct(Direct::Named { kind, .. } | Direct::UnderHome { kind, .. }) = target
+        && *kind != Kind::Folder
+    {
+        return Err(PlanError::new(format!(
+            "{field}: a named directory must be a folder"
+        )));
+    }
+    Ok(())
+}
+
 /// The rules JSON Schema cannot express (ADR 0011, "How the broker validates").
 pub fn check_rules(plan: &Plan) -> Result<(), PlanError> {
     let mut by_id: HashMap<&StepId, &Step> = HashMap::new();
@@ -620,7 +717,30 @@ pub fn check_rules(plan: &Plan) -> Result<(), PlanError> {
             }
         }
         for (_, target) in step.spec.targets() {
-            if let Target::Direct(Direct::Named { name, .. } | Direct::New { name, .. }) = target
+            if let Target::Direct(
+                Direct::Path(text)
+                | Direct::Named {
+                    within: Within::Path(text),
+                    ..
+                }
+                | Direct::New {
+                    within: Within::Path(text),
+                    ..
+                },
+            ) = target
+                && !is_path_text(text)
+            {
+                return Err(PlanError::new(format!(
+                    "{}: a path has 1 to {} bytes and no NUL",
+                    step.id,
+                    crate::reference::MAX_PATH_BYTES
+                )));
+            }
+            if let Target::Direct(
+                Direct::Named { name, .. }
+                | Direct::New { name, .. }
+                | Direct::UnderHome { name, .. },
+            ) = target
                 && !is_single_name(name)
             {
                 return Err(PlanError::new(format!(
@@ -639,6 +759,13 @@ pub fn check_rules(plan: &Plan) -> Result<(), PlanError> {
                 step.id
             )));
         }
+    }
+    // A plan resolves against the directory it was made under, so a step after
+    // a `cd` would not mean what the person expects.
+    if plan.steps.len() > 1 && plan.steps.iter().any(|s| matches!(s.spec, Spec::Cd { .. })) {
+        return Err(PlanError::new(
+            "session.cd must be a plan of its own: its directory applies to the next request",
+        ));
     }
     if plan.execution_order().len() != plan.steps.len() {
         return Err(PlanError::new("dependency cycle"));
@@ -712,10 +839,10 @@ mod tests {
 
     #[test]
     fn a_plain_string_is_not_a_reference() {
-        let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+        let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
             {"id":"s1","action":"fs.delete","args":{"target":"s1.path"},"depends_on":[],"elevate":false}]}"#;
         assert!(parse(text).is_err());
-        let old = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+        let old = r#"{"kind":"plan","version":3,"summary":"x","steps":[
             {"id":"s1","action":"fs.delete","args":{"path":"/etc/passwd"},"depends_on":[],"elevate":false}]}"#;
         assert!(parse(old).is_err(), "a path field no longer exists");
     }
@@ -731,7 +858,7 @@ mod tests {
     fn each_argument_accepts_only_its_forms_of_reference() {
         let one = |action: &str, args: &str| {
             format!(
-                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"s1","action":"{action}","args":{args},"depends_on":[],"elevate":false}}]}}"#
+                r#"{{"kind":"plan","version":3,"summary":"x","steps":[{{"id":"s1","action":"{action}","args":{args},"depends_on":[],"elevate":false}}]}}"#
             )
         };
         let place = r#"{"place":"downloads"}"#;
@@ -764,7 +891,7 @@ mod tests {
     fn a_name_that_says_where_to_look_is_refused() {
         let one = |name: &str| {
             format!(
-                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"s1","action":"fs.read","args":{{"target":{{"name":{name:?},"in":"home","kind":"file"}}}},"depends_on":[],"elevate":false}}]}}"#
+                r#"{{"kind":"plan","version":3,"summary":"x","steps":[{{"id":"s1","action":"fs.read","args":{{"target":{{"name":{name:?},"in":"home","kind":"file"}}}},"depends_on":[],"elevate":false}}]}}"#
             )
         };
         assert!(parse_checked(&one("report.pdf")).is_ok());
@@ -783,7 +910,7 @@ mod tests {
 
     #[test]
     fn a_null_elevate_is_not_the_same_as_no_elevate() {
-        let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+        let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
             {"id":"s1","action":"user.manage","args":{"operation":"add","user":"bob","group":null},"depends_on":[],"elevate":null}]}"#;
         assert!(parse(text).is_err());
     }
@@ -791,9 +918,9 @@ mod tests {
     #[test]
     fn structs_given_as_arrays_are_refused_like_the_schema_does() {
         for text in [
-            r#"{"kind":"plan","version":2,"summary":"x","steps":[["s1","fs.list",[{"name":"x"}],[],false]]}"#,
-            r#"{"kind":"plan","version":2,"summary":"x","steps":[{"id":"s1","action":"fs.write","args":["x","c","create"],"depends_on":[],"elevate":false}]}"#,
-            r#"{"kind":"plan","version":2,"summary":"x","steps":[
+            r#"{"kind":"plan","version":3,"summary":"x","steps":[["s1","fs.list",[{"name":"x"}],[],false]]}"#,
+            r#"{"kind":"plan","version":3,"summary":"x","steps":[{"id":"s1","action":"fs.write","args":["x","c","create"],"depends_on":[],"elevate":false}]}"#,
+            r#"{"kind":"plan","version":3,"summary":"x","steps":[
                 {"id":"s1","action":"fs.list","args":{"target":{"name":"x","in":"home","kind":"any"}},"depends_on":[],"elevate":false},
                 {"id":"s2","action":"fs.stat","args":{"target":["s1"]},"depends_on":["s1"],"elevate":false}]}"#,
         ] {
@@ -803,7 +930,7 @@ mod tests {
 
     #[test]
     fn an_enum_given_as_an_object_is_refused_like_the_schema_does() {
-        let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+        let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
             {"id":"s1","action":"fs.write","args":{"target":{"new_name":"a","in":"home"},"content":"c","mode":{"create":null}},"depends_on":[],"elevate":false}]}"#;
         assert!(parse(text).is_err());
     }
@@ -816,7 +943,7 @@ mod tests {
             r#"{"name":"a","in":"home","kind":{"file":null}}"#,
         ] {
             let text = format!(
-                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"s1","action":"fs.list","args":{{"target":{target}}},"depends_on":[],"elevate":false}}]}}"#
+                r#"{{"kind":"plan","version":3,"summary":"x","steps":[{{"id":"s1","action":"fs.list","args":{{"target":{target}}},"depends_on":[],"elevate":false}}]}}"#
             );
             assert!(parse(&text).is_err(), "{target}");
         }
@@ -831,7 +958,7 @@ mod tests {
         };
         let plan = |summary: &str, steps: &[String]| {
             format!(
-                r#"{{"kind":"plan","version":2,"summary":"{summary}","steps":[{}]}}"#,
+                r#"{{"kind":"plan","version":3,"summary":"{summary}","steps":[{}]}}"#,
                 steps.join(",")
             )
         };
@@ -861,7 +988,7 @@ mod tests {
     fn step_ids_and_argv_items_follow_their_patterns_and_bounds() {
         let with_id = |id: &str| {
             format!(
-                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"{id}","action":"fs.stat","args":{{"target":{{"name":"x","in":"home","kind":"any"}}}},"depends_on":[],"elevate":false}}]}}"#
+                r#"{{"kind":"plan","version":3,"summary":"x","steps":[{{"id":"{id}","action":"fs.stat","args":{{"target":{{"name":"x","in":"home","kind":"any"}}}},"depends_on":[],"elevate":false}}]}}"#
             )
         };
         for good in ["s1", "s12"] {
@@ -872,7 +999,7 @@ mod tests {
         }
         let run = |arg: &str| {
             format!(
-                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"s1","action":"process.run","args":{{"program":"ls","argv":["{arg}"]}},"depends_on":[],"elevate":false}}]}}"#
+                r#"{{"kind":"plan","version":3,"summary":"x","steps":[{{"id":"s1","action":"process.run","args":{{"program":"ls","argv":["{arg}"]}},"depends_on":[],"elevate":false}}]}}"#
             )
         };
         assert!(parse(&run(&"a".repeat(1024))).is_ok());
@@ -880,7 +1007,7 @@ mod tests {
         let many = |n: usize| {
             let items = vec![r#""a""#; n].join(",");
             format!(
-                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"s1","action":"process.run","args":{{"program":"ls","argv":[{items}]}},"depends_on":[],"elevate":false}}]}}"#
+                r#"{{"kind":"plan","version":3,"summary":"x","steps":[{{"id":"s1","action":"process.run","args":{{"program":"ls","argv":[{items}]}},"depends_on":[],"elevate":false}}]}}"#
             )
         };
         assert!(parse(&many(32)).is_ok());
@@ -891,7 +1018,7 @@ mod tests {
     fn count_content_and_name_bounds_match_the_schema() {
         let one = |action: &str, args: String| {
             format!(
-                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"s1","action":"{action}","args":{args},"depends_on":[],"elevate":false}}]}}"#
+                r#"{{"kind":"plan","version":3,"summary":"x","steps":[{{"id":"s1","action":"{action}","args":{args},"depends_on":[],"elevate":false}}]}}"#
             )
         };
         let find = |count: u32| {
@@ -929,7 +1056,7 @@ mod tests {
     fn a_proposed_soul_text_is_bounded() {
         let soul = |n: usize| {
             format!(
-                r#"{{"kind":"plan","version":2,"summary":"x","steps":[{{"id":"s1","action":"soul.propose_change","args":{{"rationale":"r","new_text":"{}"}},"depends_on":[]}}]}}"#,
+                r#"{{"kind":"plan","version":3,"summary":"x","steps":[{{"id":"s1","action":"soul.propose_change","args":{{"rationale":"r","new_text":"{}"}},"depends_on":[]}}]}}"#,
                 "t".repeat(n)
             )
         };
@@ -940,7 +1067,7 @@ mod tests {
 
     #[test]
     fn elevate_is_required_where_it_is_allowed() {
-        let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+        let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
             {"id":"s1","action":"fs.stat","args":{"target":{"name":"x","in":"home","kind":"any"}},"depends_on":[]}]}"#;
         assert!(parse(text).is_err());
     }
@@ -948,12 +1075,12 @@ mod tests {
     #[test]
     fn text_around_the_json_is_refused() {
         assert!(parse("Sure! {\"kind\":\"clarify\",\"version\":1,\"question\":\"q\"}").is_err());
-        assert!(parse(r#"{"kind":"clarify","version":2,"question":"q"} extra"#).is_err());
+        assert!(parse(r#"{"kind":"clarify","version":3,"question":"q"} extra"#).is_err());
     }
 
     #[test]
     fn a_step_with_no_dependency_order_is_executed_after_its_dependencies() {
-        let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+        let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
             {"id":"s2","action":"fs.stat","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false},
             {"id":"s1","action":"fs.list","args":{"target":{"name":"x","in":"home","kind":"any"}},"depends_on":[],"elevate":false}]}"#;
         let Document::Plan(plan) = parse_checked(text).unwrap() else {

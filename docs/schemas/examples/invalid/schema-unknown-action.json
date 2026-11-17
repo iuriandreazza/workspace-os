@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Format the disk","steps":[
+{"kind":"plan","version":3,"summary":"Format the disk","steps":[
  {"id":"s1","action":"disk.format","args":{"device":"/dev/sda"},"depends_on":[],"elevate":false}]}
