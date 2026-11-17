@@ -389,6 +389,8 @@ struct Alias {
     verb: &'static str,
     /// The path when none is typed; `None` makes the path required.
     default: Option<&'static str>,
+    /// A path that works, for the error that asks for one.
+    example: &'static str,
 }
 
 const ALIASES: &[Alias] = &[
@@ -397,25 +399,43 @@ const ALIASES: &[Alias] = &[
         group: "session",
         verb: "cd",
         default: None,
+        example: "~/Downloads",
     },
     Alias {
         word: "ls",
         group: "fs",
         verb: "list",
         default: Some("."),
+        example: "~/Downloads",
     },
     Alias {
         word: "rm",
         group: "fs",
         verb: "delete",
         default: None,
+        example: "notes/old.txt",
     },
 ];
+
+fn is_reference_flag(word: &Word) -> bool {
+    is_flag(word)
+        && [
+            "in",
+            "in-path",
+            "path",
+            "name",
+            "under-home",
+            "new-name",
+            "from-step",
+        ]
+        .contains(&&word.text[2..])
+}
 
 fn plain_word(text: &str) -> Word {
     Word {
         text: text.to_owned(),
         quoted: false,
+        first_quoted: false,
     }
 }
 
@@ -432,7 +452,7 @@ fn expand_alias(words: &[Word]) -> Result<Vec<Word>, CommandError> {
     let (path, flags) = match rest {
         // A path that starts with `-` is most likely a flag of the shell's own
         // `rm -rf`: refuse it rather than delete a file with that name.
-        [path, ..] if !path.quoted && path.text.starts_with('-') && !is_flag(path) => {
+        [path, ..] if !path.first_quoted && path.text.starts_with('-') && !is_flag(path) => {
             return Err(CommandError::new(format!(
                 "{}: {:?} looks like a flag of the shell's {}; this one takes a path and the flags of `help` \
                  (quote the path, or write ./{}, if it really starts with -)",
@@ -440,12 +460,20 @@ fn expand_alias(words: &[Word]) -> Result<Vec<Word>, CommandError> {
             )));
         }
         [path, flags @ ..] if !is_flag(path) => (path.clone(), flags),
+        // A reference given by flag (`ls --in downloads`) is the person's own, so
+        // the default path is not added next to it.
+        _ if alias.default.is_some() && rest.iter().any(is_reference_flag) => {
+            return Ok(std::iter::once(plain_word(alias.group))
+                .chain(std::iter::once(plain_word(alias.verb)))
+                .chain(rest.iter().cloned())
+                .collect());
+        }
         _ => match alias.default {
             Some(default) => (plain_word(default), rest),
             None => {
                 return Err(CommandError::new(format!(
-                    "{} needs a path, for example `{} notes/today.txt`",
-                    alias.word, alias.word
+                    "{} needs a path, for example `{} {}`",
+                    alias.word, alias.word, alias.example
                 )));
             }
         },
@@ -484,6 +512,9 @@ struct Word {
     text: String,
     /// Whether any part was quoted: a quoted `--x` is a value, not a flag.
     quoted: bool,
+    /// Whether the first character was quoted or escaped, so `-'rf'` (a flag
+    /// to a person used to a shell) is not mistaken for a literal `-rf`.
+    first_quoted: bool,
 }
 
 enum Token {
@@ -504,7 +535,11 @@ fn tokenize(line: &str) -> Result<Vec<Token>, CommandError> {
         let word = current.get_or_insert(Word {
             text: String::new(),
             quoted: false,
+            first_quoted: false,
         });
+        if word.text.is_empty() {
+            word.first_quoted = quoted;
+        }
         word.text.push(c);
         word.quoted |= quoted;
     };
@@ -513,6 +548,7 @@ fn tokenize(line: &str) -> Result<Vec<Token>, CommandError> {
             .get_or_insert(Word {
                 text: String::new(),
                 quoted: false,
+                first_quoted: false,
             })
             .quoted = true;
     };

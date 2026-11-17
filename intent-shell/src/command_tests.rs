@@ -1400,6 +1400,10 @@ fn the_short_words_expand_to_the_mechanical_commands_and_nothing_else() {
         "ls; ls --after s1",
         "fs list --path .; fs list --path . --after s1",
     );
+    // A reference by flag is the person's own: no default path next to it.
+    same("ls --in downloads", "fs list --in downloads");
+    same("ls --name a --under-home", "fs list --name a --under-home");
+    same("ls --path x", "fs list --path x");
     same("rm notes/old.txt", "fs delete --path notes/old.txt");
     same(
         "rm notes/old.txt --elevate",
@@ -1418,7 +1422,7 @@ fn the_short_words_expand_to_the_mechanical_commands_and_nothing_else() {
 #[test]
 fn a_short_word_refuses_what_it_cannot_say_and_never_guesses_a_flag_of_the_shells_own() {
     for (line, mention) in [
-        ("cd", "needs a path"),
+        ("cd", "for example `cd ~/Downloads`"),
         ("rm", "needs a path"),
         ("rm --elevate", "needs a path"),
         ("rm -rf /", "looks like a flag"),
@@ -1426,7 +1430,9 @@ fn a_short_word_refuses_what_it_cannot_say_and_never_guesses_a_flag_of_the_shell
         ("ls -la", "looks like a flag"),
         ("ls a b", "one path only"),
         ("cd a b", "one path only"),
-        ("ls --path x", "twice"),
+        ("ls x --path y", "twice"),
+        ("rm -'rf' x", "looks like a flag"),
+        ("rm -\"f\"", "looks like a flag"),
         ("'rm' x", "without quotes"),
         ("r\\m x", "without quotes"),
         ("tree", "group and an action"),

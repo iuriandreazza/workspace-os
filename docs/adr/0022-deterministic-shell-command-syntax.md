@@ -141,8 +141,11 @@ and `soul propose_change` do not take it, as in the schema.
 (`downloads`), and the person must say which. A lone `--in-path` is refused: to
 name a path, `--path`. `--kind` defaults to `any` where the action only reads;
 it is required for a name (or `--under-home` search) in `fs write`, `fs delete`
-and the source of `fs move`. A `--path` has no kind: it names one item, whatever
-it is, so `fs delete --path` and `rm` need none. `--elevate` is still only a
+and the source of `fs move`. A `--path` has no kind: the person typed the exact
+item and nothing is searched, so there is no match to default; `fs delete --path`
+and `rm` need none. The plan screen still does not say whether that item is a
+file or a folder (`rm films` shows `Delete "films"`), which is the same for a
+model's `{"path":…}` and is a follow-up for the screen, not for this syntax. `--elevate` is still only a
 request.
 
 An action takes only the forms its argument accepts in the schema (a place is
@@ -193,8 +196,9 @@ so the mechanical table stays the only definition of what a command means:
 | `rm PATH` | `fs delete --path PATH` |
 
 After the path come the flags of the long command (`rm x --elevate`, `ls --after
-s1`). The path is one token: a second one is an error, and an unquoted path
-that starts with `-` is refused, because it is far more likely the person
+s1`). A reference given by flag instead (`ls --in downloads`) is used as it is, and
+`ls` adds its default `.` only when none is given. The path is one token: a second one is an error, and an unquoted path
+whose first character is not quoted or escaped and is `-` is refused (so `-'rf'` is too), because it is far more likely the person
 typed a flag of the shell's own `rm -rf` than a file called `-rf`; quote it or
 write `./-rf` for that file.
 
