@@ -581,7 +581,7 @@ impl Walk<'_> {
         }
         let (owner, created) = node.entry.as_ref().map_or_else(Default::default, |e| {
             (
-                e.owner.clone().unwrap_or_default(),
+                crate::action::printable(e.owner.as_deref().unwrap_or_default(), false),
                 e.created.clone().unwrap_or_default(),
             )
         });
@@ -614,6 +614,38 @@ fn split(left: &str, right: &str) -> String {
     }
 }
 
+/// How many terminal cells a character takes: two for the wide scripts and
+/// emoji, one otherwise. An approximation that needs no dependency; a
+/// combining mark counts one, so a line with those may be a cell off.
+fn cells(c: char) -> usize {
+    let wide = matches!(
+        c as u32,
+        0x1100..=0x115F
+            | 0x2E80..=0xA4CF
+            | 0xAC00..=0xD7A3
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE6F
+            | 0xFF00..=0xFF60
+            | 0xFFE0..=0xFFE6
+            | 0x1F300..=0x1FAFF
+            | 0x20000..=0x3FFFD
+    );
+    1 + usize::from(wide)
+}
+
+fn text_cells(text: &str) -> usize {
+    text.chars().map(cells).sum()
+}
+
+fn pad(text: &str, width: usize, right_aligned: bool) -> String {
+    let fill = " ".repeat(width.saturating_sub(text_cells(text)));
+    if right_aligned {
+        format!("{fill}{text}")
+    } else {
+        format!("{text}{fill}")
+    }
+}
+
 /// The metadata columns of a tree, each as wide as its widest cell. A column
 /// nobody has a value for is left out.
 struct Columns {
@@ -625,10 +657,7 @@ struct Columns {
 impl Columns {
     fn of(rows: &[TreeRow]) -> Self {
         let widest = |cell: fn(&TreeRow) -> &str| {
-            rows.iter()
-                .map(|r| cell(r).chars().count())
-                .max()
-                .unwrap_or(0)
+            rows.iter().map(|r| text_cells(cell(r))).max().unwrap_or(0)
         };
         Self {
             size: widest(|r| &r.size),
@@ -639,14 +668,12 @@ impl Columns {
 
     fn right_of(&self, row: &TreeRow) -> String {
         let cells = [
-            format!("{:>1$}", row.size, self.size),
-            format!("{:<1$}", row.owner, self.owner),
-            format!("{:<1$}", row.created, self.created),
+            (pad(&row.size, self.size, true), self.size),
+            (pad(&row.owner, self.owner, false), self.owner),
+            (pad(&row.created, self.created, false), self.created),
         ];
-        let widths = [self.size, self.owner, self.created];
         let shown: Vec<&str> = cells
             .iter()
-            .zip(widths)
             .filter(|(_, width)| *width > 0)
             .map(|(cell, _)| cell.as_str())
             .collect();
@@ -654,7 +681,7 @@ impl Columns {
     }
 }
 
-/// Lay the lines of `text` out for a screen `width` wide: what follows a
+/// Lay the lines of `text` out for a screen `width` cells wide: what follows a
 /// `COLUMN_BREAK` goes to the right edge, and a name too long to leave room
 /// for it is cut with `…`. Lines with no break stay as they are.
 pub fn fit(text: &str, width: usize) -> String {
@@ -666,18 +693,26 @@ pub fn fit(text: &str, width: usize) -> String {
 
 fn fit_line(line: &str, width: usize) -> String {
     const GAP: usize = 2;
-    const SHORTEST_NAME: usize = 12;
     let Some((left, right)) = line.split_once(COLUMN_BREAK) else {
         return line.to_owned();
     };
-    let right_width = right.chars().count();
-    let room = width.saturating_sub(right_width + GAP).max(SHORTEST_NAME);
-    let mut left: String = left.to_owned();
-    if left.chars().count() > room {
-        left = left.chars().take(room - 1).collect();
-        left.push('…');
+    let right_width = text_cells(right);
+    let room = width.saturating_sub(right_width + GAP).max(2);
+    let mut left = left.to_owned();
+    if text_cells(&left) > room {
+        let mut kept = String::new();
+        for c in left.chars() {
+            if text_cells(&kept) + cells(c) >= room {
+                break;
+            }
+            kept.push(c);
+        }
+        kept.push('…');
+        left = kept;
     }
-    let pad = (width.saturating_sub(left.chars().count() + right_width)).max(GAP);
+    let pad = width
+        .saturating_sub(text_cells(&left) + right_width)
+        .max(GAP);
     format!("{left}{}{right}", " ".repeat(pad))
 }
 

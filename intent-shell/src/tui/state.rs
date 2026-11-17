@@ -11,6 +11,8 @@ use super::wrap::{text_width, wrap};
 use crate::action::printable;
 use crate::ports::ChoiceLine;
 
+const TRANSCRIPT_WIDTH: usize = 80;
+
 /// An entry of the history. The text is already safe to print: it comes from
 /// `screen` and `Outcome::render`, which escape what the model and the machine
 /// wrote.
@@ -475,7 +477,8 @@ impl State {
                     out.push('\n');
                 }
                 Block::Outcome(text) => {
-                    out.push_str(text.trim_end());
+                    // A file has no width to lay the columns of a tree out for.
+                    out.push_str(crate::screen::fit(text.trim_end(), TRANSCRIPT_WIDTH).as_str());
                     out.push('\n');
                 }
             }
@@ -1013,5 +1016,14 @@ mod tests {
         state.on_key(press(KeyCode::Enter));
         state.on_event(Event::Outcome("done\n".to_owned()));
         assert_eq!(state.transcript(), "intent> list downloads\ndone\n");
+    }
+
+    #[test]
+    fn the_transcript_lays_the_columns_of_a_tree_out_instead_of_keeping_the_tab() {
+        let mut state = State::new(String::new());
+        state.on_event(Event::Outcome("a.txt\t5 KB\n".to_owned()));
+        let transcript = state.transcript();
+        assert!(!transcript.contains('\t'), "{transcript:?}");
+        assert!(transcript.trim_end().ends_with("5 KB"), "{transcript:?}");
     }
 }

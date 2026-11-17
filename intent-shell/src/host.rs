@@ -148,27 +148,34 @@ impl UnixHost {
 
 /// The name of the user with this id, when the system knows it.
 fn owner_name(uid: u32) -> Option<String> {
-    let mut buffer = vec![0 as libc::c_char; 1024];
-    // SAFETY: an all-zero `passwd` is a valid value for the C call to fill in.
-    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut found: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY: `entry`, `buffer` and `found` are live for the call and
-    // `buffer.len()` is its true size; `getpwuid_r` writes only inside them.
-    let status = unsafe {
-        libc::getpwuid_r(
-            uid,
-            &mut entry,
-            buffer.as_mut_ptr(),
-            buffer.len(),
-            &mut found,
-        )
-    };
-    if status != 0 || found.is_null() {
-        return Some(uid.to_string());
+    // Longer entries ask for a bigger buffer by failing with ERANGE.
+    for size in [1024, 16 * 1024, 256 * 1024] {
+        let mut buffer = vec![0 as libc::c_char; size];
+        // SAFETY: an all-zero `passwd` is a valid value for the C call to fill in.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: `entry`, `buffer` and `found` are live for the call and
+        // `buffer.len()` is its true size; `getpwuid_r` writes only inside them.
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut entry,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if status == libc::ERANGE {
+            continue;
+        }
+        if status != 0 || found.is_null() {
+            break;
+        }
+        // SAFETY: on success `pw_name` points to a NUL-terminated string inside `buffer`.
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+        return Some(name.to_string_lossy().into_owned());
     }
-    // SAFETY: on success `pw_name` points to a NUL-terminated string inside `buffer`.
-    let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
-    Some(name.to_string_lossy().into_owned())
+    Some(uid.to_string())
 }
 
 /// A moment as the person's clock shows it, `2026-11-17 14:30`.

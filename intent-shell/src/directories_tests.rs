@@ -1401,3 +1401,52 @@ fn a_tab_in_what_a_file_holds_does_not_become_a_column_of_the_report() {
     assert!(!shown.contains(screen::COLUMN_BREAK), "{shown:?}");
     assert!(shown.contains("left\\u0009right"), "{shown}");
 }
+
+#[test]
+fn wide_names_are_measured_in_cells_cut_to_fit_and_never_push_the_metadata_off_the_line() {
+    let line = format!("日本語{}5 KB", screen::COLUMN_BREAK);
+    assert_eq!(
+        screen::fit(&line, 20),
+        format!("日本語{}5 KB", " ".repeat(10))
+    );
+    let long = format!("{}{}5 KB", "日".repeat(30), screen::COLUMN_BREAK);
+    let cut = screen::fit(&long, 20);
+    assert!(cut.ends_with("  5 KB") && cut.contains('…'), "{cut}");
+    assert!(
+        cut.chars()
+            .map(|c| if c as u32 > 0x2E80 { 2 } else { 1 })
+            .sum::<usize>()
+            <= 20,
+        "{cut}"
+    );
+}
+
+#[test]
+fn a_screen_too_narrow_for_the_metadata_keeps_the_name_short_and_the_line_whole() {
+    let line = format!(
+        "some-long-name{}5.0 KB  ana   2026-11-17 14:30",
+        screen::COLUMN_BREAK
+    );
+    let shown = screen::fit(&line, 20);
+    assert_eq!(shown.lines().count(), 1);
+    assert!(
+        shown.starts_with("s…") && shown.ends_with("2026-11-17 14:30"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn an_owner_name_with_control_characters_is_escaped() {
+    let mut entry = described(
+        "/h/Downloads/a",
+        1,
+        "evil\u{1b}]0;x\u{7}\ty",
+        "2026-01-01 00:00",
+    );
+    entry.owner = Some("evil\u{1b}[2J\ty".to_owned());
+    let shown = default_tree(&[entry]);
+    assert!(
+        !shown.contains('\u{1b}') && !shown.contains('\t'),
+        "{shown:?}"
+    );
+}
