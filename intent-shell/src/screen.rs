@@ -300,6 +300,8 @@ pub fn question(ambiguity: &Ambiguity, labels: &Labels) -> (String, Vec<ChoiceLi
             size: None,
             readable: true,
             protected: false,
+            owner: None,
+            created: None,
         })
         .collect();
     let options = TreeOptions {
@@ -498,7 +500,8 @@ struct TreeRow {
     label: String,
     left: String,
     size: String,
-    marks: String,
+    owner: String,
+    created: String,
     option: Option<usize>,
 }
 
@@ -573,6 +576,15 @@ impl Walk<'_> {
         if self.marks.root.contains(&node.path) {
             marks.push("ROOT".to_owned());
         }
+        if !marks.is_empty() {
+            name = format!("{name}  {}", marks.join(" · "));
+        }
+        let (owner, created) = node.entry.as_ref().map_or_else(Default::default, |e| {
+            (
+                e.owner.clone().unwrap_or_default(),
+                e.created.clone().unwrap_or_default(),
+            )
+        });
         let size = node
             .entry
             .as_ref()
@@ -583,10 +595,90 @@ impl Walk<'_> {
             label: self.labels.of(&node.path),
             left: format!("{lead}{name}"),
             size,
-            marks: marks.join(" · "),
+            owner,
+            created,
             option: self.candidates.iter().position(|c| *c == node.path),
         }
     }
+}
+
+/// Separates the name of a tree line from its metadata. A name is escaped
+/// before it gets here, so no name can hold it; `fit` turns it into padding.
+pub const COLUMN_BREAK: char = '\t';
+
+fn split(left: &str, right: &str) -> String {
+    if right.is_empty() {
+        left.to_owned()
+    } else {
+        format!("{left}{COLUMN_BREAK}{right}")
+    }
+}
+
+/// The metadata columns of a tree, each as wide as its widest cell. A column
+/// nobody has a value for is left out.
+struct Columns {
+    size: usize,
+    owner: usize,
+    created: usize,
+}
+
+impl Columns {
+    fn of(rows: &[TreeRow]) -> Self {
+        let widest = |cell: fn(&TreeRow) -> &str| {
+            rows.iter()
+                .map(|r| cell(r).chars().count())
+                .max()
+                .unwrap_or(0)
+        };
+        Self {
+            size: widest(|r| &r.size),
+            owner: widest(|r| &r.owner),
+            created: widest(|r| &r.created),
+        }
+    }
+
+    fn right_of(&self, row: &TreeRow) -> String {
+        let cells = [
+            format!("{:>1$}", row.size, self.size),
+            format!("{:<1$}", row.owner, self.owner),
+            format!("{:<1$}", row.created, self.created),
+        ];
+        let widths = [self.size, self.owner, self.created];
+        let shown: Vec<&str> = cells
+            .iter()
+            .zip(widths)
+            .filter(|(_, width)| *width > 0)
+            .map(|(cell, _)| cell.as_str())
+            .collect();
+        shown.join("  ").trim_end().to_owned()
+    }
+}
+
+/// Lay the lines of `text` out for a screen `width` wide: what follows a
+/// `COLUMN_BREAK` goes to the right edge, and a name too long to leave room
+/// for it is cut with `…`. Lines with no break stay as they are.
+pub fn fit(text: &str, width: usize) -> String {
+    text.split('\n')
+        .map(|line| fit_line(line, width))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn fit_line(line: &str, width: usize) -> String {
+    const GAP: usize = 2;
+    const SHORTEST_NAME: usize = 12;
+    let Some((left, right)) = line.split_once(COLUMN_BREAK) else {
+        return line.to_owned();
+    };
+    let right_width = right.chars().count();
+    let room = width.saturating_sub(right_width + GAP).max(SHORTEST_NAME);
+    let mut left: String = left.to_owned();
+    if left.chars().count() > room {
+        left = left.chars().take(room - 1).collect();
+        left.push('…');
+    }
+    let pad = (width.saturating_sub(left.chars().count() + right_width)).max(GAP);
+    format!("{left}{}{right}", " ".repeat(pad))
 }
 
 /// A listing, or paths with their folders around them, as a tree (ADR 0018,
@@ -632,28 +724,9 @@ pub fn tree(
     if walk.hidden > 0 {
         counts.push(format!("{} hidden", walk.hidden));
     }
-    let width = walk
-        .rows
-        .iter()
-        .map(|r| r.left.chars().count())
-        .chain([head.chars().count() + 1])
-        .max()
-        .unwrap_or(0);
-    let size_width = walk
-        .rows
-        .iter()
-        .map(|r| r.size.chars().count())
-        .max()
-        .unwrap_or(0);
+    let columns = Columns::of(&walk.rows);
     let mut lines = vec![ChoiceLine {
-        text: format!(
-            "{:<width$}  {:>size_width$}  {}",
-            format!(" {head}"),
-            "",
-            counts.join(" · ")
-        )
-        .trim_end()
-        .to_owned(),
+        text: split(&format!(" {head}"), &counts.join(" · ")),
         option: None,
         label: String::new(),
     }];
@@ -661,12 +734,7 @@ pub fn tree(
     let cut = total > options.max_lines;
     for row in walk.rows.into_iter().take(options.max_lines) {
         lines.push(ChoiceLine {
-            text: format!(
-                "{:<width$}  {:>size_width$}  {}",
-                row.left, row.size, row.marks
-            )
-            .trim_end()
-            .to_owned(),
+            text: split(&row.left, &columns.right_of(&row)),
             option: row.option,
             label: if row.option.is_some() {
                 row.label

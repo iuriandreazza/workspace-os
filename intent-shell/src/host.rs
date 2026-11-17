@@ -9,6 +9,7 @@ use std::ffi::CString;
 use std::fs;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::action::{Access, Action, is_hidden, quoted_path};
@@ -57,6 +58,12 @@ impl UnixHost {
         TreeEntry {
             size: file_type.is_file().then_some(meta.len()),
             protected: self.is_protected(&path),
+            owner: owner_name(meta.uid()),
+            created: meta
+                .created()
+                .or_else(|_| meta.modified())
+                .ok()
+                .and_then(local_time),
             kind,
             readable,
             path,
@@ -137,6 +144,51 @@ impl UnixHost {
     pub fn from_environment() -> Self {
         Self::new(std::env::var_os("HOME").map(PathBuf::from))
     }
+}
+
+/// The name of the user with this id, when the system knows it.
+fn owner_name(uid: u32) -> Option<String> {
+    let mut buffer = vec![0 as libc::c_char; 1024];
+    // SAFETY: an all-zero `passwd` is a valid value for the C call to fill in.
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: `entry`, `buffer` and `found` are live for the call and
+    // `buffer.len()` is its true size; `getpwuid_r` writes only inside them.
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    if status != 0 || found.is_null() {
+        return Some(uid.to_string());
+    }
+    // SAFETY: on success `pw_name` points to a NUL-terminated string inside `buffer`.
+    let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+    Some(name.to_string_lossy().into_owned())
+}
+
+/// A moment as the person's clock shows it, `2026-11-17 14:30`.
+fn local_time(moment: std::time::SystemTime) -> Option<String> {
+    let seconds = moment.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let seconds = libc::time_t::try_from(seconds).ok()?;
+    // SAFETY: an all-zero `tm` is a valid value for the C call to fill in.
+    let mut broken: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers are live for the call; `localtime_r` is thread-safe.
+    if unsafe { libc::localtime_r(&seconds, &mut broken) }.is_null() {
+        return None;
+    }
+    Some(format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        broken.tm_year + 1900,
+        broken.tm_mon + 1,
+        broken.tm_mday,
+        broken.tm_hour,
+        broken.tm_min
+    ))
 }
 
 fn permitted(path: &Path, mode: libc::c_int) -> bool {
@@ -1052,6 +1104,26 @@ mod tests {
         assert_eq!(UnixHost::new(None).home(), None);
         fs::remove_file(dir.with_extension("alias")).unwrap();
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_listing_carries_the_owner_and_the_creation_time_of_each_entry() {
+        let dir = temp_dir("owner");
+        fs::write(dir.join("notes.txt"), "hello").unwrap();
+        let output = host().execute(&Action::List { path: dir.clone() }).unwrap();
+        let entry = &output.tree[0];
+        let owner = entry.owner.as_deref().unwrap();
+        assert_eq!(
+            owner,
+            owner_name(fs::metadata(&dir).unwrap().uid()).unwrap()
+        );
+        let created = entry.created.as_deref().unwrap();
+        // `2026-11-17 14:30`: digits and separators, where only the time is known.
+        let shape: String = created
+            .chars()
+            .map(|c| if c.is_ascii_digit() { '9' } else { c })
+            .collect();
+        assert_eq!(shape, "9999-99-99 99:99", "{created}");
     }
 
     #[test]

@@ -718,6 +718,8 @@ fn entry(path: &str, kind: EntryKind, size: Option<u64>) -> TreeEntry {
         size,
         readable: true,
         protected: false,
+        owner: None,
+        created: None,
     }
 }
 
@@ -736,7 +738,7 @@ fn labels() -> Labels {
 fn drawn(root: &str, entries: &[TreeEntry], marks: &TreeMarks, options: &TreeOptions) -> String {
     screen::tree(Path::new(root), entries, &[], &labels(), marks, options)
         .into_iter()
-        .map(|l| l.text)
+        .map(|l| screen::fit(&l.text, WIDTH))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -750,6 +752,8 @@ fn default_tree(entries: &[TreeEntry]) -> String {
     )
 }
 
+const WIDTH: usize = 40;
+
 #[test]
 fn the_tree_lists_folders_first_then_names_ignoring_case_with_sizes_right_aligned() {
     let shown = default_tree(&[
@@ -760,12 +764,12 @@ fn the_tree_lists_folders_first_then_names_ignoring_case_with_sizes_right_aligne
         folder("/h/Downloads/alpha"),
     ]);
     let expected = [
-        " ~/Downloads               2 folders",
+        " ~/Downloads                   2 folders",
         " ├─ alpha/",
         " ├─ Zeta/",
-        " │  └─ disk.img  900.0 MB",
-        " ├─ A.txt            12 B",
-        " └─ b.txt          5.0 KB",
+        " │  └─ disk.img                 900.0 MB",
+        " ├─ A.txt                           12 B",
+        " └─ b.txt                         5.0 KB",
     ]
     .join("\n");
     assert_eq!(shown, expected, "\n{shown}");
@@ -998,7 +1002,8 @@ fn an_ambiguity_shows_the_candidates_in_their_parent_context_and_only_they_are_s
     );
     let run = ask(&host, &mut session_in("/home/ana"), &text);
     let (_, lines) = &run.answers.questions[0];
-    let shown: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+    let fitted: Vec<String> = lines.iter().map(|l| screen::fit(&l.text, 30)).collect();
+    let shown: Vec<&str> = fitted.iter().map(String::as_str).collect();
     assert_eq!(
         shown,
         [
@@ -1019,7 +1024,7 @@ fn a_listing_prints_as_a_tree_and_a_large_result_marks_what_a_plan_asks_about() 
     let host = home();
     let text = plan(&[step("s1", "fs.list", &path_args("~/Downloads"), "false")]);
     let run = ask(&host, &mut session_in("/home/ana"), &text);
-    let shown = run.outcome.render();
+    let shown = screen::fit(&run.outcome.render(), 60);
     assert!(shown.contains(" Downloads  "), "{shown}");
     assert!(
         shown.contains("├─ films/") || shown.contains("└─ films/"),
@@ -1319,4 +1324,80 @@ fn a_path_through_a_file_is_not_found() {
         reviewed(&run.outcome).steps[0].blocked,
         Some(Refusal::Unresolved(ResolveError::NotFound(_)))
     ));
+}
+
+fn described(path: &str, size: u64, owner: &str, created: &str) -> TreeEntry {
+    TreeEntry {
+        owner: Some(owner.to_owned()),
+        created: Some(created.to_owned()),
+        ..file(path, size)
+    }
+}
+
+#[test]
+fn owner_and_date_follow_the_size_in_columns_flush_with_the_right_edge() {
+    let entries = [
+        described("/h/Downloads/a.txt", 12, "ana", "2026-11-17 14:30"),
+        described(
+            "/h/Downloads/long-name.txt",
+            5_000,
+            "root",
+            "2025-01-02 03:04",
+        ),
+    ];
+    let shown: Vec<String> = screen::tree(
+        Path::new("/h/Downloads"),
+        &entries,
+        &[],
+        &labels(),
+        &TreeMarks::default(),
+        &TreeOptions::default(),
+    )
+    .into_iter()
+    .map(|l| screen::fit(&l.text, 60))
+    .collect();
+    assert_eq!(
+        shown,
+        [
+            " ~/Downloads                                       0 folders".to_owned(),
+            " ├─ a.txt                       12 B  ana   2026-11-17 14:30".to_owned(),
+            " └─ long-name.txt             5.0 KB  root  2025-01-02 03:04".to_owned(),
+        ],
+        "{shown:#?}"
+    );
+}
+
+#[test]
+fn a_wider_screen_moves_the_metadata_to_its_edge_and_a_name_that_does_not_fit_is_cut() {
+    let line = format!("name{}5 KB  ana", screen::COLUMN_BREAK);
+    assert_eq!(
+        screen::fit(&line, 30),
+        format!("name{}5 KB  ana", " ".repeat(17))
+    );
+    let long = format!("{}{}5 KB", "x".repeat(50), screen::COLUMN_BREAK);
+    let cut = screen::fit(&long, 30);
+    assert_eq!(cut.chars().count(), 30, "{cut}");
+    assert!(cut.contains('…') && cut.ends_with("  5 KB"), "{cut}");
+    assert_eq!(screen::fit("no columns here", 5), "no columns here");
+}
+
+#[test]
+fn text_that_a_file_or_a_note_brought_cannot_pass_for_a_column() {
+    let line = "a\tb";
+    let shown = screen::fit(&crate::action::printable(line, false), 40);
+    assert_eq!(shown, "a\\u0009b");
+}
+
+#[test]
+fn a_tab_in_what_a_file_holds_does_not_become_a_column_of_the_report() {
+    let mut host = home();
+    host.content = Some("left\tright".to_owned());
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.read", &path_args("~/Documents/report.pdf")),
+    );
+    let shown = run.outcome.render();
+    assert!(!shown.contains(screen::COLUMN_BREAK), "{shown:?}");
+    assert!(shown.contains("left\\u0009right"), "{shown}");
 }

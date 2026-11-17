@@ -444,7 +444,11 @@ impl State {
             if !lines.is_empty() {
                 lines.push((Kind::Note, String::new()));
             }
-            lines.extend(wrap(&text, width).into_iter().map(|line| (kind, line)));
+            lines.extend(
+                wrap(&crate::screen::fit(&text, width), width)
+                    .into_iter()
+                    .map(|line| (kind, line)),
+            );
         }
         lines
     }

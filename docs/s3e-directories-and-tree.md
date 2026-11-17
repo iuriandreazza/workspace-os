@@ -245,3 +245,35 @@ attempts failed for the reasons under "Findings".
   "name a path to open it" until the flag exists.
 - ADR 0018 says "use a path or `--depth`" in the tree example; `--depth` does
   not exist until S5, so the text says only the path.
+
+## Full-width layout (S3f)
+
+The tree used the width of its longest name. It now uses the width of the
+terminal: the name stays on the left (with its marks) and the metadata goes to
+the right edge, in columns, as `ls -l` does.
+
+```text
+ ~/Downloads                                           3 folders · 2 hidden
+ ├─ films/                                                  ana   2026-11-10 09:12
+ │  └─ old.mkv  ⚠ asks                          1.9 GB  ana   2026-11-02 18:40
+ └─ notes.txt                                      5 KB  ana   2026-11-17 14:30
+```
+
+- `screen::tree` still returns the same lines for every adapter. Each line is
+  `name`, a break character (`COLUMN_BREAK`, a tab) and the metadata; the
+  adapter lays it out with `screen::fit(text, width)`, which pads up to the
+  right edge and cuts a name that leaves no room with `…`. `--plain` reads the
+  width of the terminal (`TIOCGWINSZ`, 80 when it is not one); the interface
+  uses the width of its history and of the choice list.
+- `TreeEntry` gained `owner` and `created`. `UnixHost` fills them: the name of
+  the owner (`getpwuid_r`, the number when the system has no name) and the
+  creation time on the person's clock (`localtime_r`), falling back to the
+  modification time where the filesystem keeps no birth time.
+- The break is a tab because a name is escaped before it gets to the tree and
+  cannot hold one. Text a file or a note brought is escaped in the report
+  (`session.rs`), so it cannot pass for a column either.
+
+Limits: the candidates of an ambiguity choice and a largest-files ranking carry
+no owner or date yet (they come from paths and sizes, not from a listing), so
+they show the size only; a name in a wide script (CJK) counts one column per
+character, so its line may be off by some columns.
