@@ -774,7 +774,12 @@ fn fit_line(line: &str, width: usize, cell: fn(char) -> usize) -> String {
     {
         cells.pop();
     }
-    let mut cells: Vec<String> = cells.iter().map(|c| (*c).to_owned()).collect();
+    let alone = cells.len() == 1;
+    // Padding is not part of a mark: with nothing after it, it only costs room.
+    let mut cells: Vec<String> = cells
+        .iter()
+        .map(|c| if alone { c.trim_end() } else { c }.to_owned())
+        .collect();
     // The name keeps a readable minimum; a mark too long for the rest is cut
     // from its front, so the end of it (`⚠ asks`, `ROOT`) stays.
     let min_name = left_width.min(MIN_NAME);
@@ -826,7 +831,19 @@ fn fit_line(line: &str, width: usize, cell: fn(char) -> usize) -> String {
         return left;
     }
     let fill = width.saturating_sub(measure(&left) + right_width).max(GAP);
-    format!("{left}{}{right}", " ".repeat(fill))
+    let out = format!("{left}{}{right}", " ".repeat(fill));
+    // So narrow that nothing fits whole: what is left is cut at the edge.
+    if measure(&out) > width && width <= MIN_NAME {
+        let mut kept = String::new();
+        for c in out.chars() {
+            if measure(&kept) + cell(c) > width {
+                break;
+            }
+            kept.push(c);
+        }
+        return kept;
+    }
+    out
 }
 
 /// The width a text needs to keep every tree line whole, with its cells one

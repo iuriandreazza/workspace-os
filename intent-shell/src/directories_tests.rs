@@ -1526,3 +1526,35 @@ fn two_names_that_differ_at_the_end_are_still_told_apart_when_cut() {
     assert_ne!(a, b, "{a} / {b}");
     assert!(a.contains("3.pdf") && b.contains("4.pdf"), "{a} / {b}");
 }
+
+#[test]
+fn a_mark_with_the_padding_of_a_wider_one_keeps_its_text_when_cut() {
+    let brk = screen::COLUMN_BREAK;
+    let line = format!(" └─ a-long-enough-name.txt{brk}ROOT         {brk}5 KB{brk}ana");
+    for width in [16, 20, 24] {
+        let shown = screen::fit(&line, width);
+        assert!(shown.contains("ROOT"), "{width}: {shown:?}");
+    }
+}
+
+#[test]
+fn a_fitted_line_is_never_wider_than_the_screen() {
+    let brk = screen::COLUMN_BREAK;
+    let lines = [
+        format!(
+            " └─ a-long-enough-name.txt{brk}⚠ asks · ROOT{brk}5 KB{brk}ana{brk}2026-11-17 14:30"
+        ),
+        format!("名前名前名前{brk}ROOT{brk}5 KB"),
+        format!("head{brk}12 folders · 3 hidden"),
+    ];
+    for line in &lines {
+        for width in 1..=100 {
+            let shown = screen::fit(line, width);
+            let cells: usize = shown
+                .chars()
+                .map(|c| if c as u32 > 0x2E80 { 2 } else { 1 })
+                .sum();
+            assert!(cells <= width, "{width}: {shown:?}");
+        }
+    }
+}
