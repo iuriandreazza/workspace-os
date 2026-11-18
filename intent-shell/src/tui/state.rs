@@ -463,7 +463,14 @@ impl State {
             if !lines.is_empty() {
                 lines.push((Kind::Note, String::new()));
             }
-            lines.extend(wrap(&text, width).into_iter().map(|line| (kind, line)));
+            lines.extend(
+                wrap(
+                    &crate::screen::fit_with(&text, width, super::wrap::cell_width),
+                    width,
+                )
+                .into_iter()
+                .map(|line| (kind, line)),
+            );
         }
         lines
     }
@@ -490,7 +497,14 @@ impl State {
                     out.push('\n');
                 }
                 Block::Outcome(text) => {
-                    out.push_str(text.trim_end());
+                    // A file has no width to lay the columns of a tree out for.
+                    out.push_str(
+                        {
+                            let text = text.trim_end();
+                            crate::screen::fit(text, crate::screen::natural_width(text))
+                        }
+                        .as_str(),
+                    );
                     out.push('\n');
                 }
             }
@@ -1059,5 +1073,14 @@ mod tests {
             .blocks
             .push(Block::Request("fs list --in home".to_owned()));
         assert_eq!(commands.transcript(), "command> fs list --in home\n");
+    }
+
+    #[test]
+    fn the_transcript_lays_the_columns_of_a_tree_out_instead_of_keeping_the_tab() {
+        let mut state = State::new(String::new());
+        state.on_event(Event::Outcome("a.txt\t5 KB\n".to_owned()));
+        let transcript = state.transcript();
+        assert!(!transcript.contains('\t'), "{transcript:?}");
+        assert!(transcript.trim_end().ends_with("5 KB"), "{transcript:?}");
     }
 }

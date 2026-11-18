@@ -53,7 +53,9 @@ fn a_typed_command_runs_through_the_broker_with_no_model() {
     assert!(out.contains("model  \"none (commands only)\""), "{out}");
     assert!(out.contains("command ~> "), "{out}");
     assert!(out.contains("Typed commands:"), "{out}");
-    assert!(out.contains("└─ big.iso  3.0 KB"), "{out}");
+    // The column widths of the tree belong to the screen (S3f); the test only needs the item and its size.
+    let item = out.lines().find(|l| l.contains("└─ big.iso"));
+    assert!(item.is_some_and(|l| l.contains("3.0 KB")), "{out}");
     assert!(!out.contains("model could not be reached"), "{out}");
     assert!(log.contains("\"event\":\"command\""), "{log}");
     assert!(

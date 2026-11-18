@@ -62,7 +62,8 @@ pub extern "C" fn kernel_main(
             klog!(
                 Ok,
                 console,
-                "entry: bootloader, boot info {version_major}.{version_minor}, mode {boot_mode}, {map_entries} memory map entries"
+                "entry: bootloader, boot info {version_major}.{version_minor}, mode {boot_mode} ({}), {map_entries} memory map entries",
+                bootinfo::boot_mode_name(boot_mode)
             );
             klog!(
                 Info,

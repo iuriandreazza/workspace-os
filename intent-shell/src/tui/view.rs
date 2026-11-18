@@ -87,9 +87,13 @@ fn option_lines(
         } else {
             Style::new()
         };
-        for (row, text) in wrap(&choice.text, width.saturating_sub(2))
-            .into_iter()
-            .enumerate()
+        let room_for_text = width.saturating_sub(2);
+        for (row, text) in wrap(
+            &crate::screen::fit_choice(&choice.text, room_for_text, super::wrap::cell_width),
+            room_for_text,
+        )
+        .into_iter()
+        .enumerate()
         {
             let marker = if is_selected && row == 0 {
                 "▸ "
