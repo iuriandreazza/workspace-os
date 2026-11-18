@@ -1125,7 +1125,13 @@ mod tests {
             .arg("-un")
             .output()
             .unwrap();
-        assert_eq!(owner, String::from_utf8_lossy(&expected.stdout).trim());
+        let expected = String::from_utf8_lossy(&expected.stdout);
+        // A uid with no name (a container) is shown as its number.
+        let expected = match expected.trim() {
+            "" => fs::metadata(&dir).unwrap().uid().to_string(),
+            name => name.to_owned(),
+        };
+        assert_eq!(owner, expected);
         let created = entry.created.as_deref().unwrap();
         // `2026-11-17 14:30`: digits and separators, where only the time is known.
         let shape: String = created

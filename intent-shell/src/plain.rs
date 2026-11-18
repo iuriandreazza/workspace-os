@@ -42,11 +42,11 @@ fn is_details(answer: &str) -> bool {
     matches!(answer.trim(), "d" | "D" | "details")
 }
 
-/// The tree of a choice with a number on each candidate, and none on the
-/// context around it.
 /// What the number takes in front of a line: `   NN. `.
 const NUMBER_COLUMN: usize = 7;
 
+/// The tree of a choice with a number on each candidate, and none on the
+/// context around it.
 fn numbered(lines: &[ChoiceLine], width: usize) -> Vec<String> {
     lines
         .iter()
