@@ -1,9 +1,9 @@
 ---
 title: "ADR 0022: Command syntax of the deterministic shell"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-16
-updated: 2026-11-17
+updated: 2026-11-18
 tags: [shell, commands, broker, recovery, no-model]
 ---
 
