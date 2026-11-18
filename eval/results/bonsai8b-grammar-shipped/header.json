@@ -10,7 +10,7 @@
  "server_binary_sha256": "eccf58234f96fc74ac6567f2ad9b7e78ae947e1f58e05d9e6aa77fb1340e5c4f",
  "chat_template_sha256": "30a75d10e60b57e2f260420163dd59720dacf9f63b9a8de070d65dd80a7b30f7",
  "jsonschema_version": "4.26.0",
- "server_flags": "llama-server -m /home/iuri/.lmstudio/models/prism-ml/Bonsai-8B-gguf/Bonsai-8B-Q1_0.gguf -c 8192 --parallel 1 --port 8199 --jinja -ngl 99",
+ "server_flags": "llama-server -m Bonsai-8B-Q1_0.gguf -c 8192 --parallel 1 --port 8199 --jinja -ngl 99",
  "model_file": "Bonsai-8B-Q1_0.gguf",
  "model_sha256": "284a335aa3fb2ced3b1b01fcb40b08aa783e3b70832767f0dd2e3fdfa134bd54",
  "system_prompt_sha256": "37d4d39cf0eadc41a8444d1bf4692431a720974b39425ff3e31d080905e5d2a3",

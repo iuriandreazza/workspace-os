@@ -371,7 +371,7 @@ def table(run_directories, intents_path):
         retried = sum(1 for r in rows.values() if with_retry(r) == 3)
         warning = "" if header.get("intents_sha256") == current else " (set edited since the run)"
         if summary["n"] != len(intents) or summary["n"] != header["intents"]:
-            warning += f" (INCOMPLETE: {summary['n']} of {len(intents)})"
+            warning += f" (INCOMPLETE: {summary['n']} scored, {header['intents']} run, {len(intents)} in the set)"
         nested = sum(1 for r in rows.values() if any("nests without end" in e for e in r.get("errors", [])))
         if nested:
             warning += f" (answers nested without end, counted as invalid: {nested})"
@@ -412,7 +412,10 @@ def complete(directory, intents_path, model_file=None):
     from the model file asked for when one is named, and no request failed. A run
     with an appended prompt (`--prompt-extra`) is not compared on the prompt."""
     intents = load_intents(intents_path)
-    header, rows = read_run(directory, intents)
+    try:
+        header, rows = read_run(directory, intents)
+    except (OSError, ValueError, KeyError):  # a run killed in the middle of a write
+        return False
     same_set = header.get("intents_sha256") == hashlib.sha256(Path(intents_path).read_bytes()).hexdigest()
     now = expected_inputs(header)
     same_inputs = (

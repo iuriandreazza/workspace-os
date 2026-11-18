@@ -187,8 +187,8 @@ The rule was committed on the first version of the set (schema version 2, 68
 then 67 intents) and edited four times since: the heading names the commit;
 "7 intents of 68 (about 10 percentage points)" is now 7 intents (at 89
 intents 10 points would be about 9, and every margin reported here clears
-that); two sentences about repeatability and about
-speed on the target hardware were dropped. The numbers it asks for did not
+that); a sentence about repeatability and a clause
+about speed on the target hardware were dropped. The numbers it asks for did not
 change. The rule says nothing about whether thinking is part of a model's
 configuration, so the report reads it both ways.
 
@@ -461,17 +461,19 @@ follow-up.
   plan elevates only the delete. Whether the prompt should say so, or the
   broker should treat a read-only search for an elevated request differently,
   is for the owners of ADR 0007 and ADR 0011 (follow-up).
-- **No place: `under_home` was used once.** The prompt says to use it when the
+- **No place: `under_home` was used twice.** The prompt says to use it when the
   person does not say where. Over the five intents that name an item and no
   place (`read-no-place`, `delete-no-place`, `path-stat-under-home`,
   `cd-under-home`, `elevate-read`) and the 17 runs (85 answers) a model used it
-  once (Bonsai 8B tools-derived, for `elevate-read`) and no model asked. For
+  twice (Bonsai 8B tools-derived for `elevate-read`; Bonsai 2 9B tools at
+  temperature 0.7 for `delete-no-place`) and no model asked. For
   `read-no-place`, `delete-no-place` and `path-stat-under-home` the 9B, the 27B
   and Gemma write the item in the home place (`"in":"home"`), or as a path
   (`todo.txt`, which for a person standing at home is the same file); Bonsai 8B
-  constrained answers with unrelated paths (a delete of `~/Music/jazz` for
-  `budget.xlsx`, a search of the downloads for `backup.tar`). The set accepts only what the prompt
-  tells the model to do, so these are counted wrong; whether `"in":"home"`
+  constrained answers with unrelated targets (a delete of `~/Music/jazz` for
+  `budget.xlsx`, the largest file of the downloads for `backup.tar`) or a listing
+  instead of a read (`/home/user/todo.txt`). The set accepts only what the
+  prompt tells the model to do, so these are counted wrong; whether `"in":"home"`
   searches below the home as `under_home` does was not tested here.
 - **Asking, refusing and what it does instead.** Bonsai 8B constrained gets 0 of
   the 10 `clarify` and `scope` intents; the 9B with thinking off gets 0 and with
@@ -544,7 +546,9 @@ Applying the rule fixed before measuring:
    12 against 12 and a median of 1.07 s. The rule does not say whether thinking
    is part of a model's configuration, and both readings give the same answer.
    The margin is three times the 7 asked for, or more. The same model moves by a
-   net 6 intents between sampler settings (with 18 intents changing places), and
+   net 5 intents between sampler settings in the constrained mode (40 at
+   temperature 0, 35 at 0.7, with 23 intents changing places) and a net 1 in
+   tools mode (52 and 51), and
    the paired comparison with the 8B is 28 won and 7 lost with thinking off, 28
    and 5 as shipped. What is not met is the rule's precondition: a candidate
    must leave room for its context on the 8 GB M1, which nothing here checked.
@@ -613,7 +617,7 @@ Each needs a roadmap row, which this item does not add.
 - **Prompt fixes, tested against this set** with `run_eval.py --prompt-extra`.
   The prompt already states two rules that the models break: `session.cd` is a
   plan of its own (the commonest refusal of the constrained mode) and
-  `under_home` is for a request that gives no place (used once in 85 answers); a
+  `under_home` is for a request that gives no place (used twice in 85 answers); a
   stronger wording or an example is what to try. What version 1 does not offer
   (network, packages) is not said at all. S8 is also touching the prompt.
 - **A root delete through a search** ("delete the largest file as
@@ -690,8 +694,9 @@ lists under the rounds name the ones that changed something, not every finding.
 | 7 | 12 (code and set), 24 (report) | Below |
 | 8 | 7 (code and set), 12 (report) | Below |
 | 9 | 8 (code and set), 11 (report) | Below |
+| 10 | 5 (code and set), 5 (report) | Below |
 
-Rounds 7 to 9 were run on the version 3 work, each by two reviewers: one on the
+Rounds 7 to 10 were run on the version 3 work, each by two reviewers: one on the
 code and the set, one that recomputed the report from the stored answers. The
 counts include the findings that were accepted without a change.
 
@@ -775,7 +780,27 @@ parenthesis of the rule edit; the sampler runs omitted from the effects of
 round 8; the counts of this section; and a headline that read as if the model
 had already changed. All corrected.
 
-Round 10 is recorded here when it is done.
+**Round 10, code and set, fixed:** a test of the tools hash in the resume gate
+passed with the hash deleted, because its header had the wrong prompt (the test
+now builds a coherent header); a run cut short in the middle of a line made
+`complete` crash instead of answering "not complete"; the table said "INCOMPLETE:
+85 of 85" for a run made on a larger set (now says what was scored, run and in
+the set); `run-matrix.sh` recorded the model file's full path in the header, so
+the 17 committed `header.json` files carried the owner's home directory: the
+script now records the file name, and the `server_flags` field of the 17 headers
+was edited to the file name (nothing else in them or in the answers was touched);
+a stale line of the script's usage text. **Accepted:** the resume gate does not
+compare the temperature, the sampler, the token limit, `retry`, `no_thinking`,
+the context size, the model file's hash or that a label's mode is the one it
+names (an edit of those settings in `run-matrix.sh` needs the old runs removed by
+hand); the file name is compared, not the hash.
+
+**Round 10, report:** the sampler churn was given as "18" and a net of 6 (it is
+a net of 5 and 23 in the constrained mode and a net of 1 in tools mode);
+`under_home` was used twice, not once; two of Bonsai 8B's answers to the "no
+place" requests were described wrongly; the rule edit was a sentence and a
+clause. All corrected. The changes made after this round were not reviewed by a
+further round.
 
 ## Not verified, and limits
 

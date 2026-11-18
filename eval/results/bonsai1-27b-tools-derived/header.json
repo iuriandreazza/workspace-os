@@ -10,7 +10,7 @@
  "server_binary_sha256": "eccf58234f96fc74ac6567f2ad9b7e78ae947e1f58e05d9e6aa77fb1340e5c4f",
  "chat_template_sha256": "e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259",
  "jsonschema_version": "4.26.0",
- "server_flags": "llama-server -m /home/iuri/.lmstudio/models/lmstudio-community/Bonsai-27B-GGUF/Bonsai-27B-Q1_0.gguf -c 8192 --parallel 1 --port 8199 --jinja -ngl 99",
+ "server_flags": "llama-server -m Bonsai-27B-Q1_0.gguf -c 8192 --parallel 1 --port 8199 --jinja -ngl 99",
  "model_file": "Bonsai-27B-Q1_0.gguf",
  "model_sha256": "71d6871836886267f39f1ac69b1b1dd8a783970708d7a189960112ed02978901",
  "system_prompt_sha256": "eb6a03b37d2decef093156fac251236c4923b643d7123f589fb68a6209cc703a",

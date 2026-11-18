@@ -9,7 +9,8 @@
 #   ./eval/run-matrix.sh [SECTION...]
 #
 # Sections (default: all but `thinking`): bonsai8b bonsai2 bonsai27b gemma
-# sampling thinking. A model whose file variable is unset is skipped. It needs
+# sampling thinking. With no section named, a model whose file variable is unset
+# is skipped; a section named on the command line needs its variable. It needs
 # `uv` (for the jsonschema package) and `curl`.
 set -euo pipefail
 
@@ -40,7 +41,8 @@ fi
 serve() {
     stop_server
     local flags=(-m "$1" -c "$2" --parallel 1 --port "$port" --jinja -ngl 99)
-    server_flags="llama-server ${flags[*]}"
+    # The file name only: the header is committed evidence and the directory is the owner's.
+    server_flags="llama-server -m $(basename "$1") ${flags[*]:2}"
     "$LLAMA_SERVER" "${flags[@]}" >"$server_log" 2>&1 &
     server_pid=$!
     local waited=0

@@ -10,7 +10,7 @@
  "server_binary_sha256": "eccf58234f96fc74ac6567f2ad9b7e78ae947e1f58e05d9e6aa77fb1340e5c4f",
  "chat_template_sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
  "jsonschema_version": "4.26.0",
- "server_flags": "llama-server -m /home/iuri/models/bonsai-2-9b/Ternary-Bonsai-2-9B-Q2_0.gguf -c 8192 --parallel 1 --port 8199 --jinja -ngl 99",
+ "server_flags": "llama-server -m Ternary-Bonsai-2-9B-Q2_0.gguf -c 8192 --parallel 1 --port 8199 --jinja -ngl 99",
  "model_file": "Ternary-Bonsai-2-9B-Q2_0.gguf",
  "model_sha256": "1f884aa56aacd2bbbb2e4b7abaead2b1102b74a9c75a23fc33dab916813a384d",
  "system_prompt_sha256": "eb6a03b37d2decef093156fac251236c4923b643d7123f589fb68a6209cc703a",

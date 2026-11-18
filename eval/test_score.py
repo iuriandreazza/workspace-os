@@ -387,7 +387,10 @@ class Reading(unittest.TestCase):
         intents_file = self.intents_file_and_header(directory, model_file="a.gguf")
         self.assertTrue(score.complete(directory, intents_file, "a.gguf"))
         self.assertFalse(score.complete(directory, intents_file, "b.gguf"))
-        intents_file = self.intents_file_and_header(directory, mode="tools", tools_sha256="stale")
+        tools_header = {"mode": "tools", **score.expected_inputs({"mode": "tools"})}
+        intents_file = self.intents_file_and_header(directory, **tools_header)
+        self.assertTrue(score.complete(directory, intents_file))
+        intents_file = self.intents_file_and_header(directory, **{**tools_header, "tools_sha256": "stale"})
         self.assertFalse(score.complete(directory, intents_file))
 
     def test_the_tools_a_run_would_record_today_are_the_ones_it_is_compared_with(self):
@@ -416,7 +419,13 @@ class Reading(unittest.TestCase):
 
         two = self.INTENTS + [{"id": "b", "category": "x", "accept": self.INTENTS[0]["accept"]}]
         intents_file.write_text(json.dumps({"intents": two}), encoding="utf-8")
-        self.assertIn("INCOMPLETE: 1 of 2", score.table([directory], intents_file))
+        self.assertIn("INCOMPLETE: 1 scored, 1 run, 2 in the set", score.table([directory], intents_file))
+
+    def test_a_run_cut_short_in_the_middle_of_a_line_is_not_complete_and_does_not_crash(self):
+        directory = self.run_directory([self.row(self.GOOD["document"])])
+        intents_file = self.intents_file_and_header(directory)
+        (directory / "results.jsonl").write_text('{"id": "a", "val', encoding="utf-8")
+        self.assertFalse(score.complete(directory, intents_file))
 
     def test_a_run_with_an_appended_prompt_is_not_compared_on_the_prompt(self):
         directory = self.run_directory([self.row(self.GOOD["document"])])
@@ -431,7 +440,7 @@ class Reading(unittest.TestCase):
     def test_an_unfinished_run_says_so(self):
         directory = self.run_directory([])
         intents_file = self.intents_file_and_header(directory)
-        self.assertIn("(INCOMPLETE: 0 of 1)", score.table([directory], intents_file))
+        self.assertIn("(INCOMPLETE: 0 scored, 1 run, 1 in the set)", score.table([directory], intents_file))
         self.assertFalse(score.complete(directory, intents_file))
 
 
