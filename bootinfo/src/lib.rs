@@ -5,6 +5,8 @@
 //! reads them back with [`BootInfo::from_address`] and [`MemoryMap`]. The
 //! blob comes from outside the kernel's own code, so every read is checked.
 //!
+//! The boot menu's logic ([`menu`]) is here for the same reason.
+//!
 //! The bootloader also needs two pieces of plain computation that live here so
 //! that the host can test them: the conversion of the firmware's memory map
 //! ([`memmap`]) and the page tables of the identity map the kernel starts on
@@ -15,6 +17,7 @@
 pub mod elf;
 mod handoff;
 mod memmap;
+pub mod menu;
 mod paging;
 
 pub use handoff::{Handoff, HandoffError, Rejected, check, select_rsdp, usable_console};
@@ -47,6 +50,16 @@ pub const CONSOLE_NS16550_PORT: u32 = 3;
 
 pub const MODE_NORMAL: u32 = 0;
 pub const MODE_RECOVERY: u32 = 1;
+
+/// The name of a `boot_mode` for the log; a mode this version does not know
+/// is reported, not rejected, so that a newer bootloader still boots.
+pub fn boot_mode_name(mode: u32) -> &'static str {
+    match mode {
+        MODE_NORMAL => "normal",
+        MODE_RECOVERY => "recovery",
+        _ => "unknown",
+    }
+}
 
 pub const ARCH_AARCH64: u32 = 1;
 pub const ARCH_X86_64: u32 = 2;

@@ -7,8 +7,9 @@ use std::io::{self, IsTerminal, Write};
 
 use crate::action::printable;
 use crate::ports::{ChoiceLine, Confirm, User};
-use crate::session::{SessionState, Shell};
-use crate::setup::Setup;
+use crate::screen::fit;
+use crate::session::{Entry, SessionState, Shell};
+use crate::setup::{Setup, planner_of};
 
 struct TerminalConfirm;
 
@@ -41,16 +42,53 @@ fn is_details(answer: &str) -> bool {
     matches!(answer.trim(), "d" | "D" | "details")
 }
 
+/// What the number takes in front of a line: `   NN. `.
+const NUMBER_COLUMN: usize = 7;
+
 /// The tree of a choice with a number on each candidate, and none on the
 /// context around it.
-fn numbered(lines: &[ChoiceLine]) -> Vec<String> {
+fn numbered(lines: &[ChoiceLine], width: usize) -> Vec<String> {
     lines
         .iter()
-        .map(|line| match line.option {
-            Some(index) => format!("   {:>2}. {}", index + 1, line.text),
-            None => format!("       {}", line.text),
+        .map(|line| {
+            let text = crate::screen::fit_choice(
+                &line.text,
+                width.saturating_sub(NUMBER_COLUMN),
+                crate::screen::cells_of,
+            );
+            match line.option {
+                Some(index) => format!("   {:>2}. {text}", index + 1),
+                None => format!("       {text}"),
+            }
         })
         .collect()
+}
+
+/// Columns to lay `text` out in, which is to be printed `indent` cells in: the
+/// terminal's, or, when output is redirected and has no width, what keeps every
+/// line whole.
+fn width_for(text: &str, indent: usize) -> usize {
+    if !io::stdout().is_terminal() {
+        return crate::screen::natural_width(text) + indent;
+    }
+    terminal_width()
+}
+
+/// Columns of the terminal; 80 when it does not say.
+fn terminal_width() -> usize {
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `size` is live for the call and is what `TIOCGWINSZ` fills in.
+    let known = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } == 0;
+    if known && size.ws_col > 0 {
+        usize::from(size.ws_col)
+    } else {
+        80
+    }
 }
 
 /// The one-based number the person typed, as an index into `count` options.
@@ -83,7 +121,12 @@ impl Confirm for TerminalConfirm {
 
     fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize> {
         println!("\n  {question}");
-        for line in numbered(lines) {
+        let text = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for line in numbered(lines, width_for(&text, NUMBER_COLUMN)) {
             println!("{line}");
         }
         let options = lines.iter().filter(|l| l.option.is_some()).count();
@@ -101,12 +144,20 @@ impl Confirm for TerminalConfirm {
     }
 }
 
+/// The prompt shows the directory, because the header is printed only once.
+fn prompt(entry: Entry, cwd: &str) -> String {
+    match entry {
+        Entry::Command => format!("command {cwd}> "),
+        Entry::Request => format!("intent {cwd}> "),
+    }
+}
+
 pub fn run(mut setup: Setup) -> Result<(), String> {
     let mut confirm = TerminalConfirm;
     let mut session = SessionState::start(&setup.host);
     println!("{}", setup.header(&session));
     loop {
-        print!("intent {}> ", session.cwd_text(&setup.host));
+        print!("{}", prompt(setup.entry(), &session.cwd_text(&setup.host)));
         let _ = io::stdout().flush();
         let mut request = String::new();
         match io::stdin().read_line(&mut request) {
@@ -123,22 +174,33 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
         if request.is_empty() {
             continue;
         }
+        let entry = setup.entry();
         let mut shell = Shell {
             session: &mut session,
             authority: &setup.authority,
             host: &setup.host,
-            planner: &setup.planner,
+            planner: planner_of(setup.planner.as_ref()),
             confirm: &mut confirm,
             log: &mut setup.log,
         };
-        println!("{}", shell.handle(request).render());
+        let outcome = shell.handle_as(entry, request).render();
+        println!("{}", fit(&outcome, width_for(&outcome, 0)));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_details, is_yes, numbered, parse_choice};
+    use super::{Entry, is_details, is_yes, numbered, parse_choice, prompt};
     use crate::ports::ChoiceLine;
+
+    #[test]
+    fn the_prompt_says_whether_a_model_is_listening_and_where_the_session_is() {
+        assert_eq!(
+            prompt(Entry::Request, "~/Documents"),
+            "intent ~/Documents> "
+        );
+        assert_eq!(prompt(Entry::Command, "~"), "command ~> ");
+    }
 
     #[test]
     fn only_the_candidates_of_a_choice_are_numbered() {
@@ -148,12 +210,15 @@ mod tests {
             label: text.trim().to_owned(),
         };
         assert_eq!(
-            numbered(&[
-                line(" ~    2 folders", None),
-                line(" ├─ Documents/", None),
-                line(" │  └─ report.pdf", Some(0)),
-                line(" └─ report.pdf", Some(1)),
-            ]),
+            numbered(
+                &[
+                    line(" ~    2 folders", None),
+                    line(" ├─ Documents/", None),
+                    line(" │  └─ report.pdf", Some(0)),
+                    line(" └─ report.pdf", Some(1)),
+                ],
+                80
+            ),
             [
                 "        ~    2 folders",
                 "        ├─ Documents/",

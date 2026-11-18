@@ -5,21 +5,29 @@
 use crate::broker::Authority;
 use crate::host::UnixHost;
 use crate::log::JsonlLog;
-use crate::model::LlamaPlanner;
+use crate::model::{LlamaPlanner, NoModel};
+use crate::ports::Planner;
 use crate::screen::{self, Header};
-use crate::session::SessionState;
+use crate::session::{Entry, SessionState};
+
+static NO_MODEL: NoModel = NoModel;
 
 /// What both adapters need to run one session.
 pub struct Setup {
     pub authority: Authority,
     pub host: UnixHost,
-    pub planner: LlamaPlanner,
+    /// `None` is the deterministic shell: no model, lines are commands (ADR 0022).
+    pub planner: Option<LlamaPlanner>,
     pub log: JsonlLog,
     /// The decision log's file name, for the header (its directory is in the details).
     pub log_name: String,
 }
 
 impl Setup {
+    pub fn entry(&self) -> Entry {
+        Entry::for_model(self.planner.is_some())
+    }
+
     /// The header for the directory the session is in now.
     pub fn header(&self, session: &SessionState) -> String {
         self.header_fn()(&session.cwd_text(&self.host))
@@ -32,7 +40,10 @@ impl Setup {
             self.authority.user.name.clone(),
             self.authority.user.administrator,
         );
-        let (model, log_name) = (self.planner.address.clone(), self.log_name.clone());
+        let (model, log_name) = (
+            model_label(self.planner.as_ref()).to_owned(),
+            self.log_name.clone(),
+        );
         move |cwd| {
             screen::header(&Header {
                 user: &user,
@@ -42,5 +53,80 @@ impl Setup {
                 log: &log_name,
             })
         }
+    }
+}
+
+/// The model, or the planner that is never asked when there is none.
+pub fn planner_of(model: Option<&LlamaPlanner>) -> &dyn Planner {
+    match model {
+        Some(model) => model,
+        None => &NO_MODEL,
+    }
+}
+
+/// What the header calls the model: its address, or that there is none.
+pub fn model_label(model: Option<&LlamaPlanner>) -> &str {
+    model.map_or("none (commands only)", |model| &model.address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup(model: Option<LlamaPlanner>) -> Setup {
+        let log = std::env::temp_dir().join(format!(
+            "intent-shell-setup-{}-{}.jsonl",
+            std::process::id(),
+            model.is_some()
+        ));
+        Setup {
+            authority: Authority::full(crate::ports::User {
+                name: "ana".to_owned(),
+                administrator: false,
+            }),
+            host: UnixHost::from_environment(),
+            planner: model,
+            log: JsonlLog::open(&log).unwrap(),
+            log_name: "d.jsonl".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_session_with_a_model_reads_requests_and_asks_the_model_and_one_without_does_neither() {
+        // Nothing listens on this address: the answer is an error about the connection.
+        let with = setup(Some(LlamaPlanner {
+            address: "127.0.0.1:1".to_owned(),
+        }));
+        assert_eq!(with.entry(), Entry::Request);
+        let asked = planner_of(with.planner.as_ref())
+            .plan("x", "~", None)
+            .unwrap_err();
+        assert!(!asked.contains("no model is loaded"), "{asked}");
+        let without = setup(None);
+        assert_eq!(without.entry(), Entry::Command);
+        let answer = planner_of(without.planner.as_ref())
+            .plan("x", "~", None)
+            .unwrap_err();
+        assert!(answer.contains("no model is loaded"), "{answer}");
+        let start = SessionState::start(&with.host);
+        assert!(with.header(&start).contains("127.0.0.1:1"));
+        assert!(without.header(&start).contains("none (commands only)"));
+    }
+
+    #[test]
+    fn the_header_says_when_there_is_no_model() {
+        assert_eq!(model_label(None), "none (commands only)");
+        let model = LlamaPlanner {
+            address: "127.0.0.1:8089".to_owned(),
+        };
+        assert_eq!(model_label(Some(&model)), "127.0.0.1:8089");
+        let header = screen::header(&Header {
+            user: "ana",
+            administrator: false,
+            model: model_label(None),
+            cwd: "~",
+            log: "d.jsonl",
+        });
+        assert!(header.contains("none (commands only)"), "{header}");
     }
 }

@@ -241,7 +241,49 @@ attempts failed for the reasons under "Findings".
   is private to the user, as before. Old logs stay readable: only fields were
   added.
 - S4 measures the model on paths (the weaknesses above), with schema version 3.
-  S5 types `cd`, `ls` and `tree --depth N`; the tree text already says
-  "name a path to open it" until the flag exists.
+  S5 types `cd`, `ls` and `rm` as short words; `tree` and `--depth` are not
+  provided, because the format has no depth (ADR 0022, section 5). The tree
+  text says "name a path to open it".
 - ADR 0018 says "use a path or `--depth`" in the tree example; `--depth` does
-  not exist until S5, so the text says only the path.
+  not exist, so the text says only the path. A depth would need a plan format
+  version 4 and an ADR of its own.
+
+## Full-width layout (S3f)
+
+The tree used the width of its longest name. It now uses the width of the
+terminal: the name stays on the left (with its marks) and the metadata goes to
+the right edge, in columns, as `ls -l` does.
+
+```text
+ ~/Downloads                                           3 folders · 2 hidden
+ ├─ films/                                                  ana   2026-11-10 09:12
+ │  └─ old.mkv  ⚠ asks                          1.9 GB  ana   2026-11-02 18:40
+ └─ notes.txt                                      5 KB  ana   2026-11-17 14:30
+```
+
+- `screen::tree` still returns the same lines for every adapter. Each line is
+  `name`, a break character (`COLUMN_BREAK`, a tab) and the metadata; the
+  adapter lays it out with `screen::fit(text, width)`, which pads up to the
+  right edge and cuts a name that leaves no room with `…`. `--plain` reads the
+  width of the terminal (`TIOCGWINSZ`, 80 when it is not one); the interface
+  uses the width of its history and of the choice list.
+- `TreeEntry` gained `owner` and `created`. `UnixHost` fills them: the name of
+  the owner (`getpwuid_r`, the number when the system has no name) and the
+  creation time on the person's clock (`localtime_r`), falling back to the
+  modification time where the filesystem keeps no birth time.
+- The break is a tab because a name is escaped before it gets to the tree and
+  cannot hold one. Text a file or a note brought is escaped in the report
+  (`session.rs`), so it cannot pass for a column either.
+
+Narrow screens: when the name does not fit beside the metadata, the last
+columns (date, then owner, then size) are left out one by one. The marks are
+the first cell and are never left out: the name is cut with `…` for them. A name that is cut loses its middle, so an extension or a year at its end stays.
+The saved transcript, and `--plain` output that is redirected, are laid out at
+the width of their longest tree line, so they cut nothing. A tab inside what a
+file holds is shown as `\u0009` (it would pass for a column otherwise).
+
+Limits: the candidates of an ambiguity choice and a largest-files ranking carry
+no owner or date yet (they come from paths and sizes, not from a listing). Cell
+widths: `--plain` uses an approximation without a dependency (CJK and the common
+emoji count two, a combining mark counts one), so a line may be a cell off; the
+interface fits with ratatui's own table, the one it wraps with. The owner is looked up once per entry, with no cache.

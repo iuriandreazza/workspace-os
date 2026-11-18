@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::action::{Access, Action, Capability, RootRule, WriteMode, quoted_path};
 use crate::label::Labels;
-use crate::plan::{Plan, Step, StepId};
+use crate::plan::{Origin, Plan, Step, StepId};
 use crate::ports::{Host, Output, User};
 use crate::reference::{Destination, Direct, Slot, Spec, Target};
 use crate::resolve::{Ambiguity, Choices, ResolveError, Scope, destination, is_place_root, locate};
@@ -212,6 +212,7 @@ impl ReviewedStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
     pub summary: String,
+    pub origin: Origin,
     /// The directory the plan was made under: its relative references were
     /// resolved against it, and a later `cd` does not change what was reviewed.
     pub cwd: PathBuf,
@@ -336,6 +337,7 @@ pub fn review(
     }
     Review {
         summary: plan.summary.clone(),
+        origin: plan.origin,
         cwd: cwd.to_path_buf(),
         steps,
         labels: Labels::new(cwd, host.home()),

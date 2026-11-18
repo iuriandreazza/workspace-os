@@ -92,6 +92,17 @@ impl LlamaPlanner {
     }
 }
 
+/// The planner of the deterministic shell. It is never asked, because lines go
+/// to `Shell::handle_command`; if something asks anyway, it answers that there
+/// is no model, and nothing else (ADR 0022).
+pub struct NoModel;
+
+impl Planner for NoModel {
+    fn plan(&self, _request: &str, _cwd: &str, _retry: Option<&Retry>) -> Result<String, String> {
+        Err("no model is loaded".to_owned())
+    }
+}
+
 impl Planner for LlamaPlanner {
     fn plan(&self, request: &str, cwd: &str, retry: Option<&Retry>) -> Result<String, String> {
         let body = self.request_body(request, cwd, retry);

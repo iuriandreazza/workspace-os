@@ -10,6 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::wrap::{text_width, wrap};
 use crate::action::printable;
 use crate::ports::ChoiceLine;
+use crate::session::Entry;
 
 /// An entry of the history. The text is already safe to print: it comes from
 /// `screen` and `Outcome::render`, which escape what the model and the machine
@@ -117,6 +118,11 @@ pub struct State {
     pub quit_warned_ms: u64,
     /// When the current question was put to the person.
     pub asked_ms: u64,
+    /// What the shell is doing after a line is sent. With no model it never
+    /// waits for one, and leaving then waits for the step like any other.
+    submit_label: &'static str,
+    /// What the transcript writes before a line: the line adapter's prompt.
+    prompt: &'static str,
 }
 
 /// A key press meant as an answer: a fresh press (not a repeat or a release)
@@ -150,7 +156,20 @@ impl State {
             asked_ms: 0,
             forced_quit: false,
             quit_warned_ms: 0,
+            submit_label: "asking the model",
+            prompt: "intent> ",
         }
+    }
+
+    /// A state for how the session reads lines: with no model a line is a
+    /// command and nothing waits for one.
+    pub fn for_entry(header: String, entry: Entry) -> Self {
+        let mut state = Self::new(header);
+        if entry == Entry::Command {
+            state.submit_label = "working";
+            state.prompt = "command> ";
+        }
+        state
     }
 
     pub fn set_size(&mut self, width: u16, height: u16) {
@@ -292,7 +311,7 @@ impl State {
                 self.scroll = 0;
                 self.forced_quit = false;
                 self.blocks.push(Block::Request(request.clone()));
-                self.busy("asking the model");
+                self.busy(self.submit_label);
                 return Effect::Submit(request);
             }
             _ => {}
@@ -444,7 +463,14 @@ impl State {
             if !lines.is_empty() {
                 lines.push((Kind::Note, String::new()));
             }
-            lines.extend(wrap(&text, width).into_iter().map(|line| (kind, line)));
+            lines.extend(
+                wrap(
+                    &crate::screen::fit_with(&text, width, super::wrap::cell_width),
+                    width,
+                )
+                .into_iter()
+                .map(|line| (kind, line)),
+            );
         }
         lines
     }
@@ -465,13 +491,20 @@ impl State {
         let mut out = String::new();
         for block in &self.blocks {
             match block {
-                Block::Request(text) => out.push_str(&format!("intent> {text}\n")),
+                Block::Request(text) => out.push_str(&format!("{}{text}\n", self.prompt)),
                 Block::Note(text) | Block::Plan(text) | Block::Root(text) => {
                     out.push_str(text);
                     out.push('\n');
                 }
                 Block::Outcome(text) => {
-                    out.push_str(text.trim_end());
+                    // A file has no width to lay the columns of a tree out for.
+                    out.push_str(
+                        {
+                            let text = text.trim_end();
+                            crate::screen::fit(text, crate::screen::natural_width(text))
+                        }
+                        .as_str(),
+                    );
                     out.push('\n');
                 }
             }
@@ -980,6 +1013,32 @@ mod tests {
     }
 
     #[test]
+    fn with_no_model_a_sent_line_is_work_not_a_wait_for_the_model() {
+        let sent = |mut state: State| {
+            for c in "fs list --in home".chars() {
+                state.on_key(press(KeyCode::Char(c)));
+            }
+            state.on_key(press(KeyCode::Enter));
+            state.mode
+        };
+        assert!(matches!(
+            sent(State::for_entry(String::new(), Entry::Request)),
+            Mode::Busy {
+                label: "asking the model",
+                ..
+            }
+        ));
+        // Leaving waits for a running step only under the label "working".
+        assert!(matches!(
+            sent(State::for_entry(String::new(), Entry::Command)),
+            Mode::Busy {
+                label: "working",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn the_outcome_returns_to_the_input() {
         let mut state = asking_plan();
         state.on_key(press(KeyCode::Char('y')));
@@ -1009,5 +1068,19 @@ mod tests {
         state.on_key(press(KeyCode::Enter));
         state.on_event(Event::Outcome("done\n".to_owned()));
         assert_eq!(state.transcript(), "intent> list downloads\ndone\n");
+        let mut commands = State::for_entry(String::new(), Entry::Command);
+        commands
+            .blocks
+            .push(Block::Request("fs list --in home".to_owned()));
+        assert_eq!(commands.transcript(), "command> fs list --in home\n");
+    }
+
+    #[test]
+    fn the_transcript_lays_the_columns_of_a_tree_out_instead_of_keeping_the_tab() {
+        let mut state = State::new(String::new());
+        state.on_event(Event::Outcome("a.txt\t5 KB\n".to_owned()));
+        let transcript = state.transcript();
+        assert!(!transcript.contains('\t'), "{transcript:?}");
+        assert!(transcript.trim_end().ends_with("5 KB"), "{transcript:?}");
     }
 }

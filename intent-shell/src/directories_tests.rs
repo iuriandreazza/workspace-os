@@ -718,6 +718,8 @@ fn entry(path: &str, kind: EntryKind, size: Option<u64>) -> TreeEntry {
         size,
         readable: true,
         protected: false,
+        owner: None,
+        created: None,
     }
 }
 
@@ -736,7 +738,7 @@ fn labels() -> Labels {
 fn drawn(root: &str, entries: &[TreeEntry], marks: &TreeMarks, options: &TreeOptions) -> String {
     screen::tree(Path::new(root), entries, &[], &labels(), marks, options)
         .into_iter()
-        .map(|l| l.text)
+        .map(|l| screen::fit(&l.text, WIDTH))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -750,6 +752,8 @@ fn default_tree(entries: &[TreeEntry]) -> String {
     )
 }
 
+const WIDTH: usize = 40;
+
 #[test]
 fn the_tree_lists_folders_first_then_names_ignoring_case_with_sizes_right_aligned() {
     let shown = default_tree(&[
@@ -760,12 +764,12 @@ fn the_tree_lists_folders_first_then_names_ignoring_case_with_sizes_right_aligne
         folder("/h/Downloads/alpha"),
     ]);
     let expected = [
-        " ~/Downloads               2 folders",
+        " ~/Downloads                   2 folders",
         " ├─ alpha/",
         " ├─ Zeta/",
-        " │  └─ disk.img  900.0 MB",
-        " ├─ A.txt            12 B",
-        " └─ b.txt          5.0 KB",
+        " │  └─ disk.img                 900.0 MB",
+        " ├─ A.txt                           12 B",
+        " └─ b.txt                         5.0 KB",
     ]
     .join("\n");
     assert_eq!(shown, expected, "\n{shown}");
@@ -998,7 +1002,8 @@ fn an_ambiguity_shows_the_candidates_in_their_parent_context_and_only_they_are_s
     );
     let run = ask(&host, &mut session_in("/home/ana"), &text);
     let (_, lines) = &run.answers.questions[0];
-    let shown: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+    let fitted: Vec<String> = lines.iter().map(|l| screen::fit(&l.text, 30)).collect();
+    let shown: Vec<&str> = fitted.iter().map(String::as_str).collect();
     assert_eq!(
         shown,
         [
@@ -1019,7 +1024,7 @@ fn a_listing_prints_as_a_tree_and_a_large_result_marks_what_a_plan_asks_about() 
     let host = home();
     let text = plan(&[step("s1", "fs.list", &path_args("~/Downloads"), "false")]);
     let run = ask(&host, &mut session_in("/home/ana"), &text);
-    let shown = run.outcome.render();
+    let shown = screen::fit(&run.outcome.render(), 60);
     assert!(shown.contains(" Downloads  "), "{shown}");
     assert!(
         shown.contains("├─ films/") || shown.contains("└─ films/"),
@@ -1319,4 +1324,257 @@ fn a_path_through_a_file_is_not_found() {
         reviewed(&run.outcome).steps[0].blocked,
         Some(Refusal::Unresolved(ResolveError::NotFound(_)))
     ));
+}
+
+fn described(path: &str, size: u64, owner: &str, created: &str) -> TreeEntry {
+    TreeEntry {
+        owner: Some(owner.to_owned()),
+        created: Some(created.to_owned()),
+        ..file(path, size)
+    }
+}
+
+#[test]
+fn owner_and_date_follow_the_size_in_columns_flush_with_the_right_edge() {
+    let entries = [
+        described("/h/Downloads/a.txt", 12, "ana", "2026-11-17 14:30"),
+        described(
+            "/h/Downloads/long-name.txt",
+            5_000,
+            "root",
+            "2025-01-02 03:04",
+        ),
+    ];
+    let shown: Vec<String> = screen::tree(
+        Path::new("/h/Downloads"),
+        &entries,
+        &[],
+        &labels(),
+        &TreeMarks::default(),
+        &TreeOptions::default(),
+    )
+    .into_iter()
+    .map(|l| screen::fit(&l.text, 60))
+    .collect();
+    assert_eq!(
+        shown,
+        [
+            " ~/Downloads                                       0 folders".to_owned(),
+            " ├─ a.txt                       12 B  ana   2026-11-17 14:30".to_owned(),
+            " └─ long-name.txt             5.0 KB  root  2025-01-02 03:04".to_owned(),
+        ],
+        "{shown:#?}"
+    );
+}
+
+#[test]
+fn a_wider_screen_moves_the_metadata_to_its_edge_and_a_name_that_does_not_fit_is_cut() {
+    let line = format!("name{}5 KB  ana", screen::COLUMN_BREAK);
+    assert_eq!(
+        screen::fit(&line, 30),
+        format!("name{}5 KB  ana", " ".repeat(17))
+    );
+    let long = format!("{}{}5 KB", "x".repeat(50), screen::COLUMN_BREAK);
+    let cut = screen::fit(&long, 30);
+    // The first cell is never left out: the name is cut for it.
+    assert_eq!(cut.chars().count(), 30, "{cut}");
+    assert!(cut.contains('…') && cut.ends_with("  5 KB"), "{cut}");
+    assert_eq!(screen::fit("no columns here", 5), "no columns here");
+}
+
+#[test]
+fn text_that_a_file_or_a_note_brought_cannot_pass_for_a_column() {
+    let line = "a\tb";
+    let shown = screen::fit(&crate::action::printable(line, false), 40);
+    assert_eq!(shown, "a\\u0009b");
+}
+
+#[test]
+fn a_tab_in_what_a_file_holds_does_not_become_a_column_of_the_report() {
+    let mut host = home();
+    host.content = Some("left\tright".to_owned());
+    let run = ask(
+        &host,
+        &mut session_in("/home/ana"),
+        &one_step("fs.read", &path_args("~/Documents/report.pdf")),
+    );
+    let shown = run.outcome.render();
+    assert!(!shown.contains(screen::COLUMN_BREAK), "{shown:?}");
+    assert!(shown.contains("left\\u0009right"), "{shown}");
+}
+
+#[test]
+fn wide_names_are_measured_in_cells_cut_to_fit_and_never_push_the_metadata_off_the_line() {
+    let line = format!("日本語{}5 KB", screen::COLUMN_BREAK);
+    assert_eq!(
+        screen::fit(&line, 20),
+        format!("日本語{}5 KB", " ".repeat(10))
+    );
+    let long = format!("{}{}5 KB", "日".repeat(30), screen::COLUMN_BREAK);
+    let cut = screen::fit(&long, 20);
+    assert!(cut.contains('…') && cut.ends_with("  5 KB"), "{cut}");
+    assert!(
+        cut.chars()
+            .map(|c| if c as u32 > 0x2E80 { 2 } else { 1 })
+            .sum::<usize>()
+            <= 20,
+        "{cut}"
+    );
+}
+
+#[test]
+fn a_narrow_screen_leaves_out_the_metadata_but_never_a_mark_and_cuts_the_name_for_it() {
+    let brk = screen::COLUMN_BREAK;
+    let line = format!("some-long-name{brk}⚠ asks · ROOT{brk}5.0 KB{brk}ana{brk}2026-11-17 14:30");
+    assert_eq!(screen::fit(&line, 80).chars().count(), 80);
+    // The date goes first, then the owner, then the size.
+    assert!(screen::fit(&line, 52).ends_with("5.0 KB  ana"));
+    assert!(screen::fit(&line, 38).ends_with("5.0 KB"));
+    for width in [28, 24] {
+        let shown = screen::fit(&line, width);
+        assert!(shown.ends_with("⚠ asks · ROOT"), "{width}: {shown}");
+        assert!(
+            !shown.contains("KB") && shown.contains('…'),
+            "{width}: {shown}"
+        );
+    }
+    assert_eq!(screen::fit(&line, 28).lines().count(), 1);
+}
+
+#[test]
+fn the_counts_of_the_header_survive_a_long_path() {
+    let line = format!(
+        "{}{}12 folders · 3 hidden",
+        "d".repeat(61),
+        screen::COLUMN_BREAK
+    );
+    let shown = screen::fit(&line, 70);
+    assert!(
+        shown.ends_with("12 folders · 3 hidden") && shown.contains('…'),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_row_with_a_missing_value_keeps_the_other_columns_where_they_are() {
+    let mut old = described("/h/Downloads/old.txt", 7, "ana", "");
+    old.created = None;
+    let shown = default_tree(&[
+        described("/h/Downloads/b.txt", 7, "ana", "2026-11-17 14:30"),
+        old,
+    ]);
+    let ends: Vec<usize> = shown
+        .lines()
+        .skip(1)
+        .map(|l| l.find("7 B").unwrap())
+        .collect();
+    assert_eq!(ends[0], ends[1], "{shown}");
+}
+
+#[test]
+fn wide_emoji_count_two_cells() {
+    let line = format!("✅ a{}5 KB", screen::COLUMN_BREAK);
+    assert_eq!(screen::fit(&line, 20).chars().count(), 19, "{line}");
+}
+
+#[test]
+fn an_owner_name_with_control_characters_is_escaped() {
+    let mut entry = described(
+        "/h/Downloads/a",
+        1,
+        "evil\u{1b}]0;x\u{7}\ty",
+        "2026-01-01 00:00",
+    );
+    entry.owner = Some("evil\u{1b}[2J\ty".to_owned());
+    let shown = default_tree(&[entry]);
+    assert!(
+        !shown.contains('\u{1b}') && !shown.contains('\t'),
+        "{shown:?}"
+    );
+}
+
+#[test]
+fn a_row_without_marks_beside_a_marks_column_keeps_its_name_and_metadata() {
+    let brk = screen::COLUMN_BREAK;
+    let blank = " ".repeat(20);
+    let line = format!(" ├─ report-final-version-2.txt{brk}{blank}{brk}5 KB{brk}ana");
+    let shown = screen::fit(&line, 50);
+    assert!(
+        shown.contains("report-final-version-2.txt") && !shown.contains('…'),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_mark_too_long_for_the_line_is_cut_from_its_front_and_the_name_stays_readable() {
+    let brk = screen::COLUMN_BREAK;
+    let line = format!("important-file.txt{brk}hidden, asks to open · ⚠ asks · ROOT");
+    let shown = screen::fit(&line, 30);
+    assert!(
+        shown.starts_with("impo") && shown.contains("txt"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("ROOT"), "{shown}");
+    assert!(shown.chars().count() <= 30, "{shown}");
+}
+
+#[test]
+fn two_names_that_differ_at_the_end_are_still_told_apart_when_cut() {
+    let brk = screen::COLUMN_BREAK;
+    let a = screen::fit(&format!(" └─ report-final-2023.pdf{brk}5 KB"), 24);
+    let b = screen::fit(&format!(" └─ report-final-2024.pdf{brk}5 KB"), 24);
+    assert_ne!(a, b, "{a} / {b}");
+    assert!(a.contains("3.pdf") && b.contains("4.pdf"), "{a} / {b}");
+}
+
+#[test]
+fn a_mark_with_the_padding_of_a_wider_one_keeps_its_text_when_cut() {
+    let brk = screen::COLUMN_BREAK;
+    let line = format!(" └─ a-long-enough-name.txt{brk}ROOT         {brk}5 KB{brk}ana");
+    for width in [16, 20, 24] {
+        let shown = screen::fit(&line, width);
+        assert!(shown.contains("ROOT"), "{width}: {shown:?}");
+    }
+}
+
+#[test]
+fn a_fitted_line_is_never_wider_than_the_screen() {
+    let brk = screen::COLUMN_BREAK;
+    let lines = [
+        format!(
+            " └─ a-long-enough-name.txt{brk}⚠ asks · ROOT{brk}5 KB{brk}ana{brk}2026-11-17 14:30"
+        ),
+        format!("名前名前名前{brk}ROOT{brk}5 KB"),
+        format!("head{brk}12 folders · 3 hidden"),
+    ];
+    for line in &lines {
+        for width in 1..=100 {
+            let shown = screen::fit(line, width);
+            let cells: usize = shown
+                .chars()
+                .map(|c| if c as u32 > 0x2E80 { 2 } else { 1 })
+                .sum();
+            assert!(cells <= width, "{width}: {shown:?}");
+        }
+    }
+}
+
+#[test]
+fn the_lines_of_a_choice_never_cut_a_name() {
+    let brk = screen::COLUMN_BREAK;
+    let hidden = "hidden, asks to open";
+    let a = screen::fit_choice(
+        &format!(" ├─ report-final-v1-2026.pdf{brk}{hidden}"),
+        18,
+        screen::cells_of,
+    );
+    let b = screen::fit_choice(
+        &format!(" └─ report-final-v2-2026.pdf{brk}{hidden}"),
+        18,
+        screen::cells_of,
+    );
+    assert!(
+        a.contains("report-final-v1-2026.pdf") && b.contains("report-final-v2-2026.pdf"),
+        "{a} / {b}"
+    );
 }
