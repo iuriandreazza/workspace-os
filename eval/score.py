@@ -293,7 +293,10 @@ def read_run(directory, intents):
     header = json.loads((directory / "header.json").read_text(encoding="utf-8"))
     by_id = {i["id"]: i for i in intents}
     rows = {}
-    for line in (directory / "results.jsonl").read_text(encoding="utf-8").splitlines():
+    # Split on "\n" only: `splitlines` also splits at U+2028, U+2029 and U+0085, which a model's text may hold.
+    for line in (directory / "results.jsonl").read_text(encoding="utf-8").split("\n"):
+        if not line:
+            continue
         record = json.loads(line)
         if record["id"] not in by_id:  # an intent removed from the set since the run
             continue
@@ -367,8 +370,8 @@ def table(run_directories, intents_path):
         summary = summarize(rows, intents)["total"]
         retried = sum(1 for r in rows.values() if with_retry(r) == 3)
         warning = "" if header.get("intents_sha256") == current else " (set edited since the run)"
-        if summary["n"] != header["intents"]:
-            warning += f" (INCOMPLETE: {summary['n']} of {header['intents']})"
+        if summary["n"] != len(intents) or summary["n"] != header["intents"]:
+            warning += f" (INCOMPLETE: {summary['n']} of {len(intents)})"
         nested = sum(1 for r in rows.values() if any("nests without end" in e for e in r.get("errors", [])))
         if nested:
             warning += f" (answers nested without end, counted as invalid: {nested})"
@@ -393,23 +396,30 @@ def expected_inputs(header):
     if header.get("mode") == "tools":
         prompt = modes.tools_prompt(prompt, bool(header.get("derive_depends")))
     schema = (here.parent / "docs/schemas/action-plan.schema.json").read_bytes()
-    return {
+    now = {
         "schema_sha256": hashlib.sha256(schema).hexdigest(),
         "system_prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
     }
+    if header.get("mode") == "tools":
+        tools, _ = modes.build_tools(json.loads(schema), bool(header.get("derive_depends")))
+        now["tools_sha256"] = hashlib.sha256(json.dumps(tools, sort_keys=True).encode()).hexdigest()
+    return now
 
 
-def complete(directory, intents_path):
+def complete(directory, intents_path, model_file=None):
     """True when the run answered every intent of the set as it is now, from this
-    set, this schema and this prompt (their hashes are the header's), and no
-    request failed. A run with an appended prompt (`--prompt-extra`) is not
-    compared on the prompt."""
+    set, this schema, this prompt and these tools (their hashes are the header's),
+    from the model file asked for when one is named, and no request failed. A run
+    with an appended prompt (`--prompt-extra`) is not compared on the prompt."""
     intents = load_intents(intents_path)
     header, rows = read_run(directory, intents)
     same_set = header.get("intents_sha256") == hashlib.sha256(Path(intents_path).read_bytes()).hexdigest()
     now = expected_inputs(header)
-    same_inputs = header.get("schema_sha256") == now["schema_sha256"] and (
-        header.get("prompt_extra_sha256") or header.get("system_prompt_sha256") == now["system_prompt_sha256"]
+    same_inputs = (
+        header.get("schema_sha256") == now["schema_sha256"]
+        and (header.get("prompt_extra_sha256") or header.get("system_prompt_sha256") == now["system_prompt_sha256"])
+        and header.get("tools_sha256") == now.get("tools_sha256")
+        and (model_file is None or header.get("model_file") == model_file)
     )
     return bool(
         same_set
@@ -504,11 +514,11 @@ COMMANDS = {
     "timing": lambda dirs, path: timing_table(dirs, path),
     "compare": lambda dirs, path: comparison(*dirs, path),
     "failures": lambda dirs, path: failures(dirs[0], path),
-    "complete": lambda dirs, path: sys.exit(0 if complete(dirs[0], path) else 1),
+    "complete": lambda dirs, path: sys.exit(0 if complete(dirs[0], path, dirs[1] if len(dirs) > 1 else None) else 1),
 }
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS or (len(sys.argv) < 3 and sys.argv[1] != "baselines"):
-        sys.exit(f"usage: score.py {{{'|'.join(COMMANDS)}}} RUN_DIRECTORY...")
+        sys.exit(f"usage: score.py {{{'|'.join(COMMANDS)}}} RUN_DIRECTORY... (complete: RUN_DIRECTORY [MODEL_FILE_NAME])")
     print(COMMANDS[sys.argv[1]](sys.argv[2:], Path(__file__).parent / "intents.json"))

@@ -39,8 +39,9 @@ fi
 # serve MODEL_FILE CONTEXT: starts llama-server on $port and waits until it answers.
 serve() {
     stop_server
-    server_flags="llama-server -m $(basename "$1") -c $2 --parallel 1 --port $port --jinja -ngl 99"
-    "$LLAMA_SERVER" -m "$1" -c "$2" --parallel 1 --port "$port" --jinja -ngl 99 >"$server_log" 2>&1 &
+    local flags=(-m "$1" -c "$2" --parallel 1 --port "$port" --jinja -ngl 99)
+    server_flags="llama-server ${flags[*]}"
+    "$LLAMA_SERVER" "${flags[@]}" >"$server_log" 2>&1 &
     server_pid=$!
     local waited=0
     until curl -sf "http://127.0.0.1:$port/health" >/dev/null; do
@@ -67,7 +68,7 @@ measure() {
     local label="$1" mode="$2"
     shift 2
     if [ -f "eval/results/$label/results.jsonl" ]; then
-        if python3 -I eval/score.py complete "eval/results/$label"; then
+        if python3 -I eval/score.py complete "eval/results/$label" "$(basename "$model_file")"; then
             echo "skipping $label: eval/results/$label already holds a complete run"
             return 0
         fi
@@ -98,6 +99,7 @@ selected() {
 }
 
 SECTIONS=("$@")
+asked=$#
 [ "${#SECTIONS[@]}" -gt 0 ] || SECTIONS=(bonsai8b bonsai2 bonsai27b gemma sampling)
 for section in "${SECTIONS[@]}"; do
     case "$section" in
@@ -105,6 +107,23 @@ for section in "${SECTIONS[@]}"; do
         *) echo "run-matrix: unknown section '$section'" >&2; exit 1 ;;
     esac
 done
+
+# A section named on the command line whose model file is not given is an error, not an empty success.
+need() {
+    if selected "$1" && [ -z "${!2:-}" ]; then
+        if [ "$asked" -gt 0 ]; then
+            echo "run-matrix: section $1 needs $2" >&2
+            exit 1
+        fi
+        echo "run-matrix: skipping $1: $2 is not set" >&2
+    fi
+}
+need bonsai8b BONSAI_8B
+need bonsai2 BONSAI_2_9B
+need bonsai27b BONSAI_1_27B
+need gemma GEMMA_4_12B
+need sampling BONSAI_2_9B
+need thinking BONSAI_2_9B
 
 if selected bonsai8b && [ -n "${BONSAI_8B:-}" ]; then
     serve "$BONSAI_8B" 8192

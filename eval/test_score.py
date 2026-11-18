@@ -382,6 +382,42 @@ class Reading(unittest.TestCase):
             intents_file = self.intents_file_and_header(directory, **{field: "stale"})
             self.assertFalse(score.complete(directory, intents_file), field)
 
+    def test_a_run_of_another_model_file_or_other_tools_is_not_complete(self):
+        directory = self.run_directory([self.row(self.GOOD["document"])])
+        intents_file = self.intents_file_and_header(directory, model_file="a.gguf")
+        self.assertTrue(score.complete(directory, intents_file, "a.gguf"))
+        self.assertFalse(score.complete(directory, intents_file, "b.gguf"))
+        intents_file = self.intents_file_and_header(directory, mode="tools", tools_sha256="stale")
+        self.assertFalse(score.complete(directory, intents_file))
+
+    def test_the_tools_a_run_would_record_today_are_the_ones_it_is_compared_with(self):
+        for derived in (False, True):
+            now = score.expected_inputs({"mode": "tools", "derive_depends": derived})
+            self.assertEqual(len(now["tools_sha256"]), 64)
+        self.assertNotEqual(score.expected_inputs({"mode": "tools"})["tools_sha256"], score.expected_inputs({"mode": "tools", "derive_depends": True})["tools_sha256"])
+        self.assertNotEqual(score.expected_inputs({"mode": "tools"})["system_prompt_sha256"], score.expected_inputs({"mode": "grammar"})["system_prompt_sha256"])
+
+    def test_a_row_with_a_line_separator_inside_a_string_is_read_whole(self):
+        import json
+
+        row = {**self.row(self.GOOD["document"]), "output": "a\u2028b\u0085c\u2029d"}
+        directory = self.run_directory([row])
+        # As the runner writes it: `ensure_ascii=False` leaves the separators raw inside the string.
+        (directory / "results.jsonl").write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+        self.assertIn("\u2028", (directory / "results.jsonl").read_text(encoding="utf-8"))
+        self.intents_file_and_header(directory)
+        _, rows = score.read_run(directory, self.INTENTS)
+        self.assertEqual(rows["a"]["output"], "a\u2028b\u0085c\u2029d")
+
+    def test_a_subset_of_the_set_is_shown_as_incomplete(self):
+        directory = self.run_directory([self.row(self.GOOD["document"])])
+        intents_file = self.intents_file_and_header(directory)
+        import json
+
+        two = self.INTENTS + [{"id": "b", "category": "x", "accept": self.INTENTS[0]["accept"]}]
+        intents_file.write_text(json.dumps({"intents": two}), encoding="utf-8")
+        self.assertIn("INCOMPLETE: 1 of 2", score.table([directory], intents_file))
+
     def test_a_run_with_an_appended_prompt_is_not_compared_on_the_prompt(self):
         directory = self.run_directory([self.row(self.GOOD["document"])])
         intents_file = self.intents_file_and_header(directory, system_prompt_sha256="longer", prompt_extra_sha256="x")

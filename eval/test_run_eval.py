@@ -112,6 +112,25 @@ class Attempts(unittest.TestCase):
         record = self.attempt(runner(), reply({"content": json.dumps(PLAN)}))
         self.assertEqual((record["valid"], record["errors"]), (False, ["'x' is not valid"]))
 
+    def plan_with(self, step):
+        return json.dumps({"kind": "plan", "version": 3, "summary": "x", "steps": [step]})
+
+    def test_a_plan_the_semantic_rules_refuse_is_invalid(self):
+        step = {"id": "s1", "action": "fs.list", "args": {"target": {"place": "downloads"}}, "depends_on": ["s1"], "elevate": False}
+        record = self.attempt(runner(), reply({"content": self.plan_with(step)}))
+        self.assertEqual((record["valid"], record["errors"]), (False, ["s1 depends on itself"]))
+
+    def test_what_only_the_shells_parser_refuses_is_invalid(self):
+        step = {"id": "s1", "action": "fs.find_largest", "args": {"target": {"place": "downloads"}, "count": 5.0}, "depends_on": [], "elevate": False}
+        record = self.attempt(runner(), reply({"content": self.plan_with(step)}))
+        self.assertFalse(record["valid"])
+        self.assertIn("is not an integer", record["errors"][0])
+
+    def test_text_that_cannot_be_encoded_is_invalid_and_does_not_crash_the_run(self):
+        step = {"id": "s1", "action": "fs.write", "args": {"target": {"new_name": "\ud800", "in": "home"}, "content": "x", "mode": "create"}, "depends_on": [], "elevate": False}
+        record = self.attempt(runner(), reply({"content": self.plan_with(step)}))
+        self.assertFalse(record["valid"])
+
     def test_a_good_tool_call_is_scored_exact(self):
         call = {"function": {"name": "fs_list", "arguments": json.dumps({"target": {"place": "downloads"}, "depends_on": [], "elevate": False})}}
         record = self.attempt(runner("tools"), reply({"content": "", "tool_calls": [call]}))

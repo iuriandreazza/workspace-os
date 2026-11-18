@@ -295,11 +295,50 @@
         "elevate": false
        }
       ]
+     },
+     "loose": {
+      "s1.args.target.path": {
+       "one_of": [
+        "~",
+        "/home/user"
+       ]
+      }
+     }
+    },
+    {
+     "plan": {
+      "kind": "plan",
+      "version": 3,
+      "summary": "(summary is not compared)",
+      "steps": [
+       {
+        "id": "s1",
+        "action": "fs.find_largest",
+        "args": {
+         "target": {
+          "path": "."
+         },
+         "count": 3
+        },
+        "depends_on": [],
+        "elevate": false
+       }
+      ]
+     },
+     "loose": {
+      "s1.args.target.path": {
+       "one_of": [
+        ".",
+        "./",
+        "~",
+        "/home/user"
+       ]
+      }
      }
     }
    ],
    "cwd": "~",
-   "note": "`everywhere` no longer exists (ADR 0018). The whole computer the person can search is their home: the home place or the path ~."
+   "note": "`everywhere` no longer exists (ADR 0018). The whole computer the person can search is their home: the home place or a path to it, written as `~`, in full, or as the current directory (the home)."
   },
   {
    "id": "largest-here",
