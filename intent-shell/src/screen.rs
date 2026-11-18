@@ -742,8 +742,19 @@ pub fn fit(text: &str, width: usize) -> String {
 /// `fit` measuring characters with `cell`, for a screen whose own table of
 /// widths is the one that counts (the interface wraps with ratatui's).
 pub fn fit_with(text: &str, width: usize, cell: fn(char) -> usize) -> String {
+    layout(text, width, cell, true)
+}
+
+/// `fit_with` for the lines of a choice: a name is never cut, because the
+/// candidates differ in the very part that would go (a version, an id), and the
+/// person picks by what they read. A line too wide for the screen wraps instead.
+pub fn fit_choice(text: &str, width: usize, cell: fn(char) -> usize) -> String {
+    layout(text, width, cell, false)
+}
+
+fn layout(text: &str, width: usize, cell: fn(char) -> usize, cut_names: bool) -> String {
     text.split('\n')
-        .map(|line| fit_line(line, width, cell))
+        .map(|line| fit_line(line, width, cell, cut_names))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -757,7 +768,7 @@ fn joined(cells: &[&str]) -> String {
     shown.join("  ")
 }
 
-fn fit_line(line: &str, width: usize, cell: fn(char) -> usize) -> String {
+fn fit_line(line: &str, width: usize, cell: fn(char) -> usize, cut_names: bool) -> String {
     let measure = |text: &str| -> usize { text.chars().map(cell).sum() };
     let mut parts = line.split(COLUMN_BREAK);
     let left = parts.next().unwrap_or_default();
@@ -805,7 +816,7 @@ fn fit_line(line: &str, width: usize, cell: fn(char) -> usize) -> String {
     };
     let room = width.saturating_sub(reserved).max(2);
     let mut left = left.to_owned();
-    if left_width > room {
+    if left_width > room && cut_names {
         // The middle goes, so what tells two names apart (a year, an
         // extension) stays at the end.
         let budget = room - 1;
@@ -833,7 +844,7 @@ fn fit_line(line: &str, width: usize, cell: fn(char) -> usize) -> String {
     let fill = width.saturating_sub(measure(&left) + right_width).max(GAP);
     let out = format!("{left}{}{right}", " ".repeat(fill));
     // So narrow that nothing fits whole: what is left is cut at the edge.
-    if measure(&out) > width && width <= MIN_NAME {
+    if cut_names && measure(&out) > width && width <= MIN_NAME {
         let mut kept = String::new();
         for c in out.chars() {
             if measure(&kept) + cell(c) > width {

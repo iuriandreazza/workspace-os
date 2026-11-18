@@ -89,7 +89,7 @@ fn option_lines(
         };
         let room_for_text = width.saturating_sub(2);
         for (row, text) in wrap(
-            &crate::screen::fit_with(&choice.text, room_for_text, super::wrap::cell_width),
+            &crate::screen::fit_choice(&choice.text, room_for_text, super::wrap::cell_width),
             room_for_text,
         )
         .into_iter()

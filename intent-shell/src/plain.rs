@@ -51,7 +51,11 @@ fn numbered(lines: &[ChoiceLine], width: usize) -> Vec<String> {
     lines
         .iter()
         .map(|line| {
-            let text = fit(&line.text, width.saturating_sub(NUMBER_COLUMN));
+            let text = crate::screen::fit_choice(
+                &line.text,
+                width.saturating_sub(NUMBER_COLUMN),
+                crate::screen::cells_of,
+            );
             match line.option {
                 Some(index) => format!("   {:>2}. {text}", index + 1),
                 None => format!("       {text}"),

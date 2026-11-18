@@ -1120,10 +1120,12 @@ mod tests {
         let output = host().execute(&Action::List { path: dir.clone() }).unwrap();
         let entry = &output.tree[0];
         let owner = entry.owner.as_deref().unwrap();
-        assert_eq!(
-            owner,
-            owner_name(fs::metadata(&dir).unwrap().uid()).unwrap()
-        );
+        // Taken from `id`, not from `owner_name`, which is what is being checked.
+        let expected = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .unwrap();
+        assert_eq!(owner, String::from_utf8_lossy(&expected.stdout).trim());
         let created = entry.created.as_deref().unwrap();
         // `2026-11-17 14:30`: digits and separators, where only the time is known.
         let shape: String = created

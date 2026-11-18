@@ -1558,3 +1558,23 @@ fn a_fitted_line_is_never_wider_than_the_screen() {
         }
     }
 }
+
+#[test]
+fn the_lines_of_a_choice_never_cut_a_name() {
+    let brk = screen::COLUMN_BREAK;
+    let hidden = "hidden, asks to open";
+    let a = screen::fit_choice(
+        &format!(" ├─ report-final-v1-2026.pdf{brk}{hidden}"),
+        18,
+        screen::cells_of,
+    );
+    let b = screen::fit_choice(
+        &format!(" └─ report-final-v2-2026.pdf{brk}{hidden}"),
+        18,
+        screen::cells_of,
+    );
+    assert!(
+        a.contains("report-final-v1-2026.pdf") && b.contains("report-final-v2-2026.pdf"),
+        "{a} / {b}"
+    );
+}
