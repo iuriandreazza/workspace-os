@@ -25,8 +25,9 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 
 use crate::broker::Authority;
+use crate::model::NoModel;
 use crate::ports::{ChoiceLine, Confirm, DecisionLog, Host, Planner, Retry, User};
-use crate::session::{SessionState, Shell};
+use crate::session::{Entry, SessionState, Shell};
 use crate::setup::Setup;
 use state::{Effect, Event, Mode, Reply, State};
 
@@ -106,7 +107,7 @@ struct Wires {
 fn serve(
     authority: &Authority,
     host: &dyn Host,
-    planner: &dyn Planner,
+    model: Option<&dyn Planner>,
     log: &mut dyn DecisionLog,
     wires: Wires,
     header: &dyn Fn(&str) -> String,
@@ -116,8 +117,9 @@ fn serve(
         events,
         replies,
     } = wires;
+    let entry = Entry::for_model(model.is_some());
     let planner = ProgressPlanner {
-        inner: planner,
+        inner: model.unwrap_or(&NoModel),
         events: events.clone(),
     };
     let mut confirm = ChannelConfirm {
@@ -126,6 +128,11 @@ fn serve(
     };
     let mut session = SessionState::start(host);
     for request in requests {
+        if entry == Entry::Command {
+            // With no model nothing else says the shell is working, and leaving
+            // must wait for the step rather than abandon it.
+            let _ = events.send(Event::Busy("working"));
+        }
         let outcome = Shell {
             session: &mut session,
             authority,
@@ -134,7 +141,7 @@ fn serve(
             confirm: &mut confirm,
             log,
         }
-        .handle(&request)
+        .handle_as(entry, &request)
         .render();
         // A `cd` changes where the session is, which the header says.
         let _ = events.send(Event::Header(header(&session.cwd_text(host))));
@@ -163,7 +170,14 @@ fn worker(
         events,
         replies,
     };
-    serve(&authority, &host, &planner, &mut log, wires, &header);
+    serve(
+        &authority,
+        &host,
+        planner.as_ref().map(|p| p as &dyn Planner),
+        &mut log,
+        wires,
+        &header,
+    );
 }
 
 fn is_ctrl_c(key: &KeyEvent) -> bool {
@@ -291,7 +305,10 @@ fn write_transcript(path: &Path, text: &str) -> std::io::Result<()> {
 /// Open the interface and run until the person quits. The history is printed
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
-    let mut state = State::new(setup.header(&SessionState::start(&setup.host)));
+    let mut state = State::for_entry(
+        setup.header(&SessionState::start(&setup.host)),
+        setup.entry(),
+    );
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
@@ -457,7 +474,7 @@ mod tests {
         serve(
             &Authority::full(user(false)),
             &files(),
-            &ScriptedPlanner::new(&[DELETE_LARGEST]),
+            Some(&ScriptedPlanner::new(&[DELETE_LARGEST])),
             &mut log,
             Wires {
                 requests,
@@ -479,6 +496,57 @@ mod tests {
             !log.events.iter().any(|e| e["event"] == "executed"),
             "nothing ran"
         );
+    }
+
+    #[test]
+    fn with_no_model_a_line_is_a_command_and_the_planner_is_never_asked() {
+        use crate::pipeline_tests::files;
+        use crate::testing::{MemoryLog, user};
+
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        let (reply_tx, replies) = channel();
+        request_tx
+            .send("fs list --in downloads".to_owned())
+            .unwrap();
+        request_tx.send("delete the big files".to_owned()).unwrap();
+        drop((request_tx, reply_tx));
+        let mut log = MemoryLog::default();
+        serve(
+            &Authority::full(user(false)),
+            &files(),
+            None,
+            &mut log,
+            Wires {
+                requests,
+                events: events_tx,
+                replies,
+            },
+            &|cwd| format!("header in {cwd}"),
+        );
+        let seen: Vec<Event> = events.try_iter().collect();
+        assert!(
+            seen.iter()
+                .all(|e| !matches!(e, Event::Busy(label) if *label == "asking the model"))
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|e| matches!(e, Event::Busy("working")))
+                .count(),
+            2,
+            "each typed line starts as work, not as a wait for a model"
+        );
+        let outcomes: Vec<&String> = seen
+            .iter()
+            .filter_map(|e| match e {
+                Event::Outcome(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes[0].contains("-> done"), "{}", outcomes[0]);
+        assert!(outcomes[1].contains("Not a command"), "{}", outcomes[1]);
+        assert!(log.events.iter().all(|e| e["event"] != "model_output"));
     }
 
     #[test]

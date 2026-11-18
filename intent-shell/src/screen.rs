@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use crate::action::{Action, UserOperation, WriteMode, is_hidden, printable, quoted};
 use crate::broker::{Review, ReviewedAction, ReviewedStep, Verdict};
 use crate::label::Labels;
-use crate::plan::StepId;
+use crate::plan::{Origin, StepId};
 use crate::ports::{ChoiceLine, EntryKind, TREE_DEPTH, TreeEntry};
 use crate::resolve::Ambiguity;
 
@@ -211,8 +211,12 @@ fn summary_line(review: &Review) -> String {
     } else {
         String::new()
     };
+    let who = match review.origin {
+        Origin::Model => "The model says",
+        Origin::Typed => "Typed commands",
+    };
     format!(
-        "{} steps, {} actions: {ok} ok, {held} held for root, {refused} refused{choose}.  The model says: {}",
+        "{} steps, {} actions: {ok} ok, {held} held for root, {refused} refused{choose}.  {who}: {}",
         review.steps.len(),
         ok + held + refused,
         quoted(&review.summary)

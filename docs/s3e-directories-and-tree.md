@@ -241,10 +241,12 @@ attempts failed for the reasons under "Findings".
   is private to the user, as before. Old logs stay readable: only fields were
   added.
 - S4 measures the model on paths (the weaknesses above), with schema version 3.
-  S5 types `cd`, `ls` and `tree --depth N`; the tree text already says
-  "name a path to open it" until the flag exists.
+  S5 types `cd`, `ls` and `rm` as short words; `tree` and `--depth` are not
+  provided, because the format has no depth (ADR 0022, section 5). The tree
+  text says "name a path to open it".
 - ADR 0018 says "use a path or `--depth`" in the tree example; `--depth` does
-  not exist until S5, so the text says only the path.
+  not exist, so the text says only the path. A depth would need a plan format
+  version 4 and an ADR of its own.
 
 ## Full-width layout (S3f)
 

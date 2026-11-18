@@ -8,8 +8,8 @@ use std::io::{self, IsTerminal, Write};
 use crate::action::printable;
 use crate::ports::{ChoiceLine, Confirm, User};
 use crate::screen::fit;
-use crate::session::{SessionState, Shell};
-use crate::setup::Setup;
+use crate::session::{Entry, SessionState, Shell};
+use crate::setup::{Setup, planner_of};
 
 struct TerminalConfirm;
 
@@ -144,12 +144,20 @@ impl Confirm for TerminalConfirm {
     }
 }
 
+/// The prompt shows the directory, because the header is printed only once.
+fn prompt(entry: Entry, cwd: &str) -> String {
+    match entry {
+        Entry::Command => format!("command {cwd}> "),
+        Entry::Request => format!("intent {cwd}> "),
+    }
+}
+
 pub fn run(mut setup: Setup) -> Result<(), String> {
     let mut confirm = TerminalConfirm;
     let mut session = SessionState::start(&setup.host);
     println!("{}", setup.header(&session));
     loop {
-        print!("intent {}> ", session.cwd_text(&setup.host));
+        print!("{}", prompt(setup.entry(), &session.cwd_text(&setup.host)));
         let _ = io::stdout().flush();
         let mut request = String::new();
         match io::stdin().read_line(&mut request) {
@@ -166,23 +174,33 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
         if request.is_empty() {
             continue;
         }
+        let entry = setup.entry();
         let mut shell = Shell {
             session: &mut session,
             authority: &setup.authority,
             host: &setup.host,
-            planner: &setup.planner,
+            planner: planner_of(setup.planner.as_ref()),
             confirm: &mut confirm,
             log: &mut setup.log,
         };
-        let outcome = shell.handle(request).render();
+        let outcome = shell.handle_as(entry, request).render();
         println!("{}", fit(&outcome, width_for(&outcome, 0)));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_details, is_yes, numbered, parse_choice};
+    use super::{Entry, is_details, is_yes, numbered, parse_choice, prompt};
     use crate::ports::ChoiceLine;
+
+    #[test]
+    fn the_prompt_says_whether_a_model_is_listening_and_where_the_session_is() {
+        assert_eq!(
+            prompt(Entry::Request, "~/Documents"),
+            "intent ~/Documents> "
+        );
+        assert_eq!(prompt(Entry::Command, "~"), "command ~> ");
+    }
 
     #[test]
     fn only_the_candidates_of_a_choice_are_numbered() {
