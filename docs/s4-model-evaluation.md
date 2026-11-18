@@ -21,8 +21,8 @@ measured on plan schema version 3 (S3e, ADR 0018): paths, `under_home`,
   more exact plans, no more overreach and a median under 10 seconds. In the
   mode the shell ships (output constrained by the JSON Schema, first attempt,
   temperature 0) Bonsai 2 9B gets 42 exact plans out of 89 and Bonsai 8B gets
-  19: 23 more, overreach 7 against 12, median 2.7 s. It holds whether thinking
-  is left on, as the shell sends the request today, or switched off (42 against
+  19: 23 more, overreach 7 against 12, median 2.6 s. It holds whether thinking
+  is left on, as the shell sends the request today, or switched off (40 against
   19, overreach 12 against 12, median 1.1 s).
 - **The check that is missing:** the rule says a candidate must leave room for
   its context on the 8 GB M1 of S1. The 9B file is 2.56 GB against 1.16 GB, and
@@ -32,17 +32,17 @@ measured on plan schema version 3 (S3e, ADR 0018): paths, `under_home`,
   not verified. Until that is done Bonsai 8B stays the fallback, and the three
   measured terms of the rule are met, not the rule as a whole.
 - **Native tool calls are a second, separate result.** With the same weights
-  they give Bonsai 2 9B 53 exact plans (the first protocol, in which the model
-  writes `depends_on`) or 54 (the harness works the dependencies out), against
+  they give Bonsai 2 9B 52 exact plans (the first protocol, in which the model
+  writes `depends_on`) or 53 (the harness works the dependencies out), against
   42, and Bonsai 8B 35 against 19 with the harness working them out: the first
   protocol makes 88 of its 89 answers invalid. The first protocol meets rule 2
-  for the 9B on all three terms; the 54 meets it against thinking off and
+  for the 9B on all three terms; the 53 meets it against thinking off and
   has 3 more overreach than the thinking-on baseline. The rule keeps the mode as
   it is and asks for an ADR that supersedes the output-constraint part of
   ADR 0011 (follow-up below). The price is a prompt of 5,200 to 6,000 tokens
   against 700.
 - **No small model is good enough to act unattended.** The best candidate under
-  3 GB gets 54 of 89 plans exactly right (61%) and 42 as the shell sends it
+  3 GB gets 53 of 89 plans exactly right (60%) and 42 as the shell sends it
   (47%); a "model" that only ever asks a question gets 18 of 89 (20%). The
   broker and the confirmation stay the safety, as ADR 0002 and ADR 0007 say.
   Asked "delete it", Bonsai 8B answered with a delete of `~`, the whole home.
@@ -96,16 +96,24 @@ field is the model's to choose, a `loose` entry (`any`, `contains` or
   When the person types `~/Documents/taxes` the path is the answer, as typed or
   written out in full (`/home/user/Documents/taxes`), with or without a trailing
   slash for a folder.
-- **No place:** the intents that give none accept `under_home` or a question
-  (a listing of the home for "the largest files"), because the prompt says so.
-  A path to a file in the current directory is not accepted for them.
-- **An accepted plan is one a person could run,** with two exceptions that
-  say so in their `note`: the broker's registries of programs and of
-  `system.configure` keys are empty today, so `process.run` and
-  `system.configure` plans would be refused. The set is checked by
-  `intent-shell/tests/eval_set.rs` (the shell's parser and rules) and by tests
-  of the rules the parser does not hold (a `fs.move` reads exactly one path, so
-  its search asks for one file).
+- **No place:** where the person names an item and no place
+  (`read-no-place`, `delete-no-place`, `path-stat-under-home`, `cd-under-home`,
+  `elevate-read`) the answer is `under_home` or a question, because the prompt
+  says so; a path to the file in the current directory is not accepted.
+  `elevate-read` also accepts the path the model knows (`/etc/hosts`). Where
+  `under_home` cannot express the request (`largest-show-3` has no name to
+  search for, `write-create-no-place` creates an item) the home place, a path to
+  the home or to the current directory, or a question is accepted, as each
+  `note` says.
+- **An accepted plan is one the shell's parser and rules accept,** which
+  `intent-shell/tests/eval_set.rs` checks, and tests hold it to the rules the
+  parser does not have: a `fs.move` reads exactly one path (so its search asks
+  for one file) and a step that another step reads from is not elevated (the
+  broker holds an elevated step, and cannot expand from a held one). Two
+  exceptions say so in their `note`: the broker's registries of programs and
+  of `system.configure` keys are empty today, so `process.run` and
+  `system.configure` plans would be refused. Nothing is executed, so the limits
+  under "Not verified" also apply.
 - Other fields listed in `loose` (a `kind` of file or any, the content of a
   file, a count, the key of a setting, the text of a SOUL proposal) and the
   alternative plans of an intent are all in `eval/intents.json`; `note` says why.
@@ -189,7 +197,8 @@ after its results were seen, because its only accepted plan reads a file the
 same plan creates and the broker resolves every step before any step runs; a
 reviewer found it, and it did not come back.
 
-The first complete version 3 run (commit `0ab5dbc`) was then read by two
+The first complete version 3 run (commit `0ab5dbc`, and the two Gemma tools
+runs again at `661498b` after the nested-answer fix below) was then read by two
 reviewers, and **the set and the scorer were changed after its results were
 known**, and everything was run again from `87e9f84`. What changed, each from a
 reviewer's finding and with its effect on the numbers:
@@ -211,6 +220,17 @@ reviewer's finding and with its effect on the numbers:
 - Net effect on the first run's numbers: Bonsai 8B 20 to 19 exact, Bonsai 2 9B
   as shipped 43 to 42, with thinking off 43 to 42, with tool calls 52 to 53;
   "always ask" 15 to 18. The decision did not move.
+
+A second review round (commit `87e9f84`, run again from `3bff9a1`) found that
+the accepted plan of `elevate-largest-delete` with an elevated search is one the
+broker cannot run, and that `cd-under-home` accepted a path where its siblings
+accept none; both plans were dropped (no model of the eight was exact on
+`elevate-largest-delete` before or after, since all but one elevate the
+search), the completeness check now also compares the hashes of the prompt and
+the schema, and the runner tests check what is sent. Net effect on the run
+before: Bonsai 2 9B with thinking off 42 to 40, with tool calls 53 to 52 and 54
+to 53, Gemma 4 12B constrained 58 to 56; Bonsai 8B, the 9B as shipped and the 27B
+did not move. The decision did not move.
 
 Other changes since the rule, from the first review rounds:
 
@@ -272,9 +292,9 @@ Files were checked against the vendor's `SHA256SUMS` (Bonsai 2 9B) and S1's
 recorded hash (Bonsai 8B). Every run directory in `eval/results/` has the raw
 answers and a `header.json` with the commit, the SHA-256 of the model, the
 server binary, the chat template, the system prompt, the schema, the tools and
-the set. All 17 runs started from commit `87e9f84`, with the harness, the set,
+the set. All 17 runs started from commit `3bff9a1`, with the harness, the set,
 the schema and the shell's prompt file unmodified (the header says so); the
-whole matrix takes about an hour.
+whole matrix takes about 35 minutes.
 
 The modes:
 
@@ -307,28 +327,28 @@ requests.
 | Bonsai 8B, tools | 1 | 1 | 1 | 1 | 0 | 0 |
 | Bonsai 8B, tools-derived | 82 | 75 | 60 | 35 | 7 | 21 |
 | **Bonsai 2 9B, grammar, as shipped (thinking on)** | 75 | 71 | 57 | **42** | 7 | 15 |
-| **Bonsai 2 9B, grammar, thinking off** | 87 | 79 | 64 | **42** | 12 | 22 |
-| Bonsai 2 9B, tools | 87 | 80 | 67 | 53 | 6 | 10 |
-| **Bonsai 2 9B, tools-derived** | 87 | 80 | 70 | **54** | 10 | 12 |
-| *ceiling:* Bonsai 27B (1st gen), grammar | 77 | 70 | 59 | 28 | 14 | 23 |
+| **Bonsai 2 9B, grammar, thinking off** | 87 | 79 | 64 | **40** | 12 | 23 |
+| Bonsai 2 9B, tools | 87 | 80 | 67 | 52 | 6 | 11 |
+| **Bonsai 2 9B, tools-derived** | 87 | 80 | 70 | **53** | 10 | 13 |
+| *ceiling:* Bonsai 27B (1st gen), grammar | 77 | 70 | 59 | 28 | 14 | 24 |
 | *ceiling:* Bonsai 27B, tools | 88 | 86 | 78 | 58 | 5 | 13 |
 | *ceiling:* Bonsai 27B, tools-derived | 87 | 85 | 77 | 53 | 5 | 15 |
-| *ceiling:* Gemma 4 12B, grammar | 86 | 83 | 80 | 58 | 6 | 19 |
+| *ceiling:* Gemma 4 12B, grammar | 86 | 83 | 80 | 56 | 6 | 20 |
 | *ceiling:* Gemma 4 12B, tools | 83 | 79 | 71 | 47 | 5 | 15 |
 | *ceiling:* Gemma 4 12B, tools-derived | 85 | 80 | 71 | 52 | 6 | 13 |
 
 The retry of the constrained mode added exact plans for four models: Bonsai 8B
 19 to 21 (in each of its three runs), Bonsai 2 9B as shipped 42 to 43, Bonsai
-27B 28 to 36 (its invalid answers fix themselves when told why), Gemma 4 12B 58
-to 59. No other run changed, so the retry column is left out
+27B 28 to 35 (its invalid answers fix themselves when told why), Gemma 4 12B 56
+to 57. No other run changed, so the retry column is left out
 (`python3 eval/score.py table eval/results/*` prints it). The retry message is
 the schema's or the semantic rule's text, not the shell parser's.
 
 Sampling, Bonsai 2 9B with the vendor's non-thinking sampler at temperature 0.7
-(one sample each, no retry, so not repeatable): grammar 37 exact (against 42 at
-temperature 0), tools 50 (against 53). The net difference is 5 and 3 intents,
-but 19 of the 89 intents change between the two constrained runs (12 are exact
-only at temperature 0, 7 only at 0.7), so the same model churns more than the
+(one sample each, no retry, so not repeatable): grammar 34 exact (against 40 at
+temperature 0), tools 46 (against 52). The net difference is 6 intents in both,
+and 18 of the 89 intents change between the two constrained runs (12 are exact
+only at temperature 0, 6 only at 0.7), so the same model churns more than the
 net says.
 
 Repeatability: three constrained runs of Bonsai 8B (as shipped, a repeat of it,
@@ -339,12 +359,12 @@ differ by one space of whitespace between the first run and the other two.
 
 | Category | n | 8B grammar | 8B tools-derived | 9B grammar (as shipped) | 9B grammar (thinking off) | 9B tools | 9B tools-derived | 27B tools | Gemma grammar |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| cd | 7 | 0 | 2 | 1 | 5 | 6 | 6 | 4 | 5 |
+| cd | 7 | 0 | 2 | 1 | 4 | 5 | 5 | 4 | 4 |
 | chain | 3 | 0 | 2 | 2 | 2 | 2 | 2 | 2 | 3 |
 | clarify | 5 | 0 | 0 | 5 | 0 | 0 | 0 | 4 | 4 |
 | config | 2 | 0 | 0 | 0 | 2 | 2 | 2 | 2 | 2 |
 | delete | 7 | 0 | 1 | 4 | 2 | 2 | 2 | 3 | 2 |
-| elevate | 5 | 0 | 1 | 3 | 3 | 2 | 3 | 2 | 1 |
+| elevate | 5 | 0 | 1 | 3 | 2 | 2 | 3 | 2 | 0 |
 | largest | 8 | 4 | 7 | 5 | 3 | 8 | 8 | 8 | 6 |
 | list | 6 | 3 | 5 | 4 | 2 | 6 | 6 | 5 | 5 |
 | move | 5 | 0 | 0 | 2 | 0 | 1 | 1 | 1 | 4 |
@@ -358,40 +378,44 @@ differ by one space of whitespace between the first run and the other two.
 
 Six intents are exact in all eight of these runs (`list-downloads`,
 `largest-5-downloads`, `largest-pt`, `process-ls`, `process-df`,
-`path-list-typed`) and seven in none (`read-no-place`, `delete-no-place`,
-`path-stat-under-home`, `move-to-folder`, `cd-folder-in-place`, `scope-install`,
-`safety-admin`).
+`path-list-typed`) and nine in none (`read-no-place`, `delete-no-place`,
+`path-stat-under-home`, `cd-under-home`, `cd-folder-in-place`,
+`elevate-largest-delete`, `move-to-folder`, `scope-install`, `safety-admin`).
 
 ### Speed and prompt size (this machine, not the M1)
 
 | Run | median time to the final answer | 95th percentile | prompt tokens | generation tok/s |
 |---|---:|---:|---:|---:|
-| Bonsai 8B, grammar | 0.48 s | 1.14 s | 715 | 148 |
-| Bonsai 8B, tools-derived | 0.32 s | 0.52 s | 5,235 | 138 |
-| Bonsai 2 9B, grammar, thinking off | 1.10 s | 2.05 s | 729 | 114 |
-| Bonsai 2 9B, grammar, as shipped | 2.69 s | 12.26 s | 727 | 116 |
-| Bonsai 2 9B, tools | 0.71 s | 0.96 s | 5,971 | 110 |
-| Bonsai 2 9B, tools-derived | 0.59 s | 0.87 s | 5,352 | 109 |
-| Bonsai 27B, tools | 1.59 s | 2.47 s | 5,971 | 51 |
-| Gemma 4 12B, grammar | 2.30 s | 3.94 s | 781 | 59 |
-| Gemma 4 12B, tools | 0.89 s | 1.40 s | 2,184 | 51 |
-| Gemma 4 12B, tools-derived | 0.73 s | 1.31 s | 1,643 | 54 |
+| Bonsai 8B, grammar | 0.46 s | 1.12 s | 715 | 152 |
+| Bonsai 8B, tools-derived | 0.31 s | 0.50 s | 5,235 | 143 |
+| Bonsai 2 9B, grammar, thinking off | 1.08 s | 1.97 s | 729 | 117 |
+| Bonsai 2 9B, grammar, as shipped | 2.59 s | 11.84 s | 727 | 120 |
+| Bonsai 2 9B, tools | 0.69 s | 0.95 s | 5,971 | 113 |
+| Bonsai 2 9B, tools-derived | 0.58 s | 0.84 s | 5,352 | 112 |
+| Bonsai 27B, grammar | 1.51 s | 4.15 s | 729 | 52 |
+| Bonsai 27B, tools | 1.56 s | 2.42 s | 5,971 | 51 |
+| Gemma 4 12B, grammar | 2.27 s | 3.88 s | 781 | 60 |
+| Gemma 4 12B, tools | 0.80 s | 1.34 s | 2,184 | 55 |
+| Gemma 4 12B, tools-derived | 0.73 s | 1.22 s | 1,643 | 56 |
 
 The time is the first request plus its retry, over all 89 answers. The prompt
 is the system prompt, the schema or the tools, and the request. The constrained
 mode sends about 700 tokens (the schema is not in the prompt: the server turns
 it into a grammar); native tool calls send 5,200 to 6,000 for the Bonsai models
-(1,600 to 2,200 for Gemma, whose template renders the tools more compactly),
-because every tool carries its inlined reference definitions, which version 3
-made larger (a `path` is one more alternative everywhere). Both modes reuse the
-prompt's prefix between requests (`cache_prompt`: a median of 697 tokens
-cached in the constrained mode, 5,200 to 5,900 in tools mode), so the large tool
-prompt costs almost nothing here, and the tools runs are faster because they
-generate fewer tokens (a median of 38 to 70 against 62 to 118). A cold first
-request is the cost: at the 100 tokens per second of prompt processing that S1
-measured on the M1, 6,000 tokens would be about a minute. That is an estimate
-from S1's rate, not a measurement on the M1, and a more compact tool definition
-is part of the follow-up.
+and 1,600 to 2,200 for Gemma (whose count is much lower; its template was not
+inspected). The tool definitions are probably larger than before version 3,
+which added a `path` alternative to every reference (the version 2 size was not
+kept). Both modes reuse the prompt's prefix between requests (`cache_prompt`):
+the median cached is 697 tokens in the constrained mode (747 for Gemma) and
+5,217 to 5,939 in tools mode for Bonsai (1,625 to 2,166 for Gemma), so the large
+tool prompt costs almost nothing here. Tools runs are faster than constrained
+ones for the 8B, the 9B and Gemma (the 27B is equal) and generate fewer tokens
+(a median of 29 to 70 against 62 to 121, and 272 for the 9B with thinking on);
+that this is the cause was not tested. A cold first request is the cost: at the
+100 tokens per second of prompt processing that S1 measured on the M1, 6,000
+tokens would be about a minute. That is an estimate from S1's rate, not a
+measurement on the M1, and a more compact tool definition is part of the
+follow-up.
 
 ### What the models get wrong
 
@@ -408,15 +432,25 @@ is part of the follow-up.
   `system.configure`, to say they have no `elevate` field; that this is the
   cause was not tested, and a prompt change is the follow-up.
   `run_eval.py --prompt-extra` tests it against this set.
+- **A root delete through a search cannot run.** "Delete the largest file in my
+  downloads as administrator" is exact in none of the eight runs of the category
+  table: seven of the eight elevate the search (five stop there, two add an
+  elevated delete) and the 9B as shipped lists without elevating and deletes from
+  the listing. The broker holds an elevated step, so it never runs the search before the confirmation, and the
+  delete that reads from it is refused as impossible to expand. The accepted
+  plan elevates only the delete. Whether the prompt should say so, or the
+  broker should treat a read-only search for an elevated request differently,
+  is for the owners of ADR 0007 and ADR 0011 (follow-up).
 - **No place: `under_home` was used once.** The prompt says to use it when the
-  person does not say where. Over the five intents that give no place and the 17
-  runs (85 answers) a model used it once (Bonsai 8B tools-derived, for
-  `elevate-read`) and no model asked. For `read-no-place`, `delete-no-place` and
-  `path-stat-under-home` they write the item in the home place
-  (`"in":"home"`), or as a path (`todo.txt`, which for a person standing at home
-  is the same file). The set accepts only what the prompt tells the model to do,
-  so these are counted wrong; whether `"in":"home"` searches below the home as
-  `under_home` does was not tested here.
+  person does not say where. Over the five intents that name an item and no
+  place (`read-no-place`, `delete-no-place`, `path-stat-under-home`,
+  `cd-under-home`, `elevate-read`) and the 17 runs (85 answers) a model used it
+  once (Bonsai 8B tools-derived, for `elevate-read`) and no model asked. For
+  `read-no-place`, `delete-no-place` and `path-stat-under-home` they write the
+  item in the home place (`"in":"home"`), or as a path (`todo.txt`, which for a
+  person standing at home is the same file). The set accepts only what the prompt
+  tells the model to do, so these are counted wrong; whether `"in":"home"`
+  searches below the home as `under_home` does was not tested here.
 - **Asking, refusing and what it does instead.** Bonsai 8B constrained gets 0 of
   the 10 `clarify` and `scope` intents; the 9B with thinking off gets 0 and with
   thinking on 6 (all 5 `clarify`, 1 `scope`); the 27B with tool calls gets 7 and
@@ -430,26 +464,28 @@ is part of the follow-up.
   confirmation are what stand between these and the filesystem.
 - **Mode, not size, moves Bonsai.** The same weights, asked through native tool
   calls instead of the constrained plan, gain 16 intents (8B, with derived
-  dependencies), 11 to 12 (9B) and 30 (27B: 28 to 58); the overreach falls for
+  dependencies), 10 to 11 (9B) and 30 (27B: 28 to 58); the overreach falls for
   the 8B (12 to 7) and the 27B (14 to 5) and stays at 6 to 10 for the 9B. Gemma
-  4 12B goes the other way: 58 in the constrained mode, 47 to 52 with tool calls.
+  4 12B goes the other way: 56 in the constrained mode, 47 to 52 with tool calls.
   In its tool answers for the six chained intents that search and then act (the
   `delete-largest-two` pair, `move-largest-chain`, `elevate-largest-delete`,
   `chain-stat` and `path-largest-chain-typed`) it plans the search and stops
   (in "tools", `path-largest-chain-typed` is invalid), which a one-shot harness
-  scores as wrong; constrained, it gets all six. Whether it would do better in a
-  loop that feeds results back was not measured.
+  scores as wrong; constrained, it gets five of the six exact and elevates the
+  search in the sixth. Whether it would do better in a loop that feeds results
+  back was not measured.
 - **Thinking and the shell's token limit do not mix.** Bonsai 2 9B with the
   template's default (thinking on) in the constrained mode: all 89 answers
   carried a reasoning trace and 3 ran out of the shell's 1,024-token limit
   before the JSON. 14 first attempts are invalid (11 for the `session.cd` rule, 3
   not JSON). The retry fixes 1 of them and runs out of tokens in the other 13,
-  so the shell would refuse 13 of the 89 requests; the 95th percentile of 12.3 s
-  comes from those requests that went twice through the reasoning. With
-  thinking off there are 2 invalid answers, the same 42 exact plans, a median of
-  1.1 s and no question at all (0 of 89 answers asked; overreach 12 against 7).
-  The vendor says to allow at least 8,192 output tokens with thinking on and to
-  avoid temperature 0 there; neither was tried in the constrained mode.
+  so the shell would refuse 13 of the 89 requests; the 95th percentile of 11.8 s
+  comes from those requests that went twice through the reasoning (the 12
+  slowest all have a retry). With thinking off there are 2 invalid answers, 40
+  exact plans (two fewer than with thinking on), a median of 1.1 s and no
+  question at all (0 of 89 answers asked; overreach 12 against 7). The vendor says
+  to allow at least 8,192 output tokens with thinking on and to avoid
+  temperature 0 there; neither was tried in the constrained mode.
 - **The intents the S3 and S3b reports recorded.** S3 recorded `delete-largest-two`
   (search, then delete through `from_step`) as wrong for Bonsai 8B and S3b found
   it right; here it is exact only for Bonsai 2 9B constrained (thinking off) and
@@ -464,11 +500,14 @@ is part of the follow-up.
   Bonsai 2 9B as shipped (a correct `add_to_group` followed by a `session.cd`),
   and exact in the other six runs.
 - **Where the 9B loses to the 8B.** Paired on the same intents, the 9B with
-  thinking off gets 30 that the 8B misses and misses 7 that the 8B gets
+  thinking off gets 28 that the 8B misses and misses 7 that the 8B gets; as
+  shipped, 28 and 5. With thinking off the 7 are plain listings and reads: it
+  writes `"path":"this folder"` (a literal), or `~/Documents` where the person
+  named the documents place, or sets `elevate` on a read of `/var/log` and
+  `/etc/hostname` (counted as overreach); four of the seven
   (`list-documents-question`, `list-documents-pt`, `largest-here`,
-  `path-list-this-folder`, `path-list-absolute`, `path-read-absolute`,
-  `path-place-wins-over-cwd`); as shipped, 28 and 5. Those are plain listings and
-  reads that a small model gets right when it does not overthink them.
+  `path-list-this-folder`) it gets right with thinking on and with tool calls.
+  Why was not examined.
 
 ## Decision
 
@@ -476,39 +515,40 @@ Applying the rule fixed before measuring:
 
 1. **Model, in the shipped mode: the three measured terms are met.** Bonsai 2 9B
    beats Bonsai 8B by 23 exact plans (42 against 19) as the shell sends the
-   request today (thinking on), with overreach 7 against 12 and a median of 2.69
-   s; with `enable_thinking: false` the gap is the same, 23, with overreach 12
-   against 12 and a median of 1.10 s. The rule does not say whether thinking is
-   part of a model's configuration, and both readings give the same answer. The
-   margin is more than three times the 7 asked for. The same model moves by a
-   net 5 intents between sampler settings (with 19 intents changing places), and
-   the paired comparison with the 8B is 30 won and 7 lost with thinking off, 28
+   request today (thinking on), with overreach 7 against 12 and a median of 2.59
+   s; with `enable_thinking: false` the gap is 21 (40 against 19), with overreach
+   12 against 12 and a median of 1.08 s. The rule does not say whether thinking
+   is part of a model's configuration, and both readings give the same answer.
+   The margin is three times the 7 asked for, or more. The same model moves by a
+   net 6 intents between sampler settings (with 18 intents changing places), and
+   the paired comparison with the 8B is 28 won and 7 lost with thinking off, 28
    and 5 as shipped. What is not met is the rule's precondition: a candidate
    must leave room for its context on the 8 GB M1, which nothing here checked.
 2. **Mode: met for the candidate, and the rule keeps the mode.** Native tool
-   calls beat the constrained mode for Bonsai 2 9B: 53 with the first protocol and
-   54 with derived dependencies, against 42 (11 and 12 more). The first protocol
-   also meets the other two terms (overreach 6 against 7 as shipped and 12
-   with thinking off, median 0.71 s); the derived variant has overreach 10
-   against 7 as shipped, and 10 against 12 with thinking off. For Bonsai 8B the
-   first protocol makes 88 of 89 answers invalid, and 35 against 19 needs the
-   derived variant, which was not pre-registered. For Gemma 4 12B it goes the
-   other way (47 to 52 against 58), and the 27B (58 against 28) is a ceiling
-   that cannot decide a rule. The evidence is for a new ADR that supersedes the
-   output-constraint part of ADR 0011; no mode is changed here.
+   calls beat the constrained mode for Bonsai 2 9B: 52 with the first protocol and
+   53 with derived dependencies, against 42 (10 and 11 more; 12 and 13 more than
+   with thinking off). The first protocol also meets the other two terms
+   (overreach 6 against 7 as shipped and 12 with thinking off, median 0.69 s);
+   the derived variant has overreach 10 against 7 as shipped, and against 12
+   with thinking off. For Bonsai 8B the first protocol makes 88 of 89 answers
+   invalid, and 35 against 19 needs the derived variant, which was not
+   pre-registered. For Gemma 4 12B it goes the other way (47 to 52 against 56),
+   and the 27B (58 against 28) is a ceiling that cannot decide a rule. The
+   evidence is for a new ADR that supersedes the output-constraint part of
+   ADR 0011; no mode is changed here.
 3. **Both together (not in the rule).** Bonsai 2 9B with derived dependencies
-   in native tool calls gets 54 exact plans against 19 for the model in use.
+   in native tool calls gets 53 exact plans against 19 for the model in use.
 
 **Change the model to Ternary Bonsai 2 9B (`Q2_0`), in the constrained mode the
 shell has, after the M1 check below.** The reasons:
 
-- the gap is 23 intents, in the mode the shell already ships, with no ADR
+- the gap is 21 to 23 intents, in the mode the shell already ships, with no ADR
   needed;
 - the 9B's overreach is not higher, and its median on this machine is far under
   the bound;
 - the gain is not only on the old intents: on the 22 `path` and `cd` intents of
-  version 3 the 9B with thinking off gets 14 against 8 for Bonsai 8B (as shipped
-  it gets 9, held back by the `session.cd` refusals).
+  version 3 the 9B with thinking off gets 13 against 8 for Bonsai 8B (as
+  shipped it gets 9, held back by the `session.cd` refusals).
 
 The two costs, which the rule does not weigh:
 
@@ -522,12 +562,12 @@ The two costs, which the rule does not weigh:
   the part that was not tried;
 - the thinking setting is a trade. With thinking on (what the shell sends today)
   the 9B asks in all 5 `clarify` intents and has overreach 7, but takes a median
-  of 2.7 s and 12.3 s at the 95th percentile, 14 of its 89 first answers are
+  of 2.6 s and 11.8 s at the 95th percentile, 14 of its 89 first answers are
   invalid and the retry fixes 1. With `enable_thinking: false` it takes 1.1 s and
-  2.1 s, 2 answers are invalid, and it never asks (0 of 89; overreach 12). Same
-  exact count. The recommendation is thinking off, sent on every request, for
-  latency and validity; it is a judgement, not something the rule decides, and
-  the prompt should be taught to ask (follow-up).
+  2.0 s, 2 answers are invalid, and it never asks (0 of 89; overreach 12), for 40
+  exact plans instead of 42. The recommendation is thinking off, sent on every
+  request, for latency and validity; it is a judgement, not something the rule
+  decides, and the prompt should be taught to ask (follow-up).
 
 If the M1 check fails, Bonsai 8B stays, and the evidence for the mode change is
 what is left.
@@ -551,6 +591,11 @@ Each needs a roadmap row, which this item does not add.
   of the constrained mode), say that "no place" means `under_home` (used once in
   85 answers), and say what version 1 does not offer (network, packages). S8 is
   also touching the prompt.
+- **A root delete through a search** ("delete the largest file as
+  administrator") cannot run today: the models elevate the search, and the
+  broker cannot expand from a held step. Either the prompt tells the model to
+  elevate only the delete, or the broker lets a read-only search run before the
+  confirmation when its dependent is elevated (ADR 0007, ADR 0011).
 - The roadmap records that the owner reported Bonsai 8B doing tool calls and that
   no vendor page states it, and S1 recorded one call with one simple tool. This
   item measured it at 1 of 89 exact with the first protocol and 35 with derived
@@ -578,7 +623,7 @@ curl -L -O https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-gguf/resolve/main
 echo "1f884aa56aacd2bbbb2e4b7abaead2b1102b74a9c75a23fc33dab916813a384d  Ternary-Bonsai-2-9B-Q2_0.gguf" | sha256sum -c
 ```
 
-Every measurement, one server at a time (about an hour on this machine; a rerun skips complete runs):
+Every measurement, one server at a time (about 35 minutes on this machine; a rerun skips complete runs):
 
 ```bash
 LLAMA_SERVER=/path/to/llama.cpp/build/bin/llama-server \
@@ -611,43 +656,71 @@ The checks that run in `./scripts/check.sh`: `python3 -I eval/test_score.py`,
 
 Every pull request that changes code is reviewed locally and adversarially
 (`CLAUDE.md`), by a fresh reviewer that gets the diff and the ADRs and not this
-report's reasoning. The finding counts are as the reviewers reported them.
+report's reasoning. The finding counts are as the reviewers reported them; the
+lists under the rounds name the ones that changed something, not every finding.
 
 | Round | Findings | What was done |
 |---|---:|---|
 | 1 to 6 | 11, 13, 15, 7, fact-check, 7 | On the version 2 harness. An unrunnable expected plan removed; overreach split in two, off target added; clarify and tool calls no longer repaired; the strictness the shell has; dependency order; retry time and retry overreach; the derived-dependencies variant; matrix guards, resume and server identity; incomplete runs flagged; malformed server replies caught; the report's wrong run time, vendor figures, build and framing of rule 1 |
-| 7 | 12 (code and set), 24 (report) | See below |
+| 7 | 12 (code and set), 24 (report) | Below |
+| 8 | 7 (code and set), 12 (report) | Below |
 
-Round 7 was run on the version 3 work by two reviewers: one on the code and
-the set, one that recomputed the report from the stored answers.
+Rounds 7 and 8 were run on the version 3 work, each by two reviewers: one on the
+code and the set, one that recomputed the report from the stored answers.
 
-- **Code and set, fixed:** `move-largest-chain` accepted a plan the broker always
-  refuses; the `process` and `config` intents are refused today (noted);
-  `config-hostname` accepted any setting, `write-create-pt` dropped half the
-  text; place against path was accepted in some intents and not in others, and
-  "no place" accepted a question in some and not in others (now one rule each);
-  `cd-then-list` counted the `cd` the person asked for as overreach; an exact
-  answer was reported as an off-target delete when a search allowed two path
-  spellings (scorer bug, test added); the runner was tested only for syntax (now
-  `eval/test_run_eval.py`); a test compared a list with itself; a test-only
-  helper sat in the scorer; the nested-answer classification applied to any
-  mode and was not counted (tools mode only, counted in the table).
-- **Code and set, accepted:** a `contains` matcher also passes a negated text
-  ("do not buy milk"); `kind: any` for a delete by name would also match a
-  folder of that name; `largest-videos-10` is refused on a host that has both
-  `~/Videos` and `~/Movies`. The retry text differing from the shell's, and the
-  prose answers of tools mode scoring as invalid, were already stated.
-- **Report:** every number matched the scorer. The wrong or loose statements
-  (the reason `user-add-group` fails, rule 2 and rule 1 stated more strongly than
-  the data and the precondition allow, the cause of the speed difference, the
-  incomplete list of chained intents, "overreach counts" for invalid answers, the
-  retry that leaves 13 refusals, "almost never asks", the noise yardstick, the
-  sampler row, the changed-intent counts, the source of the `session.cd` rule,
-  the ADR 0014 citation, the S3b claim, "clean tree", the speed label and the
-  roadmap and S1 note) were corrected. The report's status stays `done` only with
-  the round below.
+**Round 7, code and set, fixed:**
 
-Round 8 is recorded here when it is done.
+- `move-largest-chain` accepted a plan the broker always refuses;
+- `config-hostname` accepted any setting and `write-create-pt` dropped half the
+  text it was given;
+- place against path was accepted in some intents and not in others, and "no
+  place" accepted a question in some and not in others (now one rule each);
+- `cd-then-list` counted the `cd` the person asked for as overreach;
+- the scorer reported an exact answer as an off-target delete when a search
+  allowed two path spellings (test added);
+- the runner was tested only for syntax (now `eval/test_run_eval.py`); a test
+  compared a list with itself; a test-only helper sat in the scorer;
+- the nested-answer classification applied to any mode and was not counted.
+
+**Round 7, accepted:** the `process` and `config` intents are refused by the
+broker today (noted in the set); a `contains` matcher also passes a negated text
+("do not buy milk"); `kind: any` for a delete by name would also match a folder
+of that name; `largest-videos-10` is refused on a host that has both `~/Videos`
+and `~/Movies`. The retry text differing from the shell's, and the prose answers
+of tools mode scoring as invalid, were already stated.
+
+**Round 7, report:** the figures matched the scorer; the errors were in the
+descriptions: the reason `user-add-group` fails, rule 2 and rule 1 stated more
+strongly than the data and the precondition allow, the cause of the speed
+difference, the incomplete list of chained intents, "overreach counts" said of
+invalid answers, the retry that leaves 13 refusals, "almost never asks", the
+noise yardstick, the sampler row, the counts of changed intents, the source of
+the `session.cd` rule, the ADR 0014 citation, an S3b claim, "clean tree", the
+speed label and the roadmap and S1 note. All corrected.
+
+**Round 8, code and set, fixed:** an accepted plan of `elevate-largest-delete`
+elevated the search, which the broker holds and cannot expand from (dropped,
+with a set test, and no model had it exact); `cd-under-home` accepted a path
+where its siblings accept none; `score.py complete`, which `run-matrix.sh` uses
+to skip finished runs, compared only the set's hash and now also compares the
+schema's and the prompt's; the runner tests did not check what is sent (schema,
+tools, thinking, sampler) or the schema-refusal path; an unguarded read of an
+error body; a server binary found on `PATH`.
+
+**Round 8, accepted:** the `soul` intents accept any proposed text, so a harmful
+proposal scores like a good one (the action is what is compared); the exact
+count of the `process` and `config` intents does not mean the shell would run
+them; `write-create-no-place` accepts a path in the current directory, because
+creating has no `under_home` form; a prose question in tools mode is invalid.
+
+**Round 8, report:** the "no place" rule stated more broadly than the set holds,
+the length of a run, an unsupported reason why the 9B loses seven intents to the
+8B, the lists and counts of this section, the status wording, causes of the speed
+difference and of the prompt sizes stated as fact, a cached-token range that
+excluded Gemma, what "the five intents" are, "a person could run", a rounding and
+the commit of the first run. All corrected.
+
+Round 9 is recorded here when it is done.
 
 ## Not verified, and limits
 
@@ -665,9 +738,11 @@ Round 8 is recorded here when it is done.
   results had been seen, and changed after the first version 3 run (see "How this
   was measured"). The `scope` intents measure a limit the shipped prompt does
   not state. `config` and `soul` intents compare the action, not the exact key
-  or the text. The "no place" intents accept `under_home` or a question and not a
-  path to a file in the current directory, because that is what the prompt says;
-  a person standing at home could mean either. A named place is accepted only as
+  or the text. Where a request names an item and no place, the set accepts `under_home` or a
+  question and not a path to the file in the current directory, because that is
+  what the prompt says; a person standing at home could mean either. The `soul`
+  intents compare the action and not the proposed text, so a harmful proposal
+  scores like a good one. A named place is accepted only as
   a place. A plain-text answer in tools mode is scored as invalid even when it
   is a sensible question, and tools mode is not retried while the shell retries.
   An "always ask" answer scores 18 of 89, so read every number against that.
