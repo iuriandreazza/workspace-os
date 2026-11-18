@@ -7,6 +7,7 @@ use std::io::{self, IsTerminal, Write};
 
 use crate::action::printable;
 use crate::ports::{ChoiceLine, Confirm, User};
+use crate::screen::fit;
 use crate::session::{SessionState, Shell};
 use crate::setup::Setup;
 
@@ -41,16 +42,53 @@ fn is_details(answer: &str) -> bool {
     matches!(answer.trim(), "d" | "D" | "details")
 }
 
+/// What the number takes in front of a line: `   NN. `.
+const NUMBER_COLUMN: usize = 7;
+
 /// The tree of a choice with a number on each candidate, and none on the
 /// context around it.
-fn numbered(lines: &[ChoiceLine]) -> Vec<String> {
+fn numbered(lines: &[ChoiceLine], width: usize) -> Vec<String> {
     lines
         .iter()
-        .map(|line| match line.option {
-            Some(index) => format!("   {:>2}. {}", index + 1, line.text),
-            None => format!("       {}", line.text),
+        .map(|line| {
+            let text = crate::screen::fit_choice(
+                &line.text,
+                width.saturating_sub(NUMBER_COLUMN),
+                crate::screen::cells_of,
+            );
+            match line.option {
+                Some(index) => format!("   {:>2}. {text}", index + 1),
+                None => format!("       {text}"),
+            }
         })
         .collect()
+}
+
+/// Columns to lay `text` out in, which is to be printed `indent` cells in: the
+/// terminal's, or, when output is redirected and has no width, what keeps every
+/// line whole.
+fn width_for(text: &str, indent: usize) -> usize {
+    if !io::stdout().is_terminal() {
+        return crate::screen::natural_width(text) + indent;
+    }
+    terminal_width()
+}
+
+/// Columns of the terminal; 80 when it does not say.
+fn terminal_width() -> usize {
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `size` is live for the call and is what `TIOCGWINSZ` fills in.
+    let known = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } == 0;
+    if known && size.ws_col > 0 {
+        usize::from(size.ws_col)
+    } else {
+        80
+    }
 }
 
 /// The one-based number the person typed, as an index into `count` options.
@@ -83,7 +121,12 @@ impl Confirm for TerminalConfirm {
 
     fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize> {
         println!("\n  {question}");
-        for line in numbered(lines) {
+        let text = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for line in numbered(lines, width_for(&text, NUMBER_COLUMN)) {
             println!("{line}");
         }
         let options = lines.iter().filter(|l| l.option.is_some()).count();
@@ -131,7 +174,8 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
             confirm: &mut confirm,
             log: &mut setup.log,
         };
-        println!("{}", shell.handle(request).render());
+        let outcome = shell.handle(request).render();
+        println!("{}", fit(&outcome, width_for(&outcome, 0)));
     }
 }
 
@@ -148,12 +192,15 @@ mod tests {
             label: text.trim().to_owned(),
         };
         assert_eq!(
-            numbered(&[
-                line(" ~    2 folders", None),
-                line(" ├─ Documents/", None),
-                line(" │  └─ report.pdf", Some(0)),
-                line(" └─ report.pdf", Some(1)),
-            ]),
+            numbered(
+                &[
+                    line(" ~    2 folders", None),
+                    line(" ├─ Documents/", None),
+                    line(" │  └─ report.pdf", Some(0)),
+                    line(" └─ report.pdf", Some(1)),
+                ],
+                80
+            ),
             [
                 "        ~    2 folders",
                 "        ├─ Documents/",

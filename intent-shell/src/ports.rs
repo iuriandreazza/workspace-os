@@ -68,6 +68,11 @@ pub struct TreeEntry {
     pub readable: bool,
     /// A place or the filesystem root: it cannot be removed or overwritten whole.
     pub protected: bool,
+    /// The owner's name, as the host knows it.
+    pub owner: Option<String>,
+    /// When it was created (or last changed where the host keeps no creation
+    /// time), already written for the person: `2026-11-17 14:30`.
+    pub created: Option<String>,
 }
 
 /// An item a name search came across.

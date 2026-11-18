@@ -35,6 +35,8 @@ pub struct FakeHost {
     pub listings: HashMap<PathBuf, Vec<PathBuf>>,
     /// Pairs of locations that are the same thing, as a folder under two cases.
     pub aliases: Vec<(PathBuf, PathBuf)>,
+    /// What a read returns, instead of a run of `x`.
+    pub content: Option<String>,
 }
 
 impl Default for FakeHost {
@@ -58,6 +60,7 @@ impl Default for FakeHost {
             searched: RefCell::default(),
             listings: HashMap::new(),
             aliases: Vec::new(),
+            content: None,
         }
     }
 }
@@ -154,6 +157,8 @@ impl FakeHost {
                 size,
                 readable: true,
                 protected: false,
+                owner: None,
+                created: None,
             });
         };
         let known: Vec<PathBuf> = self
@@ -328,7 +333,7 @@ impl Host for FakeHost {
                 })
             }
             Action::Read { .. } => Ok(Output {
-                text: "x".repeat(5000),
+                text: self.content.clone().unwrap_or_else(|| "x".repeat(5000)),
                 ..Output::default()
             }),
             _ => Ok(Output::default()),

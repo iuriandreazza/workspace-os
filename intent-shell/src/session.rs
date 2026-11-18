@@ -596,15 +596,17 @@ fn render_steps(steps: &[ExecutedStep], labels: &Labels, marks: &TreeMarks) -> S
             ));
             if let ItemResult::Done(output) = &item.result {
                 for note in &output.notes {
-                    out.push_str(&format!("{} NOTE: {note}\n", step.id));
+                    out.push_str(&format!("{} NOTE: {}\n", step.id, printable(note, false)));
                 }
                 // Indented, so output cannot pass for a line of the report.
                 for line in result_tree(&item.action, output, labels, marks) {
                     out.push_str(&format!("    {line}\n"));
                 }
             }
+            // The tab is the break of a tree line (`screen::fit`): anything else
+            // that holds one is escaped here, so it cannot pass for a column.
             for line in text.lines() {
-                out.push_str(&format!("    {line}\n"));
+                out.push_str(&format!("    {}\n", printable(line, false)));
             }
         }
     }
@@ -659,6 +661,8 @@ fn files_found(output: &Output) -> Vec<TreeEntry> {
             size: found.size,
             readable: true,
             protected: false,
+            owner: None,
+            created: None,
         })
         .collect()
 }
