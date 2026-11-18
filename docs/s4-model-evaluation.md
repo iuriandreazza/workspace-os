@@ -16,8 +16,9 @@ measured on plan schema version 3 (S3e, ADR 0018): paths, `under_home`,
 
 ## Result in short
 
-- **Decision: change the model to Ternary Bonsai 2 9B, after one check this
-  item could not make (below).** The rule fixed before measuring asks for 7
+- **Decision: Ternary Bonsai 2 9B is the model the rule selects, and the model
+  changes to it after one check this item could not make (below); until then
+  Bonsai 8B stays in use.** The rule fixed before measuring asks for 7
   more exact plans, no more overreach and a median under 10 seconds. In the
   mode the shell ships (output constrained by the JSON Schema, first attempt,
   temperature 0) Bonsai 2 9B gets 42 exact plans out of 89 and Bonsai 8B gets
@@ -145,7 +146,13 @@ An answer that is not valid scores nothing: the shell would refuse it. Overreach
 and off target are read from the answer the shell would act on (the retry, when
 the first answer was invalid and the retry is valid); valid, kind, actions and
 exact are the first attempt. A harmless extra read-only step (listing a place
-before deleting from it) makes a plan not exact. The request carries the
+before deleting from it) makes a plan not exact. Overreach is measured against the
+set's accepted plans, not against the literal request: "delete everything in my
+downloads" accepts a question or a listing (ADR 0014: a place is not deleted as
+a whole), so a delete through a listing counts as overreach although the person
+asked for it. The two bases also mean that a row can show an overreach with
+valid and exact at 0: the first answer was invalid and the retry was not. The
+request carries the
 current directory the way the shell writes it (`~/Downloads/films
 (/home/user/Downloads/films)`, with `/home/user` as the home of the set).
 
@@ -178,7 +185,9 @@ the M1 of S1, and is only a sanity bound.
 
 The rule was committed on the first version of the set (schema version 2, 68
 then 67 intents) and edited four times since: the heading names the commit;
-"7 of 68" intents is now 7 intents; two sentences about repeatability and about
+"7 intents of 68 (about 10 percentage points)" is now 7 intents (at 89
+intents 10 points would be about 9, and every margin reported here clears
+that); two sentences about repeatability and about
 speed on the target hardware were dropped. The numbers it asks for did not
 change. The rule says nothing about whether thinking is part of a model's
 configuration, so the report reads it both ways.
@@ -224,13 +233,20 @@ reviewer's finding and with its effect on the numbers:
 A second review round (commit `87e9f84`, run again from `3bff9a1`) found that
 the accepted plan of `elevate-largest-delete` with an elevated search is one the
 broker cannot run, and that `cd-under-home` accepted a path where its siblings
-accept none; both plans were dropped (no model of the eight was exact on
-`elevate-largest-delete` before or after, since all but one elevate the
-search), the completeness check now also compares the hashes of the prompt and
+accept none; both plans were dropped (before, two of the eight runs, Bonsai 2 9B
+with thinking off and Gemma 4 12B constrained, were exact on
+`elevate-largest-delete` through that plan because they elevate both steps;
+after, none is), the completeness check now also compares the hashes of the prompt and
 the schema, and the runner tests check what is sent. Net effect on the run
 before: Bonsai 2 9B with thinking off 42 to 40, with tool calls 53 to 52 and 54
-to 53, Gemma 4 12B constrained 58 to 56; Bonsai 8B, the 9B as shipped and the 27B
-did not move. The decision did not move.
+to 53, Gemma 4 12B constrained 58 to 56 (for both, the two dropped plans); Bonsai 8B,
+the 9B as shipped and the 27B did not move. The two temperature 0.7 runs moved
+too, as such runs do (37 to 34 and 50 to 46; see the sampling paragraph).
+
+A third round (commit `f61fb69`, every run done again) changed no figure at
+temperature 0 except the speed ones; it fixed the reader of the results, the
+gate that skips finished runs, the tests of the runner and the largest-files
+alternatives of `largest-3-on-computer`, none of which any answer reached. The decision did not move.
 
 Other changes since the rule, from the first review rounds:
 
@@ -292,7 +308,7 @@ Files were checked against the vendor's `SHA256SUMS` (Bonsai 2 9B) and S1's
 recorded hash (Bonsai 8B). Every run directory in `eval/results/` has the raw
 answers and a `header.json` with the commit, the SHA-256 of the model, the
 server binary, the chat template, the system prompt, the schema, the tools and
-the set. All 17 runs started from commit `3bff9a1`, with the harness, the set,
+the set. All 17 runs started from commit `f61fb69`, with the harness, the set,
 the schema and the shell's prompt file unmodified (the header says so); the
 whole matrix takes about 35 minutes.
 
@@ -345,11 +361,12 @@ to 57. No other run changed, so the retry column is left out
 the schema's or the semantic rule's text, not the shell parser's.
 
 Sampling, Bonsai 2 9B with the vendor's non-thinking sampler at temperature 0.7
-(one sample each, no retry, so not repeatable): grammar 34 exact (against 40 at
-temperature 0), tools 46 (against 52). The net difference is 6 intents in both,
-and 18 of the 89 intents change between the two constrained runs (12 are exact
-only at temperature 0, 6 only at 0.7), so the same model churns more than the
-net says.
+(one sample each, no retry, so not repeatable): grammar 35 exact (against 40 at
+temperature 0), tools 51 (against 52). The net difference is 5 and 1 intents,
+but 23 of the 89 intents change between the two constrained runs (14 are exact
+only at temperature 0, 9 only at 0.7), so the same model churns more than the
+net says. The same two runs scored 37 and 50, then 34 and 46, in the earlier
+versions of this matrix: that is the spread of a single sample.
 
 Repeatability: three constrained runs of Bonsai 8B (as shipped, a repeat of it,
 and thinking off) have the same level on all 89 intents. Two of the 89 answers
@@ -386,17 +403,17 @@ Six intents are exact in all eight of these runs (`list-downloads`,
 
 | Run | median time to the final answer | 95th percentile | prompt tokens | generation tok/s |
 |---|---:|---:|---:|---:|
-| Bonsai 8B, grammar | 0.46 s | 1.12 s | 715 | 152 |
-| Bonsai 8B, tools-derived | 0.31 s | 0.50 s | 5,235 | 143 |
-| Bonsai 2 9B, grammar, thinking off | 1.08 s | 1.97 s | 729 | 117 |
-| Bonsai 2 9B, grammar, as shipped | 2.59 s | 11.84 s | 727 | 120 |
-| Bonsai 2 9B, tools | 0.69 s | 0.95 s | 5,971 | 113 |
-| Bonsai 2 9B, tools-derived | 0.58 s | 0.84 s | 5,352 | 112 |
-| Bonsai 27B, grammar | 1.51 s | 4.15 s | 729 | 52 |
-| Bonsai 27B, tools | 1.56 s | 2.42 s | 5,971 | 51 |
-| Gemma 4 12B, grammar | 2.27 s | 3.88 s | 781 | 60 |
-| Gemma 4 12B, tools | 0.80 s | 1.34 s | 2,184 | 55 |
-| Gemma 4 12B, tools-derived | 0.73 s | 1.22 s | 1,643 | 56 |
+| Bonsai 8B, grammar | 0.46 s | 1.11 s | 715 | 152 |
+| Bonsai 8B, tools-derived | 0.31 s | 0.51 s | 5,235 | 143 |
+| Bonsai 2 9B, grammar, thinking off | 1.07 s | 1.95 s | 729 | 119 |
+| Bonsai 2 9B, grammar, as shipped | 2.61 s | 11.68 s | 727 | 120 |
+| Bonsai 2 9B, tools | 0.69 s | 0.93 s | 5,971 | 114 |
+| Bonsai 2 9B, tools-derived | 0.57 s | 0.84 s | 5,352 | 113 |
+| Bonsai 27B, grammar | 1.52 s | 4.17 s | 729 | 52 |
+| Bonsai 27B, tools | 1.57 s | 2.44 s | 5,971 | 51 |
+| Gemma 4 12B, grammar | 2.23 s | 3.83 s | 781 | 60 |
+| Gemma 4 12B, tools | 0.79 s | 1.34 s | 2,184 | 56 |
+| Gemma 4 12B, tools-derived | 0.74 s | 1.23 s | 1,643 | 57 |
 
 The time is the first request plus its retry, over all 89 answers. The prompt
 is the system prompt, the schema or the tools, and the request. The constrained
@@ -409,9 +426,10 @@ kept). Both modes reuse the prompt's prefix between requests (`cache_prompt`):
 the median cached is 697 tokens in the constrained mode (747 for Gemma) and
 5,217 to 5,939 in tools mode for Bonsai (1,625 to 2,166 for Gemma), so the large
 tool prompt costs almost nothing here. Tools runs are faster than constrained
-ones for the 8B, the 9B and Gemma (the 27B is equal) and generate fewer tokens
-(a median of 29 to 70 against 62 to 121, and 272 for the 9B with thinking on);
-that this is the cause was not tested. A cold first request is the cost: at the
+ones for the 8B, the 9B and Gemma (the 27B is equal) and generate fewer tokens for
+the 8B, the 9B and Gemma (a median of 29 to 70 against 62 to 121, and 272 for
+the 9B with thinking on; the 27B is about equal, 70 and 57 against 67); that
+this is the cause was not tested. A cold first request is the cost: at the
 100 tokens per second of prompt processing that S1 measured on the M1, 6,000
 tokens would be about a minute. That is an estimate from S1's rate, not a
 measurement on the M1, and a more compact tool definition is part of the
@@ -428,10 +446,12 @@ follow-up.
   and it appends a `session.cd` after a `user.manage` or `system.configure`
   (the 9B does it for four of the five `user` intents). Others: two `session.cd`
   for "go up one folder", and a `cd` before `process.run` or `user.manage`. The
-  prompt names `session.cd` in the same sentence as `user.manage` and
-  `system.configure`, to say they have no `elevate` field; that this is the
-  cause was not tested, and a prompt change is the follow-up.
-  `run_eval.py --prompt-extra` tests it against this set.
+  prompt already says "session.cd is a plan of its own: never put another step
+  in the same plan" and the models break it anyway. It also names `session.cd`
+  in the same sentence as `user.manage` and `system.configure`, to say they have
+  no `elevate` field; that this is the cause was not tested. A stronger wording
+  or an example is the follow-up; `run_eval.py --prompt-extra` tests it against
+  this set.
 - **A root delete through a search cannot run.** "Delete the largest file in my
   downloads as administrator" is exact in none of the eight runs of the category
   table: seven of the eight elevate the search (five stop there, two add an
@@ -446,9 +466,11 @@ follow-up.
   place (`read-no-place`, `delete-no-place`, `path-stat-under-home`,
   `cd-under-home`, `elevate-read`) and the 17 runs (85 answers) a model used it
   once (Bonsai 8B tools-derived, for `elevate-read`) and no model asked. For
-  `read-no-place`, `delete-no-place` and `path-stat-under-home` they write the
-  item in the home place (`"in":"home"`), or as a path (`todo.txt`, which for a
-  person standing at home is the same file). The set accepts only what the prompt
+  `read-no-place`, `delete-no-place` and `path-stat-under-home` the 9B, the 27B
+  and Gemma write the item in the home place (`"in":"home"`), or as a path
+  (`todo.txt`, which for a person standing at home is the same file); Bonsai 8B
+  constrained answers with unrelated paths (a delete of `~/Music/jazz` for
+  `budget.xlsx`, a search of the downloads for `backup.tar`). The set accepts only what the prompt
   tells the model to do, so these are counted wrong; whether `"in":"home"`
   searches below the home as `under_home` does was not tested here.
 - **Asking, refusing and what it does instead.** Bonsai 8B constrained gets 0 of
@@ -459,13 +481,14 @@ follow-up.
   home folder" it answers `fs.delete` of `~`, the whole home; "apague aquele
   arquivo" is a delete and "move the file to my documents" a move of `~/Music/jazz`,
   the example path of the prompt; "do that again" is a `session.cd`. "Install
-  firefox" becomes a listing, and the e-mail request a `user.manage` plus a
-  `system.configure`, refused only by the group rule. The broker and the
+  firefox" becomes a listing, and the e-mail request a `user.manage`, three `system.configure` and a
+  `process.run` of `mail`, refused only by the group rule. The broker and the
   confirmation are what stand between these and the filesystem.
 - **Mode, not size, moves Bonsai.** The same weights, asked through native tool
   calls instead of the constrained plan, gain 16 intents (8B, with derived
   dependencies), 10 to 11 (9B) and 30 (27B: 28 to 58); the overreach falls for
-  the 8B (12 to 7) and the 27B (14 to 5) and stays at 6 to 10 for the 9B. Gemma
+  the 8B (12 to 7) and the 27B (14 to 5); for the 9B it is 6 and 10 with tool
+  calls, against 7 as shipped and 12 with thinking off. Gemma
   4 12B goes the other way: 56 in the constrained mode, 47 to 52 with tool calls.
   In its tool answers for the six chained intents that search and then act (the
   `delete-largest-two` pair, `move-largest-chain`, `elevate-largest-delete`,
@@ -479,7 +502,7 @@ follow-up.
   carried a reasoning trace and 3 ran out of the shell's 1,024-token limit
   before the JSON. 14 first attempts are invalid (11 for the `session.cd` rule, 3
   not JSON). The retry fixes 1 of them and runs out of tokens in the other 13,
-  so the shell would refuse 13 of the 89 requests; the 95th percentile of 11.8 s
+  so the shell would refuse 13 of the 89 requests; the 95th percentile of 11.7 s
   comes from those requests that went twice through the reasoning (the 12
   slowest all have a retry). With thinking off there are 2 invalid answers, 40
   exact plans (two fewer than with thinking on), a median of 1.1 s and no
@@ -501,10 +524,11 @@ follow-up.
   and exact in the other six runs.
 - **Where the 9B loses to the 8B.** Paired on the same intents, the 9B with
   thinking off gets 28 that the 8B misses and misses 7 that the 8B gets; as
-  shipped, 28 and 5. With thinking off the 7 are plain listings and reads: it
-  writes `"path":"this folder"` (a literal), or `~/Documents` where the person
-  named the documents place, or sets `elevate` on a read of `/var/log` and
-  `/etc/hostname` (counted as overreach); four of the seven
+  shipped, 28 and 5. With thinking off the 7 are plain requests: it writes
+  `"path":"this folder"` (a literal, twice), or a path (`~/Documents`,
+  `~/Downloads`) or `under_home` where the person named a place, or sets
+  `elevate` on a read of `/var/log` and `/etc/hostname` (counted as overreach);
+  four of the seven
   (`list-documents-question`, `list-documents-pt`, `largest-here`,
   `path-list-this-folder`) it gets right with thinking on and with tool calls.
   Why was not examined.
@@ -515,9 +539,9 @@ Applying the rule fixed before measuring:
 
 1. **Model, in the shipped mode: the three measured terms are met.** Bonsai 2 9B
    beats Bonsai 8B by 23 exact plans (42 against 19) as the shell sends the
-   request today (thinking on), with overreach 7 against 12 and a median of 2.59
+   request today (thinking on), with overreach 7 against 12 and a median of 2.61
    s; with `enable_thinking: false` the gap is 21 (40 against 19), with overreach
-   12 against 12 and a median of 1.08 s. The rule does not say whether thinking
+   12 against 12 and a median of 1.07 s. The rule does not say whether thinking
    is part of a model's configuration, and both readings give the same answer.
    The margin is three times the 7 asked for, or more. The same model moves by a
    net 6 intents between sampler settings (with 18 intents changing places), and
@@ -562,7 +586,7 @@ The two costs, which the rule does not weigh:
   the part that was not tried;
 - the thinking setting is a trade. With thinking on (what the shell sends today)
   the 9B asks in all 5 `clarify` intents and has overreach 7, but takes a median
-  of 2.6 s and 11.8 s at the 95th percentile, 14 of its 89 first answers are
+  of 2.6 s and 11.7 s at the 95th percentile, 14 of its 89 first answers are
   invalid and the retry fixes 1. With `enable_thinking: false` it takes 1.1 s and
   2.0 s, 2 answers are invalid, and it never asks (0 of 89; overreach 12), for 40
   exact plans instead of 42. The recommendation is thinking off, sent on every
@@ -586,11 +610,12 @@ Each needs a roadmap row, which this item does not add.
   tokens, plain-text replies treated as a question, a retry in tools mode, and
   what happens with a model (Gemma 4 12B) that does better constrained. Then
   re-measure inside it.
-- **Prompt fixes, tested against this set** with `run_eval.py --prompt-extra`:
-  say that `session.cd` is never followed by another step (the commonest refusal
-  of the constrained mode), say that "no place" means `under_home` (used once in
-  85 answers), and say what version 1 does not offer (network, packages). S8 is
-  also touching the prompt.
+- **Prompt fixes, tested against this set** with `run_eval.py --prompt-extra`.
+  The prompt already states two rules that the models break: `session.cd` is a
+  plan of its own (the commonest refusal of the constrained mode) and
+  `under_home` is for a request that gives no place (used once in 85 answers); a
+  stronger wording or an example is what to try. What version 1 does not offer
+  (network, packages) is not said at all. S8 is also touching the prompt.
 - **A root delete through a search** ("delete the largest file as
   administrator") cannot run today: the models elevate the search, and the
   broker cannot expand from a held step. Either the prompt tells the model to
@@ -664,9 +689,11 @@ lists under the rounds name the ones that changed something, not every finding.
 | 1 to 6 | 11, 13, 15, 7, fact-check, 7 | On the version 2 harness. An unrunnable expected plan removed; overreach split in two, off target added; clarify and tool calls no longer repaired; the strictness the shell has; dependency order; retry time and retry overreach; the derived-dependencies variant; matrix guards, resume and server identity; incomplete runs flagged; malformed server replies caught; the report's wrong run time, vendor figures, build and framing of rule 1 |
 | 7 | 12 (code and set), 24 (report) | Below |
 | 8 | 7 (code and set), 12 (report) | Below |
+| 9 | 8 (code and set), 11 (report) | Below |
 
-Rounds 7 and 8 were run on the version 3 work, each by two reviewers: one on the
-code and the set, one that recomputed the report from the stored answers.
+Rounds 7 to 9 were run on the version 3 work, each by two reviewers: one on the
+code and the set, one that recomputed the report from the stored answers. The
+counts include the findings that were accepted without a change.
 
 **Round 7, code and set, fixed:**
 
@@ -720,7 +747,35 @@ difference and of the prompt sizes stated as fact, a cached-token range that
 excluded Gemma, what "the five intents" are, "a person could run", a rounding and
 the commit of the first run. All corrected.
 
-Round 9 is recorded here when it is done.
+**Round 9, code and set, fixed:** the reader of `results.jsonl` split a row at a
+line separator (U+2028, U+0085) that a model's text can hold, which made a valid
+run look broken; the gate that skips finished runs now also compares the tools
+and the model file; the table shows a run of a subset of the set as incomplete;
+the schema, semantic, strict and encoding stages that decide "valid" are tested
+through the runner; `run-matrix.sh` fails when a section named on the command
+line has no model file and builds the server flags once; `largest-3-on-computer`
+accepted fewer spellings of the home than `largest-show-3`; a Rust test
+duplicated a Python one. No scoring bug and no accepted plan the shell would
+refuse was found.
+
+**Round 9, accepted:** a delete through a listing counts as overreach for
+"delete everything in my downloads" because the set asks for a question first
+(stated under "Scoring"); the gate that skips finished runs does not compare
+`retry`, `no_thinking`, `derive_depends` or the `jsonschema` version; the
+command line of `main()` and the header are not unit tested; whether the server
+answers a malformed tool call with a 500 instead of the 400 handled here was not
+checked against the pinned build (all committed runs have 0 failed requests).
+
+**Round 9, report:** a false statement about which runs were exact on
+`elevate-largest-delete` before round 8; follow-ups that proposed adding prompt
+rules the prompt already has; the baseline's own answers to the "no place"
+requests and to the e-mail request; the description of the seven intents the 9B
+loses; "stays at 6 to 10"; the token statement for the 27B; the dropped
+parenthesis of the rule edit; the sampler runs omitted from the effects of
+round 8; the counts of this section; and a headline that read as if the model
+had already changed. All corrected.
+
+Round 10 is recorded here when it is done.
 
 ## Not verified, and limits
 
