@@ -11,14 +11,15 @@
 #![no_main]
 
 mod cpu;
+mod menu;
 mod ui;
 
 use core::slice;
 use core::time::Duration;
 
 use bootinfo::{
-    ARCH_AARCH64, BootInfo, CONSOLE_PL011, ENTRY_MAGIC, EfiDescriptor, MODE_NORMAL, MemoryEntry,
-    MemoryMap, PAGE_SIZE, PageError, Table, TableAttributes, elf,
+    ARCH_AARCH64, BootInfo, CONSOLE_PL011, ENTRY_MAGIC, EfiDescriptor, MemoryEntry, MemoryMap,
+    PAGE_SIZE, PageError, Table, TableAttributes, elf,
 };
 use uefi::boot::{self, AllocateType, MemoryType};
 use uefi::mem::memory_map::MemoryMap as _;
@@ -272,16 +273,35 @@ fn run() -> Outcome<core::convert::Infallible> {
         return Err(Failure::Message("started at an unexpected exception level"));
     }
 
+    // The list is the one place a later source of entries plugs in.
+    let menu = bootinfo::menu::Menu::new(
+        &bootinfo::menu::BUILT_IN,
+        bootinfo::menu::DEFAULT_ENTRY,
+        core::num::NonZeroU32::new(bootinfo::menu::AUTOBOOT_SECONDS),
+    )
+    .ok_or(Failure::Message("the boot menu has no entry to start"))?;
+    let (entry, reason) = menu::choose(menu);
+    ui::ok(format_args!(
+        "starting {} (boot mode {}, {}), {reason}",
+        entry.label,
+        entry.boot_mode,
+        bootinfo::boot_mode_name(entry.boot_mode)
+    ));
+    boot_kernel(entry.boot_mode)
+}
+
+/// Loads the kernel and enters it with `boot_mode` in the boot info.
+fn boot_kernel(boot_mode: u32) -> Outcome<core::convert::Infallible> {
     let kernel_file = read_kernel_file()?;
     let plan = load_kernel(kernel_file)?;
     #[cfg(feature = "selftest-retry-after-failure")]
     let outcome = if FIRST_RUN.swap(false, core::sync::atomic::Ordering::Relaxed) {
         Err(Failure::Message("forced failure of the first run"))
     } else {
-        hand_over(&plan)
+        hand_over(&plan, boot_mode)
     };
     #[cfg(not(feature = "selftest-retry-after-failure"))]
-    let outcome = hand_over(&plan);
+    let outcome = hand_over(&plan, boot_mode);
     // Only a boot that failed gets here. The range is given back so that a
     // second run in the same firmware session (the next boot entry) can load
     // the kernel at the same address.
@@ -296,8 +316,9 @@ fn run() -> Outcome<core::convert::Infallible> {
 #[cfg(feature = "selftest-retry-after-failure")]
 static FIRST_RUN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
-/// Everything after the kernel is loaded, up to the jump into it.
-fn hand_over(plan: &elf::LoadPlan) -> Outcome<core::convert::Infallible> {
+/// Everything after the kernel is loaded, up to the jump into it, with
+/// `boot_mode` in the boot info.
+fn hand_over(plan: &elf::LoadPlan, boot_mode: u32) -> Outcome<core::convert::Infallible> {
     ui::ok(format_args!(
         "kernel loaded at {:#x}..{:#x}, entry {:#x}",
         plan.base, plan.end, plan.entry
@@ -367,7 +388,7 @@ fn hand_over(plan: &elf::LoadPlan) -> Outcome<core::convert::Infallible> {
     let mut info = BootInfo::new();
     info.console_kind = CONSOLE_PL011;
     info.console_base = uart.base;
-    info.boot_mode = MODE_NORMAL;
+    info.boot_mode = boot_mode;
     info.arch = ARCH_AARCH64;
     info.boot_cpu = cpu::boot_cpu();
     info.memory_map = map_address as u64;

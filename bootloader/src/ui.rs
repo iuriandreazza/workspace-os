@@ -59,6 +59,46 @@ pub fn banner() {
     println!();
 }
 
+/// The menu, appended to the console each time its selection changes.
+pub fn menu(menu: &bootinfo::menu::Menu) {
+    log(
+        Level::Info,
+        format_args!("boot menu: arrows and Enter, or a number from 1 to 9"),
+    );
+    for (index, entry) in menu.entries().iter().enumerate() {
+        let selected = index == menu.selected();
+        set(if selected {
+            Color::LightCyan
+        } else {
+            Color::DarkGray
+        });
+        uefi::print!("        {} ", if selected { '>' } else { ' ' });
+        set(if selected {
+            Color::White
+        } else {
+            Color::LightGray
+        });
+        uefi::print!("{}  {}", index + 1, entry.label);
+        set(Color::LightGray);
+        println!();
+    }
+    countdown(menu);
+}
+
+/// The line under the menu: how long until the default entry starts.
+pub fn countdown(menu: &bootinfo::menu::Menu) {
+    match menu.seconds_left() {
+        Some(seconds) => log(
+            Level::Info,
+            format_args!(
+                "autoboot in {seconds} s, starting {}",
+                menu.entries()[menu.selected()].label
+            ),
+        ),
+        None => log(Level::Info, format_args!("autoboot stopped")),
+    }
+}
+
 pub struct Summary {
     pub kernel_base: u64,
     pub kernel_end: u64,
