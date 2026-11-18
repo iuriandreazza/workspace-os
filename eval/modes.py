@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MODEL_RS = ROOT / "intent-shell/src/model.rs"
 
+NESTED_WITHOUT_END = "the model's tool call nests without end (the server refused to parse it)"
 STEP_NAMES = [
     "fsList", "fsStat", "fsRead", "fsFindLargest", "fsWrite", "fsMove",
     "fsDelete", "sessionCd", "processRun", "userManage", "systemConfigure", "soulProposeChange",
@@ -191,15 +192,16 @@ def cwd_for_model(written, home):
     return real if written == real else f"{written} ({real})"
 
 
-def unusable_output(code, detail):
-    """The error text when the server refused its own model's output, else None.
+def unusable_output(mode, code, detail):
+    """The error text when the server refused its own model's tool call, else None.
 
     Seen with Gemma 4 in tools mode: the model writes the same open brace until the
     server's parser stops at 64 levels and answers 400. The same request succeeds for
-    other intents, so this is an unusable answer, not a failing server.
+    other intents, so this is an unusable answer, not a failing server. Only tools
+    mode qualifies: in grammar mode the server builds the output from the schema.
     """
-    if code == 400 and "nested more than" in detail:
-        return "the model's tool call nests without end (the server refused to parse it)"
+    if mode == "tools" and code == 400 and "nested more than" in detail:
+        return NESTED_WITHOUT_END
     return None
 
 

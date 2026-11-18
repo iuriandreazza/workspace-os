@@ -9,6 +9,9 @@ sys.dont_write_bytecode = True  # set before the import, so the gate leaves no .
 spec = importlib.util.spec_from_file_location("score", Path(__file__).with_name("score.py"))
 score = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(score)
+spec = importlib.util.spec_from_file_location("modes", Path(__file__).with_name("modes.py"))
+modes = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(modes)
 
 
 def step(sid, action, args, deps=(), elevate=False):
@@ -185,6 +188,28 @@ class Loose(unittest.TestCase):
     def test_an_unknown_matcher_is_an_error_not_a_pass(self):
         with self.assertRaises(ValueError):
             level(self.got("hello"), self.want(**{"s1.args.content": {"startswith": "h"}}))
+
+
+class LooseAcrossASearch(unittest.TestCase):
+    """A spelling the set allows for a search is allowed where a delete reads from it."""
+
+    SPELLINGS = {"one_of": ["~/Downloads/films", "/home/user/Downloads/films"]}
+
+    def chain(self, path):
+        return plan(
+            step("s1", "fs.find_largest", {"target": {"path": path}, "count": 1}),
+            step("s2", "fs.delete", {"target": {"from_step": "s1"}}, ["s1"]),
+        )
+
+    def test_the_other_spelling_of_the_searched_path_is_not_off_target(self):
+        want = intent({"plan": self.chain("~/Downloads/films"), "loose": {"s1.args.target.path": self.SPELLINGS}})
+        for path in self.SPELLINGS["one_of"]:
+            self.assertEqual(score.score_document(self.chain(path), want), {"level": 3, "overreach": [], "off_target": []}, path)
+
+    def test_a_path_the_set_does_not_allow_is_still_off_target(self):
+        want = intent({"plan": self.chain("~/Downloads/films"), "loose": {"s1.args.target.path": self.SPELLINGS}})
+        scored = score.score_document(self.chain("~/Documents"), want)
+        self.assertEqual(scored["off_target"], ["fs.delete"])
 
 
 class Overreach(unittest.TestCase):
@@ -457,6 +482,15 @@ class Timing(unittest.TestCase):
         )
 
 
+def lookup(tree, dotted):
+    node = tree
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
 class TheSet(unittest.TestCase):
     """Properties of the data file the scorer relies on."""
 
@@ -485,6 +519,21 @@ class TheSet(unittest.TestCase):
                 canonical = score.canonical(accepted["plan"])
                 self.assertEqual([s["action"] for s in canonical.get("steps", [])], [s["action"] for s in accepted["plan"].get("steps", [])], item["id"])
 
+    def test_a_dependency_is_always_a_reference_so_the_derived_variant_can_state_it(self):
+        for item in self.INTENTS:
+            for accepted in item["accept"]:
+                for step in accepted["plan"].get("steps", []):
+                    self.assertEqual(sorted(step["depends_on"]), sorted(set(modes.references(step["args"]))), f"{item['id']} {step['id']}")
+
+    def test_a_move_reads_exactly_one_path_as_the_broker_demands(self):
+        for item in self.INTENTS:
+            for accepted in item["accept"]:
+                steps = {s["id"]: s for s in accepted["plan"].get("steps", [])}
+                for step in steps.values():
+                    source = step["args"].get("from", {}).get("from_step") if step["action"] == "fs.move" else None
+                    if source:
+                        self.assertEqual(steps[source]["args"].get("count"), 1, f"{item['id']}: fs.move needs exactly one path from {source}")
+
     def test_every_accepted_plan_scores_exact_against_itself(self):
         for item in self.INTENTS:
             for accepted in item["accept"]:
@@ -497,11 +546,11 @@ class TheSet(unittest.TestCase):
                     sid, *path = dotted.split(".")
                     steps = {s["id"]: s for s in accepted["plan"]["steps"]}
                     self.assertIn(sid, steps, f"{item['id']} {dotted}")
-                    found, _ = score._lookup(steps[sid], ".".join(path))
+                    found, _ = lookup(steps[sid], ".".join(path))
                     self.assertTrue(found, f"{item['id']} {dotted}")
                     score._accepts(matcher, "probe")  # raises on an unknown matcher
                     if isinstance(matcher, dict) and "one_of" in matcher:
-                        _, own = score._lookup(steps[sid], ".".join(path))
+                        _, own = lookup(steps[sid], ".".join(path))
                         self.assertIn(own, matcher["one_of"], f"{item['id']} {dotted} must allow its own plan")
 
 

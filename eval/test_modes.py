@@ -55,8 +55,9 @@ class Tools(unittest.TestCase):
         names = [t["function"]["name"] for t in TOOLS]
         self.assertEqual(len(names), 13)
         self.assertEqual(names[-1], "clarify")
-        self.assertEqual(sorted(i["action"] for i in BY_NAME.values()), sorted(
-            s["properties"]["action"]["const"] for s in (SCHEMA["$defs"][n] for n in modes.STEP_NAMES)))
+        in_the_schema = sorted(
+            SCHEMA["$defs"][ref["$ref"].rsplit("/", 1)[1]]["properties"]["action"]["const"] for ref in SCHEMA["$defs"]["step"]["oneOf"])
+        self.assertEqual(sorted(i["action"] for i in BY_NAME.values()), in_the_schema)
 
     def test_no_reference_is_left_in_a_tool(self):
         self.assertNotIn("$ref", json.dumps(TOOLS))
@@ -163,11 +164,12 @@ class Names(unittest.TestCase):
 class Server(unittest.TestCase):
     def test_a_tool_call_nested_without_end_is_an_unusable_answer(self):
         detail = '{"error":{"code":400,"message":"input is nested more than 64 levels deep","type":"invalid_request_error"}}'
-        self.assertIn("nests without end", modes.unusable_output(400, detail))
+        self.assertIn("nests without end", modes.unusable_output("tools", 400, detail))
 
     def test_any_other_error_is_still_a_failed_request(self):
-        self.assertIsNone(modes.unusable_output(400, '{"error":{"message":"the request exceeds the available context size"}}'))
-        self.assertIsNone(modes.unusable_output(500, "input is nested more than 64 levels deep"))
+        self.assertIsNone(modes.unusable_output("tools", 400, '{"error":{"message":"the request exceeds the available context size"}}'))
+        self.assertIsNone(modes.unusable_output("tools", 500, "input is nested more than 64 levels deep"))
+        self.assertIsNone(modes.unusable_output("grammar", 400, "input is nested more than 64 levels deep"))
 
 
 class Body(unittest.TestCase):

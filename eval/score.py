@@ -80,15 +80,6 @@ def canonical(document):
     } for step in steps]}
 
 
-def _lookup(tree, dotted):
-    node = tree
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return False, None
-        node = node[part]
-    return True, node
-
-
 def _accepts(matcher, actual):
     if matcher == "any":
         return True
@@ -155,20 +146,35 @@ def overreach(actual, intent):
     return found
 
 
-def _with_sources(step, by_id, seen=()):
+def _with_sources(step, by_id, seen=(), root=None, loose=None, loose_out=None):
     """The step's arguments with each `from_step` replaced by what that step
-    asks for, so a delete is judged together with the search it deletes from."""
-    def expand(value):
+    asks for, so a delete is judged together with the search it deletes from.
+
+    The `loose` entries of an accepted plan name fields by the step they belong
+    to (`s1.args.target.path`); once the search is folded into the delete they
+    live under it (`s2.args.target.from_step.args.target.path`). When `loose` is
+    given, the entries of every folded step are copied to `loose_out` under that
+    longer name, so a spelling the set allows for the search is allowed there too.
+    """
+    root = root or f"{step['id']}.args"
+
+    def expand(value, path):
         if isinstance(value, dict):
             if set(value) == {"from_step"} and value["from_step"] in by_id and value["from_step"] not in seen + (step["id"],):
                 source = by_id[value["from_step"]]
-                return {"from_step": {"action": source["action"], "args": _with_sources(source, by_id, seen + (step["id"],))}}
-            return {key: expand(item) for key, item in value.items()}
+                inner = f"{path}.from_step.args"
+                if loose is not None:
+                    own = f"{source['id']}.args"
+                    for key, matcher in loose.items():
+                        if key == own or key.startswith(own + "."):
+                            loose_out[inner + key[len(own):]] = matcher
+                return {"from_step": {"action": source["action"], "args": _with_sources(source, by_id, seen + (step["id"],), inner, loose, loose_out)}}
+            return {key: expand(item, f"{path}.{key}") for key, item in value.items()}
         if isinstance(value, list):
-            return [expand(item) for item in value]
+            return [expand(item, path) for item in value]
         return value
 
-    return expand(step["args"])
+    return expand(step["args"], root)
 
 
 def off_target(actual, intent):
@@ -183,9 +189,11 @@ def off_target(actual, intent):
     for accepted in intent["accept"]:
         want = canonical(accepted["plan"])
         by_id = {s["id"]: s for s in want.get("steps", [])}
+        loose = accepted.get("loose", {})
         for step in want.get("steps", []):
             if step["action"] in MUTATING:
-                expected.append((step, _with_sources(step, by_id), accepted.get("loose", {})))
+                allowed = dict(loose)
+                expected.append((step, _with_sources(step, by_id, loose=loose, loose_out=allowed), allowed))
     by_id = {s["id"]: s for s in actual["steps"]}
     found = []
     for step in actual["steps"]:
@@ -193,8 +201,8 @@ def off_target(actual, intent):
             continue
         mine = _with_sources(step, by_id)
         if not any(
-            wanted["action"] == step["action"] and _loose_equal(theirs, mine, f"{wanted['id']}.args", loose)
-            for wanted, theirs, loose in expected
+            wanted["action"] == step["action"] and _loose_equal(theirs, mine, f"{wanted['id']}.args", allowed)
+            for wanted, theirs, allowed in expected
         ):
             found.append(step["action"])
     return sorted(set(found))
@@ -361,6 +369,9 @@ def table(run_directories, intents_path):
         warning = "" if header.get("intents_sha256") == current else " (set edited since the run)"
         if summary["n"] != header["intents"]:
             warning += f" (INCOMPLETE: {summary['n']} of {header['intents']})"
+        nested = sum(1 for r in rows.values() if any("nests without end" in e for e in r.get("errors", [])))
+        if nested:
+            warning += f" (answers nested without end, counted as invalid: {nested})"
         out.append(
             f"| {header['label']}{warning} | {summary['n']} | {summary['valid']} | {summary['kind']} "
             f"| {summary['actions']} | {summary['exact']} | {summary['overreach']} | {summary['off_target']} "

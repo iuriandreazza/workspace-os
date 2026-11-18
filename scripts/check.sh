@@ -30,9 +30,9 @@ echo "==> evaluation set"
 # (intent-shell/tests/eval_set.rs), run with the unit tests below.
 python3 -I eval/test_score.py
 python3 -I eval/test_modes.py
+# The runner needs the jsonschema package to run; its wiring is tested with a stand-in validator.
+python3 -I eval/test_run_eval.py
 bash -n eval/run-matrix.sh
-# The runner needs the jsonschema package, so the gate only checks that it parses.
-python3 -I -c "import ast; ast.parse(open('eval/run_eval.py').read())"
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings

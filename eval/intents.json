@@ -1039,7 +1039,7 @@
      },
      "loose": {
       "s1.args.content": {
-       "contains": "leite"
+       "contains": "leite e pão"
       }
      }
     }
@@ -1226,7 +1226,7 @@
    "category": "move",
    "language": "en",
    "source": "new",
-   "text": "move the 2 largest files in my downloads to my documents",
+   "text": "move the largest file in my downloads to my documents",
    "accept": [
     {
      "plan": {
@@ -1241,7 +1241,7 @@
          "target": {
           "place": "downloads"
          },
-         "count": 2
+         "count": 1
         },
         "depends_on": [],
         "elevate": false
@@ -1266,7 +1266,8 @@
      }
     }
    ],
-   "cwd": "~"
+   "cwd": "~",
+   "note": "The broker lets fs.move read exactly one path from a search, so the search asks for one file."
   },
   {
    "id": "delete-by-name",
@@ -1416,9 +1417,16 @@
        ]
       }
      }
+    },
+    {
+     "plan": {
+      "kind": "clarify",
+      "version": 3,
+      "question": "(question is not compared)"
+     }
     }
    ],
-   "note": "The name is exact and there is no place: under_home (the prompt rule), and not a question.",
+   "note": "No place: under_home (the prompt rule) or a question.",
    "cwd": "~"
   },
   {
@@ -1916,10 +1924,17 @@
        }
       ]
      }
+    },
+    {
+     "plan": {
+      "kind": "clarify",
+      "version": 3,
+      "question": "(question is not compared)"
+     }
     }
    ],
    "cwd": "~",
-   "note": "No place: under_home, or the path the model knows. Elevation is asked for."
+   "note": "No place: under_home, the path the model knows, or a question. Elevation is asked for."
   },
   {
    "id": "elevate-root-word",
@@ -2021,7 +2036,8 @@
      }
     }
    ],
-   "cwd": "~"
+   "cwd": "~",
+   "note": "The broker's program registry is empty today, so the shell would refuse this plan; the set holds what a model should propose once a program is registered."
   },
   {
    "id": "process-df",
@@ -2052,7 +2068,8 @@
      }
     }
    ],
-   "cwd": "~"
+   "cwd": "~",
+   "note": "The broker's program registry is empty today, so the shell would refuse this plan; the set holds what a model should propose once a program is registered."
   },
   {
    "id": "process-pt",
@@ -2081,7 +2098,8 @@
      }
     }
    ],
-   "cwd": "~"
+   "cwd": "~",
+   "note": "The broker's program registry is empty today, so the shell would refuse this plan; the set holds what a model should propose once a program is registered."
   },
   {
    "id": "user-add",
@@ -2253,11 +2271,13 @@
       ]
      },
      "loose": {
-      "s1.args.key": "any"
+      "s1.args.key": {
+       "contains": "host"
+      }
      }
     }
    ],
-   "note": "The keys `system.configure` accepts are not defined yet (ADR 0011 open question), so the key is not compared; the value is.",
+   "note": "The keys system.configure accepts are not defined yet (ADR 0011 open question), so the key only has to name the setting; the value is compared. The broker's key list is empty today, so the shell would refuse the plan.",
    "cwd": "~"
   },
   {
@@ -2285,11 +2305,13 @@
       ]
      },
      "loose": {
-      "s1.args.key": "any"
+      "s1.args.key": {
+       "contains": "zone"
+      }
      }
     }
    ],
-   "note": "Key not compared, as above.",
+   "note": "The keys system.configure accepts are not defined yet (ADR 0011 open question), so the key only has to name the setting; the value is compared. The broker's key list is empty today, so the shell would refuse the plan.",
    "cwd": "~"
   },
   {
@@ -3077,37 +3099,9 @@
        ]
       }
      }
-    },
-    {
-     "plan": {
-      "kind": "plan",
-      "version": 3,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "fs.write",
-        "args": {
-         "target": {
-          "new_name": "ideas.txt",
-          "in": "documents"
-         },
-         "content": "first draft",
-         "mode": "create"
-        },
-        "depends_on": [],
-        "elevate": false
-       }
-      ]
-     },
-     "loose": {
-      "s1.args.content": {
-       "contains": "first draft"
-      }
-     }
     }
    ],
-   "note": "Three ways to name the same new file."
+   "note": "Two ways to name the same new file, both through the path the person typed."
   },
   {
    "id": "path-place-wins-over-cwd",
@@ -3135,36 +3129,6 @@
         "elevate": false
        }
       ]
-     }
-    },
-    {
-     "plan": {
-      "kind": "plan",
-      "version": 3,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "fs.list",
-        "args": {
-         "target": {
-          "path": "~/Downloads"
-         }
-        },
-        "depends_on": [],
-        "elevate": false
-       }
-      ]
-     },
-     "loose": {
-      "s1.args.target.path": {
-       "one_of": [
-        "~/Downloads",
-        "/home/user/Downloads",
-        "~/Downloads/",
-        "/home/user/Downloads/"
-       ]
-      }
      }
     }
    ],
@@ -3337,35 +3301,6 @@
        }
       ]
      }
-    },
-    {
-     "plan": {
-      "kind": "plan",
-      "version": 3,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "session.cd",
-        "args": {
-         "target": {
-          "path": "~/Downloads"
-         }
-        },
-        "depends_on": []
-       }
-      ]
-     },
-     "loose": {
-      "s1.args.target.path": {
-       "one_of": [
-        "~/Downloads",
-        "/home/user/Downloads",
-        "~/Downloads/",
-        "/home/user/Downloads/"
-       ]
-      }
-     }
     }
    ]
   },
@@ -3394,35 +3329,6 @@
         "depends_on": []
        }
       ]
-     }
-    },
-    {
-     "plan": {
-      "kind": "plan",
-      "version": 3,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "session.cd",
-        "args": {
-         "target": {
-          "path": "~/Downloads"
-         }
-        },
-        "depends_on": []
-       }
-      ]
-     },
-     "loose": {
-      "s1.args.target.path": {
-       "one_of": [
-        "~/Downloads",
-        "/home/user/Downloads",
-        "~/Downloads/",
-        "/home/user/Downloads/"
-       ]
-      }
      }
     }
    ]
@@ -3454,35 +3360,6 @@
         "depends_on": []
        }
       ]
-     }
-    },
-    {
-     "plan": {
-      "kind": "plan",
-      "version": 3,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "session.cd",
-        "args": {
-         "target": {
-          "path": "~/Documents/taxes"
-         }
-        },
-        "depends_on": []
-       }
-      ]
-     },
-     "loose": {
-      "s1.args.target.path": {
-       "one_of": [
-        "~/Documents/taxes",
-        "/home/user/Documents/taxes",
-        "~/Documents/taxes/",
-        "/home/user/Documents/taxes/"
-       ]
-      }
      }
     }
    ]
@@ -3588,9 +3465,16 @@
        ]
       }
      }
+    },
+    {
+     "plan": {
+      "kind": "clarify",
+      "version": 3,
+      "question": "(question is not compared)"
+     }
     }
    ],
-   "note": "No place: under_home, or the folder in the current directory (the home)."
+   "note": "No place: under_home, the folder in the current directory (the home), or a question."
   },
   {
    "id": "cd-then-list",
@@ -3628,30 +3512,19 @@
       "steps": [
        {
         "id": "s1",
-        "action": "fs.list",
+        "action": "session.cd",
         "args": {
          "target": {
-          "path": "~/Downloads"
+          "place": "downloads"
          }
         },
-        "depends_on": [],
-        "elevate": false
+        "depends_on": []
        }
       ]
-     },
-     "loose": {
-      "s1.args.target.path": {
-       "one_of": [
-        "~/Downloads",
-        "/home/user/Downloads",
-        "~/Downloads/",
-        "/home/user/Downloads/"
-       ]
-      }
      }
     }
    ],
-   "note": "session.cd is a plan of its own: a plan that changes directory and then lists is refused. Listing the place does what was asked."
+   "note": "session.cd is a plan of its own: a plan that changes directory and then lists is refused. Listing the place, or changing to it and listing in the next request, each does half of what was asked and is accepted."
   }
  ]
 }
