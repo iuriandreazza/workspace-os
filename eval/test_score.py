@@ -359,7 +359,8 @@ class Reading(unittest.TestCase):
         import json
         intents_file = Path(directory) / "intents.json"
         intents_file.write_text(json.dumps({"intents": self.INTENTS}), encoding="utf-8")
-        base = {"label": "t", "intents": 1, "intents_sha256": hashlib.sha256(intents_file.read_bytes()).hexdigest()}
+        base = {"label": "t", "mode": "grammar", "intents": 1, "intents_sha256": hashlib.sha256(intents_file.read_bytes()).hexdigest()}
+        base.update(score.expected_inputs(base))
         (directory / "header.json").write_text(json.dumps({**base, **header}), encoding="utf-8")
         return intents_file
 
@@ -374,6 +375,17 @@ class Reading(unittest.TestCase):
         for change in ({"intents_sha256": "other"}, {"intents": 0}):
             intents_file = self.intents_file_and_header(directory, **change)
             self.assertFalse(score.complete(directory, intents_file), change)
+
+    def test_a_run_measured_against_another_prompt_or_schema_is_not_complete(self):
+        for field in ("schema_sha256", "system_prompt_sha256"):
+            directory = self.run_directory([self.row(self.GOOD["document"])])
+            intents_file = self.intents_file_and_header(directory, **{field: "stale"})
+            self.assertFalse(score.complete(directory, intents_file), field)
+
+    def test_a_run_with_an_appended_prompt_is_not_compared_on_the_prompt(self):
+        directory = self.run_directory([self.row(self.GOOD["document"])])
+        intents_file = self.intents_file_and_header(directory, system_prompt_sha256="longer", prompt_extra_sha256="x")
+        self.assertTrue(score.complete(directory, intents_file))
 
     def test_a_run_with_a_failed_request_is_not_complete(self):
         failed = {"id": "a", "valid": False, "level": 0, "overreach": [], "errors": ["request failed: x"]}
@@ -533,6 +545,15 @@ class TheSet(unittest.TestCase):
                     source = step["args"].get("from", {}).get("from_step") if step["action"] == "fs.move" else None
                     if source:
                         self.assertEqual(steps[source]["args"].get("count"), 1, f"{item['id']}: fs.move needs exactly one path from {source}")
+
+    def test_a_step_that_feeds_another_is_not_elevated_because_the_broker_holds_it_and_cannot_expand_from_it(self):
+        for item in self.INTENTS:
+            for accepted in item["accept"]:
+                steps = accepted["plan"].get("steps", [])
+                sources = {r for step in steps for r in modes.references(step["args"])}
+                for step in steps:
+                    if step["id"] in sources:
+                        self.assertFalse(step.get("elevate"), f"{item['id']}: {step['id']} feeds a step and is elevated")
 
     def test_every_accepted_plan_scores_exact_against_itself(self):
         for item in self.INTENTS:

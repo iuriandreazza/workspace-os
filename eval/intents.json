@@ -1789,43 +1789,9 @@
        }
       ]
      }
-    },
-    {
-     "plan": {
-      "kind": "plan",
-      "version": 3,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "fs.find_largest",
-        "args": {
-         "target": {
-          "place": "downloads"
-         },
-         "count": 1
-        },
-        "depends_on": [],
-        "elevate": true
-       },
-       {
-        "id": "s2",
-        "action": "fs.delete",
-        "args": {
-         "target": {
-          "from_step": "s1"
-         }
-        },
-        "depends_on": [
-         "s1"
-        ],
-        "elevate": true
-       }
-      ]
-     }
     }
    ],
-   "note": "The delete must carry elevate; the search may or may not.",
+   "note": "The delete must carry elevate; the search must not: the broker holds an elevated step, and a step that reads from a held step cannot be expanded.",
    "cwd": "~"
   },
   {
@@ -3436,45 +3402,13 @@
     },
     {
      "plan": {
-      "kind": "plan",
-      "version": 3,
-      "summary": "(summary is not compared)",
-      "steps": [
-       {
-        "id": "s1",
-        "action": "session.cd",
-        "args": {
-         "target": {
-          "path": "projects"
-         }
-        },
-        "depends_on": []
-       }
-      ]
-     },
-     "loose": {
-      "s1.args.target.path": {
-       "one_of": [
-        "projects",
-        "./projects",
-        "projects/",
-        "~/projects",
-        "/home/user/projects",
-        "~/projects/",
-        "/home/user/projects/"
-       ]
-      }
-     }
-    },
-    {
-     "plan": {
       "kind": "clarify",
       "version": 3,
       "question": "(question is not compared)"
      }
     }
    ],
-   "note": "No place: under_home, the folder in the current directory (the home), or a question."
+   "note": "No place: under_home or a question."
   },
   {
    "id": "cd-then-list",

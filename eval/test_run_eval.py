@@ -84,6 +84,34 @@ class Attempts(unittest.TestCase):
         self.attempt(runner(), reply({"content": json.dumps(PLAN)}))
         self.assertEqual(self.sent[0]["messages"][1]["content"], "Current directory: ~ (/home/user)\nRequest: list my downloads")
 
+    def test_the_constrained_request_carries_the_schema_and_no_tools(self):
+        self.attempt(runner(), reply({"content": json.dumps(PLAN)}))
+        body = self.sent[0]
+        self.assertEqual(body["response_format"]["json_schema"]["schema"], json.loads(SCHEMA_TEXT))
+        self.assertNotIn("tools", body)
+        self.assertEqual((body["temperature"], body["max_tokens"]), (0, 1024))
+
+    def test_the_tools_request_carries_the_tools_and_derived_ones_have_no_depends_on(self):
+        self.attempt(runner("tools"), reply({"content": "text"}))
+        body = self.sent[0]
+        self.assertEqual((body["tool_choice"], body["parallel_tool_calls"]), ("auto", True))
+        self.assertNotIn("response_format", body)
+        self.assertIn("depends_on", json.dumps(body["tools"]))
+        self.attempt(runner("tools", derive_depends=True), reply({"content": "text"}))
+        self.assertNotIn("depends_on", json.dumps(self.sent[0]["tools"]))
+
+    def test_thinking_off_and_the_sampler_reach_the_request(self):
+        self.attempt(runner(no_thinking=True, sampling='{"top_k": 20}'), reply({"content": json.dumps(PLAN)}))
+        self.assertEqual(self.sent[0]["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(self.sent[0]["top_k"], 20)
+
+    def test_a_document_the_schema_refuses_is_invalid_with_the_schemas_message(self):
+        original = run_eval.best_match
+        run_eval.best_match = lambda errors: types.SimpleNamespace(message="'x' is not valid")
+        self.addCleanup(setattr, run_eval, "best_match", original)
+        record = self.attempt(runner(), reply({"content": json.dumps(PLAN)}))
+        self.assertEqual((record["valid"], record["errors"]), (False, ["'x' is not valid"]))
+
     def test_a_good_tool_call_is_scored_exact(self):
         call = {"function": {"name": "fs_list", "arguments": json.dumps({"target": {"place": "downloads"}, "depends_on": [], "elevate": False})}}
         record = self.attempt(runner("tools"), reply({"content": "", "tool_calls": [call]}))

@@ -23,6 +23,7 @@ import http.client
 import importlib.metadata
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -125,7 +126,10 @@ class Runner:
         try:
             reply, wall = post(self.args.url, self.body(intent, retry), self.args.timeout)
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")
+            try:
+                detail = error.read().decode("utf-8", "replace")
+            except (OSError, http.client.HTTPException):  # the connection died while the body was read
+                detail = ""
             error.close()
             unusable = modes.unusable_output(self.args.mode, error.code, detail)
             if unusable:
@@ -240,7 +244,7 @@ def main():
         "server_build": props.get("build_info"),
         "server_context": (props.get("default_generation_settings") or {}).get("n_ctx"),
         "python_version": sys.version.split()[0],
-        "server_binary_sha256": file_sha256(args.server_binary) if args.server_binary else None,
+        "server_binary_sha256": file_sha256(shutil.which(args.server_binary)) if args.server_binary and shutil.which(args.server_binary) else None,
         "chat_template_sha256": sha256(props["chat_template"].encode()) if props.get("chat_template") else None,
         "jsonschema_version": importlib.metadata.version("jsonschema"),
         "server_flags": args.server_flags,

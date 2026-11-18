@@ -380,14 +380,40 @@ def table(run_directories, intents_path):
     return "\n".join(out)
 
 
+def expected_inputs(header):
+    """The hashes of the schema and of the system prompt a run of this kind would
+    record today, so a run measured against an older prompt or schema is seen as stale."""
+    import importlib.util
+
+    here = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location("modes", here / "modes.py")
+    modes = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modes)
+    prompt = modes.shell_prompt()
+    if header.get("mode") == "tools":
+        prompt = modes.tools_prompt(prompt, bool(header.get("derive_depends")))
+    schema = (here.parent / "docs/schemas/action-plan.schema.json").read_bytes()
+    return {
+        "schema_sha256": hashlib.sha256(schema).hexdigest(),
+        "system_prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+    }
+
+
 def complete(directory, intents_path):
     """True when the run answered every intent of the set as it is now, from this
-    set (its hash is the header's), and no request failed."""
+    set, this schema and this prompt (their hashes are the header's), and no
+    request failed. A run with an appended prompt (`--prompt-extra`) is not
+    compared on the prompt."""
     intents = load_intents(intents_path)
     header, rows = read_run(directory, intents)
     same_set = header.get("intents_sha256") == hashlib.sha256(Path(intents_path).read_bytes()).hexdigest()
-    return (
+    now = expected_inputs(header)
+    same_inputs = header.get("schema_sha256") == now["schema_sha256"] and (
+        header.get("prompt_extra_sha256") or header.get("system_prompt_sha256") == now["system_prompt_sha256"]
+    )
+    return bool(
         same_set
+        and same_inputs
         and header["intents"] == len(intents)
         and len(rows) == len(intents)
         and summarize(rows, intents)["total"]["failed"] == 0
