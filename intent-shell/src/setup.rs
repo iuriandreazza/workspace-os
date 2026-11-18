@@ -7,6 +7,7 @@ use crate::host::UnixHost;
 use crate::log::JsonlLog;
 use crate::model::LlamaPlanner;
 use crate::screen::{self, Header};
+use crate::session::SessionState;
 
 /// What both adapters need to run one session.
 pub struct Setup {
@@ -19,12 +20,27 @@ pub struct Setup {
 }
 
 impl Setup {
-    pub fn header(&self) -> String {
-        screen::header(&Header {
-            user: &self.authority.user.name,
-            administrator: self.authority.user.administrator,
-            model: &self.planner.address,
-            log: &self.log_name,
-        })
+    /// The header for the directory the session is in now.
+    pub fn header(&self, session: &SessionState) -> String {
+        self.header_fn()(&session.cwd_text(&self.host))
+    }
+
+    /// The header as a function of the directory, owning what it needs, so a
+    /// worker thread can rebuild it after a `cd`.
+    pub fn header_fn(&self) -> impl Fn(&str) -> String + use<> {
+        let (user, administrator) = (
+            self.authority.user.name.clone(),
+            self.authority.user.administrator,
+        );
+        let (model, log_name) = (self.planner.address.clone(), self.log_name.clone());
+        move |cwd| {
+            screen::header(&Header {
+                user: &user,
+                administrator,
+                model: &model,
+                cwd,
+                log: &log_name,
+            })
+        }
     }
 }

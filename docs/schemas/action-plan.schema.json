@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/iuriandreazza/workspace-os/docs/schemas/action-plan.schema.json",
-  "title": "Action plan, version 2",
-  "description": "What the intent shell model may emit (ADR 0011, resources named by reference since ADR 0014). Either a plan or a clarifying question. Structural rules only; ids, dependencies, references and what a name may contain (no separator, not `.` or `..`) are checked by code (see the ADRs).",
+  "title": "Action plan, version 3",
+  "description": "What the intent shell model may emit (ADR 0011, resources named by reference since ADR 0014, paths, `under_home` and `session.cd` since ADR 0018). Either a plan or a clarifying question. Structural rules only; ids, dependencies, references, what a name may contain (no separator, not `.` or `..`) and what a `..` in a path may reach are checked by code (see the ADRs).",
   "oneOf": [
     { "$ref": "#/$defs/plan" },
     { "$ref": "#/$defs/clarify" }
@@ -14,7 +14,7 @@
       "required": ["kind", "version", "summary", "steps"],
       "properties": {
         "kind": { "const": "plan" },
-        "version": { "const": 2 },
+        "version": { "const": 3 },
         "summary": { "type": "string", "minLength": 1, "maxLength": 200 },
         "steps": {
           "type": "array",
@@ -30,7 +30,7 @@
       "required": ["kind", "version", "question"],
       "properties": {
         "kind": { "const": "clarify" },
-        "version": { "const": 2 },
+        "version": { "const": 3 },
         "question": { "type": "string", "minLength": 1, "maxLength": 300 }
       }
     },
@@ -41,9 +41,13 @@
       "items": { "$ref": "#/$defs/stepId" }
     },
     "place": {
-      "enum": ["home", "downloads", "documents", "desktop", "pictures", "music", "videos", "everywhere"]
+      "enum": ["home", "downloads", "documents", "desktop", "pictures", "music", "videos"]
     },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "pathText": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "within": {
+      "oneOf": [{ "$ref": "#/$defs/place" }, { "$ref": "#/$defs/refPath" }]
+    },
     "refPlace": {
       "type": "object",
       "additionalProperties": false,
@@ -56,7 +60,7 @@
       "required": ["name", "in", "kind"],
       "properties": {
         "name": { "$ref": "#/$defs/name" },
-        "in": { "$ref": "#/$defs/place" },
+        "in": { "$ref": "#/$defs/within" },
         "kind": { "enum": ["file", "folder", "any"] }
       }
     },
@@ -66,7 +70,7 @@
       "required": ["name", "in", "kind"],
       "properties": {
         "name": { "$ref": "#/$defs/name" },
-        "in": { "$ref": "#/$defs/place" },
+        "in": { "$ref": "#/$defs/within" },
         "kind": { "const": "folder" }
       }
     },
@@ -76,7 +80,33 @@
       "required": ["new_name", "in"],
       "properties": {
         "new_name": { "$ref": "#/$defs/name" },
-        "in": { "$ref": "#/$defs/place" }
+        "in": { "$ref": "#/$defs/within" }
+      }
+    },
+    "refPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": { "path": { "$ref": "#/$defs/pathText" } }
+    },
+    "refUnderHome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["under_home", "name", "kind"],
+      "properties": {
+        "under_home": { "const": true },
+        "name": { "$ref": "#/$defs/name" },
+        "kind": { "enum": ["file", "folder", "any"] }
+      }
+    },
+    "refUnderHomeFolder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["under_home", "name", "kind"],
+      "properties": {
+        "under_home": { "const": true },
+        "name": { "$ref": "#/$defs/name" },
+        "kind": { "const": "folder" }
       }
     },
     "refFromStep": {
@@ -88,24 +118,51 @@
     "targetListable": {
       "oneOf": [
         { "$ref": "#/$defs/refPlace" },
+        { "$ref": "#/$defs/refPath" },
         { "$ref": "#/$defs/refNamed" },
+        { "$ref": "#/$defs/refUnderHome" },
         { "$ref": "#/$defs/refFromStep" }
       ]
     },
     "targetExisting": {
-      "oneOf": [{ "$ref": "#/$defs/refNamed" }, { "$ref": "#/$defs/refFromStep" }]
+      "oneOf": [
+        { "$ref": "#/$defs/refPath" },
+        { "$ref": "#/$defs/refNamed" },
+        { "$ref": "#/$defs/refUnderHome" },
+        { "$ref": "#/$defs/refFromStep" }
+      ]
     },
     "targetSearchable": {
-      "oneOf": [{ "$ref": "#/$defs/refPlace" }, { "$ref": "#/$defs/refNamed" }]
+      "oneOf": [
+        { "$ref": "#/$defs/refPlace" },
+        { "$ref": "#/$defs/refPath" },
+        { "$ref": "#/$defs/refNamed" },
+        { "$ref": "#/$defs/refUnderHome" }
+      ]
     },
     "targetWritable": {
-      "oneOf": [{ "$ref": "#/$defs/refNamed" }, { "$ref": "#/$defs/refNew" }]
+      "oneOf": [
+        { "$ref": "#/$defs/refPath" },
+        { "$ref": "#/$defs/refNamed" },
+        { "$ref": "#/$defs/refUnderHome" },
+        { "$ref": "#/$defs/refNew" }
+      ]
     },
     "targetDestination": {
       "oneOf": [
         { "$ref": "#/$defs/refPlace" },
+        { "$ref": "#/$defs/refPath" },
         { "$ref": "#/$defs/refFolder" },
+        { "$ref": "#/$defs/refUnderHomeFolder" },
         { "$ref": "#/$defs/refNew" }
+      ]
+    },
+    "targetDirectory": {
+      "oneOf": [
+        { "$ref": "#/$defs/refPlace" },
+        { "$ref": "#/$defs/refPath" },
+        { "$ref": "#/$defs/refFolder" },
+        { "$ref": "#/$defs/refUnderHomeFolder" }
       ]
     },
     "step": {
@@ -117,6 +174,7 @@
         { "$ref": "#/$defs/fsWrite" },
         { "$ref": "#/$defs/fsMove" },
         { "$ref": "#/$defs/fsDelete" },
+        { "$ref": "#/$defs/sessionCd" },
         { "$ref": "#/$defs/processRun" },
         { "$ref": "#/$defs/userManage" },
         { "$ref": "#/$defs/systemConfigure" },
@@ -250,6 +308,22 @@
         },
         "depends_on": { "$ref": "#/$defs/dependsOn" },
         "elevate": { "type": "boolean" }
+      }
+    },
+    "sessionCd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "session.cd" },
+        "args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["target"],
+          "properties": { "target": { "$ref": "#/$defs/targetDirectory" } }
+        },
+        "depends_on": { "$ref": "#/$defs/dependsOn" }
       }
     },
     "processRun": {

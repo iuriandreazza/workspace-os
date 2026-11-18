@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Read the budget spreadsheet","steps":[
- {"id":"s1","action":"fs.read","args":{"target":{"name":"budget.csv","in":"everywhere","kind":"file"}},"depends_on":[],"elevate":false}]}
+{"kind":"plan","version":3,"summary":"Read the budget spreadsheet","steps":[
+ {"id":"s1","action":"fs.read","args":{"target":{"under_home":true,"name":"budget.csv","kind":"file"}},"depends_on":[],"elevate":false}]}

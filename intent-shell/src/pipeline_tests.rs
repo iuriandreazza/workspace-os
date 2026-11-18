@@ -12,13 +12,13 @@ use crate::action::{Access, Capability};
 use crate::broker::{Authority, MAX_EXPANDED_PATHS, Refusal, Review, Verdict};
 use crate::reference::Place;
 use crate::screen::{View, plan_screen};
-use crate::session::{ItemResult, Outcome, Shell};
+use crate::session::{ItemResult, Outcome, SessionState, Shell};
 use crate::testing::{Answers, FakeHost, MemoryLog, ScriptedPlanner, user};
 
-pub(crate) const LARGEST: &str = r#"{"kind":"plan","version":2,"summary":"List the largest files","steps":[
+pub(crate) const LARGEST: &str = r#"{"kind":"plan","version":3,"summary":"List the largest files","steps":[
   {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":false}]}"#;
 
-pub(crate) const DELETE_LARGEST: &str = r#"{"kind":"plan","version":2,"summary":"Delete the two largest","steps":[
+pub(crate) const DELETE_LARGEST: &str = r#"{"kind":"plan","version":3,"summary":"Delete the two largest","steps":[
   {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":false},
   {"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#;
 
@@ -37,7 +37,7 @@ pub(crate) fn step(id: &str, action: &str, args: &str, elevate: &str) -> String 
 
 pub(crate) fn plan(steps: &[String]) -> String {
     format!(
-        r#"{{"kind":"plan","version":2,"summary":"test","steps":[{}]}}"#,
+        r#"{{"kind":"plan","version":3,"summary":"test","steps":[{}]}}"#,
         steps.join(",")
     )
 }
@@ -56,12 +56,62 @@ pub(crate) fn run_with(
     outputs: &[&str],
     host: &FakeHost,
     authority: &Authority,
+    answers: Answers,
+    log: MemoryLog,
+) -> (Run, ScriptedPlanner) {
+    run_in(
+        &mut SessionState::start(host),
+        outputs,
+        host,
+        authority,
+        answers,
+        log,
+    )
+}
+
+/// Like `run_with`, in a session the test keeps, so a later request sees what
+/// an earlier one changed.
+pub(crate) fn run_in(
+    session: &mut SessionState,
+    outputs: &[&str],
+    host: &FakeHost,
+    authority: &Authority,
     mut answers: Answers,
     log: MemoryLog,
 ) -> (Run, ScriptedPlanner) {
     let planner = ScriptedPlanner::new(outputs);
     let mut log = log;
     let outcome = Shell {
+        session,
+        authority,
+        host,
+        planner: &planner,
+        confirm: &mut answers,
+        log: &mut log,
+    }
+    .handle("do it");
+    (
+        Run {
+            outcome,
+            log,
+            answers,
+        },
+        planner,
+    )
+}
+
+/// `run_in` for a host that is not a `FakeHost`, with a yes to everything.
+pub(crate) fn run_in_host(
+    session: &mut SessionState,
+    outputs: &[&str],
+    host: &dyn crate::ports::Host,
+    authority: &Authority,
+) -> (Run, ScriptedPlanner) {
+    let planner = ScriptedPlanner::new(outputs);
+    let mut answers = Answers::yes();
+    let mut log = MemoryLog::default();
+    let outcome = Shell {
+        session,
         authority,
         host,
         planner: &planner,
@@ -394,7 +444,7 @@ fn a_plan_that_breaks_a_rule_runs_none_of_its_valid_steps() {
         )
     };
     let cyclic = format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[{},{},{}]}}"#,
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[{},{},{}]}}"#,
         named_step("s1", "a", "[]"),
         named_step("s2", "b", r#"["s3"]"#),
         named_step("s3", "c", r#"["s2"]"#),
@@ -409,7 +459,7 @@ fn a_plan_that_breaks_a_rule_runs_none_of_its_valid_steps() {
 fn a_question_runs_nothing() {
     let host = files();
     let result = run(
-        &[r#"{"kind":"clarify","version":2,"question":"Which folder?"}"#],
+        &[r#"{"kind":"clarify","version":3,"question":"Which folder?"}"#],
         &host,
         false,
     );
@@ -448,7 +498,7 @@ fn a_refused_step_stops_its_dependents_and_independent_steps_still_run() {
         .place(Place::Documents, "/secret")
         .forbid(Access::Read, "/secret");
     let text = format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[
       {{"id":"s1","action":"fs.list","args":{{"target":{{"place":"documents"}}}},"depends_on":[],"elevate":false}},
       {{"id":"s2","action":"fs.delete","args":{{"target":{{"from_step":"s1"}}}},"depends_on":["s1"],"elevate":false}},
       {{"id":"s3","action":"fs.stat","args":{},"depends_on":[],"elevate":false}}]}}"#,
@@ -469,7 +519,7 @@ fn a_refused_step_stops_its_dependents_and_independent_steps_still_run() {
 #[test]
 fn a_reference_to_a_step_that_is_held_cannot_be_expanded() {
     let host = files();
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":true},
       {"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#;
     let result = run(&[text], &host, true);
@@ -493,7 +543,7 @@ fn many_files(count: usize) -> FakeHost {
 
 fn list_then(action: &str) -> String {
     format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[
       {{"id":"s1","action":"fs.list","args":{PLACE},"depends_on":[],"elevate":false}},
       {{"id":"s2","action":"{action}","args":{{"target":{{"from_step":"s1"}}}},"depends_on":["s1"],"elevate":false}}]}}"#
     )
@@ -522,7 +572,7 @@ fn exactly_the_limit_of_paths_still_expands() {
 #[test]
 fn a_plain_string_is_not_a_reference_and_nothing_runs() {
     let host = files();
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":1},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.delete","args":{"target":"s1.path"},"depends_on":["s1"],"elevate":false}]}"#;
     let result = run(&[text, text], &host, false);
@@ -549,16 +599,13 @@ fn nothing_runs_while_the_log_cannot_be_written() {
 fn the_screen_shows_the_broker_action_and_labels_the_models_summary() {
     let host = FakeHost::with_files(&[("/work/a\u{1b}[2J", 1)]);
     let sneaky = format!(
-        r#"{{"kind":"plan","version":2,"summary":"Harmless tidy-up","steps":[{}]}}"#,
+        r#"{{"kind":"plan","version":3,"summary":"Harmless tidy-up","steps":[{}]}}"#,
         step("s1", "fs.delete", &named("a\\u001b[2J"), "false")
     );
     let result = run(&[&sneaky], &host, false);
     let text = plan_screen(reviewed(&result.outcome), View::Friendly);
     assert!(text.contains("The model says"));
-    assert!(
-        text.contains(r#"Delete "a\u001b[2J" (Downloads)"#),
-        "{text}"
-    );
+    assert!(text.contains(r#"Delete "/work/a\u001b[2J""#), "{text}");
     assert!(!text.contains('\u{1b}'));
     let details = plan_screen(reviewed(&result.outcome), View::Details);
     assert!(
@@ -634,7 +681,7 @@ fn a_read_that_fails_before_confirmation_leaves_nothing_to_confirm() {
 #[test]
 fn references_chain_from_one_read_to_the_next() {
     let host = files();
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.list","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false},
       {"id":"s3","action":"fs.delete","args":{"target":{"from_step":"s2"}},"depends_on":["s2"],"elevate":false}]}"#;
@@ -663,7 +710,7 @@ fn a_refused_path_among_several_skips_only_that_action_and_the_rest_run() {
     ));
     assert_eq!(review.steps[1].items[1].verdict, Verdict::Allowed);
     let screen = plan_screen(review, View::Friendly);
-    assert!(screen.contains(r#"Delete "b" (Downloads)"#) && screen.contains("REFUSED"));
+    assert!(screen.contains(r#"Delete "/work/b""#) && screen.contains("REFUSED"));
     let executed: Vec<_> = host.executed.borrow().clone();
     assert!(executed.contains(&r#"fs.delete path="/work/c""#.to_owned()));
     assert!(!executed.contains(&r#"fs.delete path="/work/b""#.to_owned()));
@@ -770,7 +817,7 @@ fn a_move_needs_both_the_right_to_remove_the_source_and_to_write_the_destination
 
 #[test]
 fn a_move_from_a_reference_needs_exactly_one_path() {
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.move","args":{"from":{"from_step":"s1"},"to":{"new_name":"dest","in":"downloads"}},"depends_on":["s1"],"elevate":false}]}"#;
     let result = run(&[text], &files(), false);
@@ -785,7 +832,7 @@ fn a_step_whose_dependency_failed_at_run_time_does_not_run() {
     // The read passes the broker, then fails when it runs.
     let host = files().place(Place::Documents, "/gone").failing("/gone");
     let text = format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[
       {{"id":"s1","action":"fs.list","args":{{"target":{{"place":"documents"}}}},"depends_on":[],"elevate":false}},
       {{"id":"s2","action":"fs.stat","args":{},"depends_on":["s1"],"elevate":false}},
       {{"id":"s3","action":"fs.stat","args":{},"depends_on":[],"elevate":false}}]}}"#,
@@ -805,7 +852,7 @@ fn a_step_whose_dependency_failed_at_run_time_does_not_run() {
 fn a_step_whose_dependency_was_not_confirmed_as_root_does_not_run() {
     let host = files();
     let text = format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[
       {{"id":"s1","action":"fs.delete","args":{},"depends_on":[],"elevate":true}},
       {{"id":"s2","action":"fs.stat","args":{},"depends_on":["s1"],"elevate":false}}]}}"#,
         named("a"),
@@ -830,7 +877,7 @@ fn a_step_whose_dependency_was_not_confirmed_as_root_does_not_run() {
 fn a_blocked_step_never_runs_its_items_even_when_other_steps_do() {
     let host = files().failing("/work");
     let text = format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[
       {{"id":"s1","action":"fs.find_largest","args":{{"target":{{"place":"downloads"}},"count":2}},"depends_on":[],"elevate":false}},
       {{"id":"s2","action":"fs.delete","args":{{"target":{{"from_step":"s1"}}}},"depends_on":["s1"],"elevate":false}},
       {{"id":"s3","action":"fs.stat","args":{},"depends_on":[],"elevate":false}}]}}"#,
@@ -858,7 +905,7 @@ fn a_blocked_step_never_runs_its_items_even_when_other_steps_do() {
 fn a_read_is_not_run_before_the_step_it_depends_on_has_run() {
     let host = files();
     let text = format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[
       {{"id":"s1","action":"fs.delete","args":{},"depends_on":[],"elevate":false}},
       {{"id":"s2","action":"fs.find_largest","args":{{"target":{{"place":"downloads"}},"count":1}},"depends_on":["s1"],"elevate":false}},
       {{"id":"s3","action":"fs.delete","args":{{"target":{{"from_step":"s2"}}}},"depends_on":["s2"],"elevate":false}}]}}"#,
@@ -974,7 +1021,7 @@ fn the_full_session_holds_every_capability() {
 #[test]
 fn a_move_from_a_single_reference_expands_with_the_destination_kept() {
     let host = files();
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":1},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.move","args":{"from":{"from_step":"s1"},"to":{"new_name":"dest","in":"downloads"}},"depends_on":["s1"],"elevate":false}]}"#;
     let result = run(&[text], &host, false);
@@ -988,7 +1035,7 @@ fn a_move_from_a_single_reference_expands_with_the_destination_kept() {
 
 #[test]
 fn steps_listed_out_of_dependency_order_are_reviewed_in_dependency_order() {
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s2","action":"fs.stat","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false},
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":1},"depends_on":[],"elevate":false}]}"#;
     let result = run(&[text], &files(), false);
@@ -1009,7 +1056,7 @@ fn the_screen_marks_root_steps_and_empty_references() {
 
     let empty = FakeHost::with_files(&[]);
     let result = run(
-        &[r#"{"kind":"plan","version":2,"summary":"x","steps":[
+        &[r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":1},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#],
         &empty,
@@ -1022,7 +1069,7 @@ fn the_screen_marks_root_steps_and_empty_references() {
 fn blocked_steps_are_logged_and_reported_and_never_run_their_items() {
     let host = files().failing("/work");
     let text = format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[
       {{"id":"s1","action":"fs.find_largest","args":{{"target":{{"place":"downloads"}},"count":2}},"depends_on":[],"elevate":false}},
       {{"id":"s2","action":"fs.delete","args":{{"target":{{"from_step":"s1"}}}},"depends_on":["s1"],"elevate":false}},
       {{"id":"s3","action":"fs.stat","args":{},"depends_on":[],"elevate":false}}]}}"#,
@@ -1040,7 +1087,7 @@ fn blocked_steps_are_logged_and_reported_and_never_run_their_items() {
 #[test]
 fn the_log_names_the_user_the_question_and_the_steps() {
     let result = run(
-        &[r#"{"kind":"clarify","version":2,"question":"Which?"}"#],
+        &[r#"{"kind":"clarify","version":3,"question":"Which?"}"#],
         &files(),
         false,
     );
@@ -1061,6 +1108,7 @@ fn a_model_that_cannot_be_reached_is_logged_and_a_dead_log_stops_even_that() {
     let mut log = MemoryLog::default();
     let authority = Authority::full(user(false));
     let outcome = Shell {
+        session: &mut SessionState::start(&host),
         authority: &authority,
         host: &host,
         planner: &planner,
@@ -1086,6 +1134,7 @@ fn a_model_that_cannot_be_reached_is_logged_and_a_dead_log_stops_even_that() {
     let mut answers = Answers::yes();
     let mut log = MemoryLog::failing_after(1);
     let outcome = Shell {
+        session: &mut SessionState::start(&host),
         authority: &authority,
         host: &host,
         planner: &planner,
@@ -1117,7 +1166,7 @@ fn the_filesystem_root_is_never_a_target_even_when_a_step_reference_produces_it(
     ] {
         let host = FakeHost::with_files(&[("/", 5)]).place(Place::Downloads, "/");
         let text = format!(
-            r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+            r#"{{"kind":"plan","version":3,"summary":"x","steps":[
           {{"id":"s1","action":"fs.find_largest","args":{{"target":{{"place":"downloads"}},"count":1}},"depends_on":[],"elevate":false}},
           {{"id":"s2","action":"{action}","args":{args},"depends_on":["s1"],"elevate":true}}]}}"#
         );

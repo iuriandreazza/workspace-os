@@ -2,7 +2,10 @@
 """Writes a bootable UEFI disk image: a GPT disk with one EFI system partition
 (FAT32) holding the bootloader at the removable-media path and the kernel.
 
-    make-disk-image.py OUTPUT BOOTLOADER.EFI KERNEL.ELF
+    make-disk-image.py OUTPUT BOOTLOADER.EFI [KERNEL.ELF]
+
+Without a kernel the partition holds the bootloader only, which is what the
+boot smoke test needs to see the bootloader's refusal of a missing kernel.
 
 The image is written without root and without external tools, so it builds the
 same way on macOS and on Linux. Only what UEFI firmware reads is written:
@@ -102,15 +105,16 @@ def build_volume(bootloader, kernel):
     efi_dir = volume.allocate(b"")
     boot_dir = volume.allocate(b"")
     boot_file = volume.allocate(bootloader)
-    kernel_file = volume.allocate(kernel)
+    kernel_file = volume.allocate(kernel) if kernel is not None else None
     volume.data[boot_dir] = directory_data(
         boot_dir, efi_dir, [entry("BOOTAA64.EFI", 0x20, boot_file, len(bootloader))]
     )
     volume.data[efi_dir] = directory_data(efi_dir, 0, [entry("BOOT", 0x10, boot_dir, 0)])
     # The root has no '.' or '..'.
-    volume.data[root] = b"".join(
-        [entry("EFI", 0x10, efi_dir, 0), entry("KERNEL.ELF", 0x20, kernel_file, len(kernel))]
-    ).ljust(CLUSTER_SECTORS * SECTOR, b"\0")
+    root_entries = [entry("EFI", 0x10, efi_dir, 0)]
+    if kernel is not None:
+        root_entries.append(entry("KERNEL.ELF", 0x20, kernel_file, len(kernel)))
+    volume.data[root] = b"".join(root_entries).ljust(CLUSTER_SECTORS * SECTOR, b"\0")
     return volume
 
 
@@ -188,13 +192,15 @@ def write_gpt(image):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (3, 4):
         raise SystemExit(__doc__)
-    output, bootloader_path, kernel_path = sys.argv[1:]
+    output, bootloader_path = sys.argv[1:3]
     with open(bootloader_path, "rb") as f:
         bootloader = f.read()
-    with open(kernel_path, "rb") as f:
-        kernel = f.read()
+    kernel = None
+    if len(sys.argv) == 4:
+        with open(sys.argv[3], "rb") as f:
+            kernel = f.read()
     volume = build_volume(bootloader, kernel)
     with open(output, "wb") as image:
         image.truncate(DISK_SECTORS * SECTOR)

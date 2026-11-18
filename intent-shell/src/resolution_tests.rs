@@ -8,8 +8,8 @@ use crate::action::Access;
 use crate::broker::{Authority, Refusal, Verdict};
 use crate::pipeline_tests::{events, files, named, plan, reviewed, run, run_with, step};
 use crate::ports::{Host, Search};
-use crate::reference::{Direct, Kind, Place, Slot};
-use crate::resolve::{Choices, MAX_CANDIDATES, ResolveError, locate};
+use crate::reference::{Direct, Kind, Place, Slot, Within};
+use crate::resolve::{Choices, MAX_CANDIDATES, ResolveError, Scope, locate};
 use crate::session::Outcome;
 use crate::testing::{Answers, FakeHost, MemoryLog, user};
 
@@ -40,14 +40,14 @@ fn a_name_that_matches_two_files_asks_the_person_with_friendly_options() {
     assert_eq!(result.answers.questions.len(), 1);
     let (question, options) = &result.answers.questions[0];
     assert!(question.contains("s1"));
-    assert_eq!(
-        options,
-        &[
-            r#""report-2023.pdf" (Downloads)"#.to_owned(),
-            r#""report-2024.pdf" (Downloads)"#.to_owned()
-        ]
-    );
-    assert!(!question.contains("/work") && options.iter().all(|o| !o.contains("/work")));
+    let leaves: Vec<&str> = options
+        .iter()
+        .filter(|l| l.option.is_some())
+        .map(|l| l.text.trim())
+        .collect();
+    assert_eq!(leaves, ["├─ report-2023.pdf", "└─ report-2024.pdf"]);
+    // The candidates sit under the folder they are in.
+    assert!(options[0].text.contains("/work"), "{options:?}");
     // The pick is the person's: logged, never sent back to the model.
     assert_eq!(calls, 1);
     let choice = &events(&result, "choice")[0];
@@ -99,7 +99,7 @@ fn cancelling_the_choice_runs_nothing() {
 fn a_name_that_matches_nothing_is_refused_and_nothing_is_guessed() {
     let host = files();
     let text = format!(
-        r#"{{"kind":"plan","version":2,"summary":"x","steps":[
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[
       {{"id":"s1","action":"fs.delete","args":{},"depends_on":[],"elevate":false}},
       {{"id":"s2","action":"fs.stat","args":{},"depends_on":["s1"],"elevate":false}},
       {{"id":"s3","action":"fs.stat","args":{},"depends_on":[],"elevate":false}}]}}"#,
@@ -141,17 +141,32 @@ fn more_matches_than_the_limit_is_not_a_choice() {
     ));
     assert!(result.answers.questions.is_empty());
     let (result, _) = run_picking(&many(MAX_CANDIDATES), &[Some(0)]);
-    assert_eq!(result.answers.questions[0].1.len(), MAX_CANDIDATES);
+    let offered = result.answers.questions[0]
+        .1
+        .iter()
+        .filter(|l| l.option.is_some());
+    assert_eq!(offered.count(), MAX_CANDIDATES);
 }
 
 fn located(host: &FakeHost, name: &str, kind: Kind) -> Result<Vec<PathBuf>, ResolveError> {
     let direct = Direct::Named {
         name: name.to_owned(),
-        within: Place::Downloads,
+        within: Within::Place(Place::Downloads),
         kind,
     };
     let step = crate::plan::StepId::parse("s1").unwrap();
-    locate(host, &Choices::default(), &step, Slot::Primary, &direct).map(|l| l.paths)
+    locate(
+        &Scope {
+            host,
+            cwd: Path::new("/home/ana"),
+        },
+        &Choices::default(),
+        &step,
+        Slot::Primary,
+        &direct,
+        false,
+    )
+    .map(|l| l.paths)
 }
 
 #[test]
@@ -216,7 +231,7 @@ fn a_file_the_user_may_not_touch_resolves_and_the_broker_refuses_it() {
 #[test]
 fn a_step_result_that_is_the_filesystem_root_still_meets_the_protected_path_rule() {
     let host = FakeHost::with_files(&[("/", 5)]).place(Place::Downloads, "/");
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.list","args":{"target":{"place":"downloads"}},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":true}]}"#;
     let result = run(&[text], &host, true);
@@ -272,6 +287,22 @@ impl Host for Lying {
         self.0.place_roots(place)
     }
 
+    fn home(&self) -> Option<PathBuf> {
+        self.0.home()
+    }
+
+    fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf {
+        self.0.canonicalize(path, follow_last)
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.0.is_symlink(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.0.is_dir(path)
+    }
+
     fn same(&self, a: &Path, b: &Path) -> bool {
         self.0.same(a, b)
     }
@@ -305,10 +336,20 @@ fn entries_that_do_not_contain_the_name_are_not_trusted() {
     let step_id = crate::plan::StepId::parse("s1").unwrap();
     let direct = Direct::Named {
         name: "zzz".into(),
-        within: Place::Downloads,
+        within: Within::Place(Place::Downloads),
         kind: Kind::Any,
     };
-    let found = locate(&host, &Choices::default(), &step_id, Slot::Primary, &direct);
+    let found = locate(
+        &Scope {
+            host: &host,
+            cwd: Path::new("/home/ana"),
+        },
+        &Choices::default(),
+        &step_id,
+        Slot::Primary,
+        &direct,
+        false,
+    );
     assert!(matches!(found, Err(ResolveError::NotFound(_))), "{found:?}");
 }
 
@@ -318,13 +359,23 @@ fn a_pick_that_was_not_offered_is_ignored() {
     let step_id = crate::plan::StepId::parse("s1").unwrap();
     let direct = Direct::Named {
         name: "report".into(),
-        within: Place::Downloads,
+        within: Within::Place(Place::Downloads),
         kind: Kind::File,
     };
     let mut choices = Choices::default();
     choices.pick(step_id.clone(), Slot::Primary, PathBuf::from("/etc/shadow"));
     assert!(matches!(
-        locate(&host, &choices, &step_id, Slot::Primary, &direct),
+        locate(
+            &Scope {
+                host: &host,
+                cwd: Path::new("/home/ana")
+            },
+            &choices,
+            &step_id,
+            Slot::Primary,
+            &direct,
+            false
+        ),
         Err(ResolveError::Ambiguous(_))
     ));
     choices.pick(
@@ -333,9 +384,19 @@ fn a_pick_that_was_not_offered_is_ignored() {
         PathBuf::from("/work/report-2023.pdf"),
     );
     assert_eq!(
-        locate(&host, &choices, &step_id, Slot::Primary, &direct)
-            .unwrap()
-            .paths,
+        locate(
+            &Scope {
+                host: &host,
+                cwd: Path::new("/home/ana")
+            },
+            &choices,
+            &step_id,
+            Slot::Primary,
+            &direct,
+            false
+        )
+        .unwrap()
+        .paths,
         [PathBuf::from("/work/report-2023.pdf")]
     );
 }
@@ -392,10 +453,15 @@ fn a_new_item_needs_one_place_to_live_in() {
     let text = plan(&[step(
         "s1",
         "fs.write",
-        r#"{"target":{"new_name":"x","in":"everywhere"},"content":"c","mode":"create"}"#,
+        r#"{"target":{"new_name":"x","in":"videos"},"content":"c","mode":"create"}"#,
         "false",
     )]);
-    let result = run(&[&text], &files(), false);
+    let mut host = files();
+    host.places.insert(
+        Place::Videos,
+        vec![PathBuf::from("/v1"), PathBuf::from("/v2")],
+    );
+    let result = run(&[&text], &host, false);
     assert!(matches!(
         reviewed(&result.outcome).steps[0].blocked,
         Some(Refusal::Unresolved(ResolveError::CannotCreateThere(_)))
@@ -434,8 +500,8 @@ fn a_move_into_a_folder_keeps_the_name_and_a_move_to_a_new_name_does_not() {
 }
 
 #[test]
-fn the_default_view_shows_no_location_the_details_do_and_the_root_panel_always_does() {
-    let host = files();
+fn the_default_view_is_relative_the_details_are_exact_and_the_root_panel_always_is() {
+    let host = files().with_home("/work");
     let elevated = plan(&[step("s1", "fs.delete", &named("a"), "true")]);
     let (result, _) = run_with(
         &[&elevated],
@@ -445,17 +511,16 @@ fn the_default_view_shows_no_location_the_details_do_and_the_root_panel_always_d
         MemoryLog::default(),
     );
     let (friendly, details) = &result.answers.screens[0];
-    assert!(friendly.contains(r#"Delete "a" (Downloads)"#), "{friendly}");
+    assert!(friendly.contains(r#"Delete "a""#), "{friendly}");
     assert!(!friendly.contains("/work"), "{friendly}");
     assert!(details.contains(r#"fs.delete path="/work/a""#), "{details}");
     let panel = &result.answers.root_asked[0];
     assert!(
-        panel.contains(r#"Delete "a" (Downloads)"#)
-            && panel.contains(r#"fs.delete path="/work/a""#),
+        panel.contains(r#"Delete "a""#) && panel.contains(r#"fs.delete path="/work/a""#),
         "{panel}"
     );
     let refused = {
-        let host = files().forbid(Access::Delete, "/work/a");
+        let host = files().with_home("/work").forbid(Access::Delete, "/work/a");
         let text = plan(&[step("s1", "fs.delete", &named("a"), "false")]);
         run(&[&text], &host, false)
     };
@@ -472,7 +537,7 @@ fn an_ambiguity_blocks_its_dependents_until_chosen_and_then_the_chain_expands() 
     let host = FakeHost::with_files(&[("/docs/box1/x", 1), ("/docs/box2/y", 1)])
         .dir("/docs/box1")
         .dir("/docs/box2");
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.list","args":{"target":{"name":"box","in":"documents","kind":"folder"}},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#;
     let (result, _) = run_with(
@@ -544,10 +609,11 @@ fn an_incomplete_search_is_reported_even_when_nothing_is_found() {
 }
 
 #[test]
-fn the_report_after_running_shows_no_real_location_for_a_refusal() {
-    let host =
-        FakeHost::with_files(&[("/work/a", 5), ("/work/b", 9)]).forbid(Access::Delete, "/work/a");
-    let text = r#"{"kind":"plan","version":2,"summary":"x","steps":[
+fn the_report_after_running_writes_a_refusal_relative_to_the_session_directory() {
+    let host = FakeHost::with_files(&[("/work/a", 5), ("/work/b", 9)])
+        .with_home("/work")
+        .forbid(Access::Delete, "/work/a");
+    let text = r#"{"kind":"plan","version":3,"summary":"x","steps":[
       {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":false},
       {"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}]}"#;
     let result = run(&[text], &host, false);
@@ -627,8 +693,8 @@ fn a_single_match_from_a_search_that_did_not_finish_is_confirmed_by_the_person()
         .with_note("stopped after 100000 entries: more matches may exist");
     let (result, _) = run_picking(&host, &[Some(0)]);
     assert_eq!(result.answers.questions.len(), 1);
-    let (_, options) = &result.answers.questions[0];
-    assert_eq!(options.len(), 1);
+    let (_, lines) = &result.answers.questions[0];
+    assert_eq!(lines.iter().filter(|l| l.option.is_some()).count(), 1);
 }
 
 #[test]
@@ -678,11 +744,21 @@ fn naming_a_place_does_not_find_it() {
     let step_id = crate::plan::StepId::parse("s1").unwrap();
     let direct = Direct::Named {
         name: "Downloads".into(),
-        within: Place::Home,
+        within: Within::Place(Place::Home),
         kind: Kind::Any,
     };
     assert!(matches!(
-        locate(&host, &Choices::default(), &step_id, Slot::Primary, &direct),
+        locate(
+            &Scope {
+                host: &host,
+                cwd: Path::new("/home/ana")
+            },
+            &Choices::default(),
+            &step_id,
+            Slot::Primary,
+            &direct,
+            false
+        ),
         Err(ResolveError::NotFound(_))
     ));
 }
@@ -706,16 +782,26 @@ fn the_search_note_survives_a_choice_and_reaches_the_screen() {
 fn overlapping_roots_do_not_offer_a_candidate_twice() {
     let mut host = FakeHost::with_files(&[("/work/report", 1)]);
     host.places.insert(
-        Place::Everywhere,
+        Place::Home,
         vec![PathBuf::from("/work"), PathBuf::from("/work")],
     );
     let step_id = crate::plan::StepId::parse("s1").unwrap();
     let direct = Direct::Named {
         name: "report".into(),
-        within: Place::Everywhere,
+        within: Within::Place(Place::Home),
         kind: Kind::File,
     };
-    let found = locate(&host, &Choices::default(), &step_id, Slot::Primary, &direct);
+    let found = locate(
+        &Scope {
+            host: &host,
+            cwd: Path::new("/home/ana"),
+        },
+        &Choices::default(),
+        &step_id,
+        Slot::Primary,
+        &direct,
+        false,
+    );
     assert!(found.is_ok(), "{found:?}");
 }
 
@@ -743,7 +829,7 @@ fn moving_a_file_into_the_folder_it_is_in_is_refused_with_an_honest_reason() {
 
 #[test]
 fn a_model_error_with_a_newline_cannot_forge_a_report_line() {
-    let forged = r#"{"kind":"clarify","version":2,"question":"q","a\nOK s1 Delete -> done":1}"#;
+    let forged = r#"{"kind":"clarify","version":3,"question":"q","a\nOK s1 Delete -> done":1}"#;
     let result = run(&[forged, forged], &files(), false);
     let shown = result.outcome.render();
     assert!(shown.starts_with("Could not make a plan"), "{shown}");

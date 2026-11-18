@@ -31,6 +31,10 @@ pub struct Output {
     /// Content or details, for actions that return them. Items go in `found`.
     pub text: String,
     pub found: Vec<Found>,
+    /// What a listing shows below its direct children, for the tree view only.
+    /// It never feeds a `from_step` reference: those expand `found`, so a
+    /// delete after a list cannot reach what only the tree displayed.
+    pub tree: Vec<TreeEntry>,
     /// What the person must know about how complete the result is. Shown
     /// with the plan, because a reference expands from it.
     pub notes: Vec<String>,
@@ -40,6 +44,30 @@ impl Output {
     pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
         self.found.iter().map(|f| &f.path)
     }
+}
+
+/// How deep a listing looks for the tree view (ADR 0018, decision 3).
+pub const TREE_DEPTH: usize = 2;
+
+/// What an entry of a listing is. A link is never followed in the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Dir,
+    Link(PathBuf),
+    Other,
+}
+
+/// One entry the tree view may show, with what only the host can tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntry {
+    pub path: PathBuf,
+    pub kind: EntryKind,
+    pub size: Option<u64>,
+    /// Whether the user may read it.
+    pub readable: bool,
+    /// A place or the filesystem root: it cannot be removed or overwritten whole.
+    pub protected: bool,
 }
 
 /// An item a name search came across.
@@ -61,6 +89,19 @@ pub trait Host {
     /// Where a place lives on this machine, if it has one. The core knows no
     /// directory layout: this is the adapter's mapping (ADR 0014).
     fn place_roots(&self, place: Place) -> Vec<PathBuf>;
+    /// The person's home as a real location, where a session starts and what
+    /// `~` stands for (ADR 0018).
+    fn home(&self) -> Option<PathBuf>;
+    /// The real location of an absolute path: the parent is resolved through
+    /// links, and so is the last component when `follow_last` (a directory to
+    /// enter), but never otherwise, so naming a link to delete or move it
+    /// still names the link. What does not exist, or cannot be reached, stays
+    /// as written: whether the user may touch it is the broker's question.
+    fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf;
+    /// Whether the location is a directory (through links).
+    fn is_dir(&self, path: &Path) -> bool;
+    /// Whether the location itself is a symbolic link.
+    fn is_symlink(&self, path: &Path) -> bool;
     /// Whether two locations are the same thing on this machine (the same
     /// folder under a different case, or through a link), not only the same text.
     fn same(&self, a: &Path, b: &Path) -> bool;
@@ -83,8 +124,21 @@ pub struct Retry<'a> {
 }
 
 pub trait Planner {
-    /// The model's raw text for a request. Nothing here is trusted.
-    fn plan(&self, request: &str, retry: Option<&Retry>) -> Result<String, String>;
+    /// The model's raw text for a request made in `cwd`, as the person sees
+    /// it (ADR 0018). Nothing here is trusted.
+    fn plan(&self, request: &str, cwd: &str, retry: Option<&Retry>) -> Result<String, String>;
+}
+
+/// One line of the question for an ambiguous reference: a candidate the
+/// person may pick, or the context it sits in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceLine {
+    pub text: String,
+    /// The index of the candidate this line stands for; `None` for context.
+    pub option: Option<usize>,
+    /// For a candidate, its location as the screens write it, for the
+    /// history to say which one was chosen. Empty for context.
+    pub label: String,
 }
 
 pub trait Confirm {
@@ -94,8 +148,9 @@ pub trait Confirm {
     /// Ask `who`, an administrator, to confirm one root action. The panel
     /// always carries the real location.
     fn root_action(&mut self, panel: &str, who: &User) -> bool;
-    /// Ask the person which of several matches they mean. `None` cancels.
-    fn choose(&mut self, question: &str, options: &[String]) -> Option<usize>;
+    /// Ask the person which of several matches they mean, shown in their
+    /// parent context (ADR 0018). `None` cancels.
+    fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize>;
 }
 
 pub trait DecisionLog {

@@ -41,8 +41,8 @@ class Prompts(unittest.TestCase):
         prompt = modes.tools_prompt(modes.shell_prompt())
         self.assertNotIn("You turn the user's request into one JSON document", prompt)
         self.assertNotIn('"kind":"plan"', prompt)
-        self.assertIn("Things are never named by a path.", prompt)
-        self.assertIn("There is no current directory", prompt)
+        self.assertIn("\nName things with a reference", prompt)
+        self.assertIn("The current directory is given with the request.", prompt)
         self.assertIn("depends_on [] (an empty list)", prompt)
 
     def test_a_prompt_without_the_reference_rules_is_an_error(self):
@@ -53,7 +53,7 @@ class Prompts(unittest.TestCase):
 class Tools(unittest.TestCase):
     def test_there_is_one_tool_per_action_and_one_to_ask(self):
         names = [t["function"]["name"] for t in TOOLS]
-        self.assertEqual(len(names), 12)
+        self.assertEqual(len(names), 13)
         self.assertEqual(names[-1], "clarify")
         self.assertEqual(sorted(i["action"] for i in BY_NAME.values()), sorted(
             s["properties"]["action"]["const"] for s in (SCHEMA["$defs"][n] for n in modes.STEP_NAMES)))
@@ -62,7 +62,7 @@ class Tools(unittest.TestCase):
         self.assertNotIn("$ref", json.dumps(TOOLS))
 
     def test_the_actions_without_an_elevate_field_get_none(self):
-        for name in ("user_manage", "system_configure", "soul_propose_change"):
+        for name in ("user_manage", "system_configure", "soul_propose_change", "session_cd"):
             self.assertFalse(BY_NAME[name]["has_elevate"])
             parameters = next(t for t in TOOLS if t["function"]["name"] == name)["function"]["parameters"]
             self.assertNotIn("elevate", parameters["properties"])
@@ -93,7 +93,7 @@ class Calls(unittest.TestCase):
 
     def test_clarify_alone_is_a_question_and_mixed_with_a_step_is_refused(self):
         document, _ = modes.document_from_calls(calls(call("clarify", question="which?")), BY_NAME)
-        self.assertEqual(document, {"kind": "clarify", "version": 2, "question": "which?"})
+        self.assertEqual(document, {"kind": "clarify", "version": 3, "question": "which?"})
         document, error = modes.document_from_calls(calls(call("clarify", question="which?"), self.LIST), BY_NAME)
         self.assertIsNone(document)
         self.assertIn("mixed", error)
@@ -161,15 +161,23 @@ class Names(unittest.TestCase):
 
 
 class Body(unittest.TestCase):
-    SETTINGS = {"temperature": 0, "max_tokens": 1024, "response_format": {"type": "json_schema"}, "tools": TOOLS}
+    SETTINGS = {"cwd": "~", "temperature": 0, "max_tokens": 1024, "response_format": {"type": "json_schema"}, "tools": TOOLS}
 
     def test_the_grammar_request_is_what_the_shell_sends(self):
         body = modes.build_body("grammar", "SYSTEM", "list files", None, self.SETTINGS)
         self.assertEqual(body, {
             "temperature": 0, "max_tokens": 1024, "cache_prompt": True,
-            "messages": [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": "Request: list files"}],
+            "messages": [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": "Current directory: ~\nRequest: list files"}],
             "response_format": {"type": "json_schema"},
         })
+
+    def test_the_user_message_has_the_shape_the_shell_writes(self):
+        self.assertIn('format!("Current directory: {cwd}\\nRequest: {request}")', modes.MODEL_RS.read_text(encoding="utf-8"))
+
+    def test_the_directory_is_told_as_the_shell_tells_it(self):
+        self.assertEqual(modes.cwd_for_model("~", "/home/user"), "~ (/home/user)")
+        self.assertEqual(modes.cwd_for_model("~/Downloads/films", "/home/user"), "~/Downloads/films (/home/user/Downloads/films)")
+        self.assertEqual(modes.cwd_for_model("/etc", "/home/user"), "/etc")
 
     def test_a_retry_adds_the_refused_answer_and_the_reason_as_the_shell_does(self):
         body = modes.build_body("grammar", "S", "x", {"previous": "{bad", "error": "not JSON"}, self.SETTINGS)

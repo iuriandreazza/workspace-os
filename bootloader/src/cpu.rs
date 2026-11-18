@@ -135,32 +135,40 @@ pub unsafe fn enter_kernel(entry: u64, boot_info: u64, root: u64, entry_magic: u
         unsafe { enter_kernel_from_el2(entry, boot_info, root, entry_magic) }
     }
     // SAFETY: the caller guarantees the map is sound. DAIF is masked first so
-    // that nothing interrupts the switch. The old and the new map are both
-    // identity maps with the same memory types, so the code, the stack and
-    // the tables stay reachable throughout. SCTLR_EL1 keeps what the firmware
-    // set and turns the MMU and caches on, with alignment checks and
-    // write-implies-execute-never off.
+    // that nothing interrupts the switch. The firmware's tables are replaced
+    // with the MMU off, which is the break of break-before-make: the two trees
+    // may describe the same addresses with blocks of different sizes, and a
+    // TLB holding entries of both would be a conflict. The code runs from the
+    // identity map, so it fetches from the same addresses with the MMU off,
+    // and the window touches no memory: registers only. SCTLR_EL1 keeps what
+    // the firmware set and turns the MMU and caches on, with alignment checks
+    // and write-implies-execute-never off.
     unsafe {
         asm!(
             "msr daifset, #0xf",
             "msr spsel, #1",
-            "mrs x6, ttbr0_el1",
-            "and x6, x6, x7",
-            "orr x6, x6, x5",
-            "msr ttbr0_el1, x6",
+            "mrs x6, sctlr_el1",
+            "orr x10, x6, x8",
+            "bic x10, x10, x9",
+            "bic x11, x6, x12",
+            "mrs x13, ttbr0_el1",
+            "and x13, x13, x7",
+            "orr x13, x13, x5",
+            "dsb sy",
+            "msr sctlr_el1, x11",
+            "isb",
+            "msr ttbr0_el1, x13",
             "isb",
             "tlbi vmalle1",
-            "dsb ish",
+            "dsb nsh",
             "isb",
-            "mrs x6, sctlr_el1",
-            "orr x6, x6, x8",
-            "bic x6, x6, x9",
-            "msr sctlr_el1, x6",
+            "msr sctlr_el1, x10",
             "isb",
             "br x4",
             in("x7") TTBR_ASID_MASK,
             in("x8") SCTLR_M | SCTLR_C | SCTLR_I,
             in("x9") SCTLR_A | SCTLR_WXN,
+            in("x12") SCTLR_M,
             in("x0") boot_info,
             in("x1") entry_magic,
             in("x2") 0u64,
@@ -201,7 +209,9 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
             "msr tcr_el1, x7",
             "msr ttbr0_el1, x5",
             "isb",
-            "tlbi vmalle1",
+            // EL2 may flush every EL1 entry of any VMID; what EL1's TLB holds
+            // out of reset is unknown.
+            "tlbi alle1",
             "dsb ish",
             "isb",
             "msr sctlr_el1, x8",

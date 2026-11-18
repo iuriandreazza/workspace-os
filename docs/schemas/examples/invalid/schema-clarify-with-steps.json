@@ -1,2 +1,2 @@
-{"kind":"clarify","version":2,"question":"Which folder?","steps":[
+{"kind":"clarify","version":3,"question":"Which folder?","steps":[
  {"id":"s1","action":"fs.delete","args":{"target":{"name":"x","in":"home","kind":"file"}},"depends_on":[],"elevate":false}]}

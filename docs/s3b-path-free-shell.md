@@ -9,10 +9,18 @@ tags: [slm, shell, resolver, broker, screen]
 
 # S3b: path-free resources and the terminal screen
 
-Roadmap item S3b, decided in ADR 0014. The person never navigates directories
-and the shell has no current directory: a plan names things with references,
+Roadmap item S3b, decided in ADR 0014. A plan names things with references,
 deterministic code resolves them before the broker, and the broker judges the
 real resource.
+
+> **Superseded in part by ADR 0018 (S3e, `docs/s3e-directories-and-tree.md`).**
+> This report said that the person never navigates directories, that the shell
+> has no current directory, and that the default view shows no location. Those
+> claims are gone: the session has a current directory, the default views write
+> locations relative to it or to `~`, a plan may name a path, and `everywhere`
+> is now `under_home`. The resolver, the broker, the root panel and the choice
+> of an ambiguous reference are as described here. What follows is the report
+> as written for S3b.
 
 ## Run it
 

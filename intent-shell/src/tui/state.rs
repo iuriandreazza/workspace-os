@@ -9,6 +9,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::wrap::{text_width, wrap};
 use crate::action::printable;
+use crate::ports::ChoiceLine;
 
 /// An entry of the history. The text is already safe to print: it comes from
 /// `screen` and `Outcome::render`, which escape what the model and the machine
@@ -36,7 +37,8 @@ pub enum Mode {
         panel: String,
     },
     Choose {
-        options: Vec<String>,
+        lines: Vec<ChoiceLine>,
+        /// The candidate selected, counted among the candidates only.
         selected: usize,
     },
 }
@@ -54,9 +56,11 @@ pub enum Event {
     },
     AskChoose {
         question: String,
-        options: Vec<String>,
+        lines: Vec<ChoiceLine>,
     },
     Outcome(String),
+    /// The header with the directory the session is in now.
+    Header(String),
 }
 
 /// What the person answered, for the worker's `Confirm`.
@@ -210,13 +214,11 @@ impl State {
                 self.blocks.push(Block::Root(panel.clone()));
                 self.mode = Mode::Root { panel };
             }
-            Event::AskChoose { question, options } => {
+            Event::AskChoose { question, lines } => {
                 self.blocks.push(Block::Note(question));
-                self.mode = Mode::Choose {
-                    options,
-                    selected: 0,
-                };
+                self.mode = Mode::Choose { lines, selected: 0 };
             }
+            Event::Header(text) => self.header = text,
             Event::Outcome(text) => {
                 self.blocks.push(Block::Outcome(text));
                 self.mode = Mode::Input;
@@ -270,7 +272,7 @@ impl State {
             Mode::Busy { .. } => Effect::Nothing,
             Mode::Plan { details } => self.plan_key(key, &details),
             Mode::Root { .. } => self.root_key(key),
-            Mode::Choose { options, selected } => self.choose_key(key, &options, selected),
+            Mode::Choose { lines, selected } => self.choose_key(key, &lines, selected),
         }
     }
 
@@ -365,10 +367,11 @@ impl State {
         }
     }
 
-    fn choose_key(&mut self, key: KeyEvent, options: &[String], selected: usize) -> Effect {
+    fn choose_key(&mut self, key: KeyEvent, lines: &[ChoiceLine], selected: usize) -> Effect {
+        let count = lines.iter().filter(|l| l.option.is_some()).count();
         let select = |state: &mut Self, index: usize| {
             state.mode = Mode::Choose {
-                options: options.to_vec(),
+                lines: lines.to_vec(),
                 selected: index,
             };
             Effect::Nothing
@@ -378,10 +381,10 @@ impl State {
         }
         match key.code {
             KeyCode::Up => select(self, selected.saturating_sub(1)),
-            KeyCode::Down => select(self, (selected + 1).min(options.len().saturating_sub(1))),
-            KeyCode::Enter => match options.get(selected) {
-                Some(option) => {
-                    let note = format!("▸ chose {option}");
+            KeyCode::Down => select(self, (selected + 1).min(count.saturating_sub(1))),
+            KeyCode::Enter => match lines.iter().find(|l| l.option == Some(selected)) {
+                Some(line) => {
+                    let note = format!("▸ chose {}", line.label);
                     self.answer(&note, Reply::Choice(Some(selected)))
                 }
                 None => Effect::Nothing,
@@ -520,7 +523,13 @@ mod tests {
         let mut state = State::new("header".to_owned());
         state.on_event(Event::AskChoose {
             question: "Which one?".to_owned(),
-            options: (1..=count).map(|n| format!("option {n}")).collect(),
+            lines: (1..=count)
+                .map(|n| ChoiceLine {
+                    text: format!("option {n}"),
+                    option: Some(n - 1),
+                    label: String::new(),
+                })
+                .collect(),
         });
         state.clock_ms = DWELL_MS;
         state
@@ -884,6 +893,64 @@ mod tests {
             tap(&mut state, KeyCode::Enter),
             Effect::Reply(Reply::Choice(Some(0)))
         );
+    }
+
+    #[test]
+    fn the_selection_moves_over_the_candidates_and_skips_their_context() {
+        let line = |text: &str, option| ChoiceLine {
+            text: text.to_owned(),
+            option,
+            label: text.trim().to_owned(),
+        };
+        let mut state = State::new("header".to_owned());
+        state.on_event(Event::AskChoose {
+            question: "Which one?".to_owned(),
+            lines: vec![
+                line("~", None),
+                line("├─ Documents/", None),
+                line("│  └─ report.pdf", Some(0)),
+                line("└─ Downloads/", None),
+                line("   └─ report.pdf", Some(1)),
+            ],
+        });
+        state.clock_ms = DWELL_MS;
+        for _ in 0..5 {
+            tap(&mut state, KeyCode::Down);
+        }
+        assert_eq!(
+            tap(&mut state, KeyCode::Enter),
+            Effect::Reply(Reply::Choice(Some(1)))
+        );
+    }
+
+    #[test]
+    fn the_history_says_which_location_was_chosen() {
+        let mut state = State::new("header".to_owned());
+        state.on_event(Event::AskChoose {
+            question: "Which one?".to_owned(),
+            lines: vec![ChoiceLine {
+                text: "└─ report.pdf".to_owned(),
+                option: Some(0),
+                label: "\"Downloads/report.pdf\"".to_owned(),
+            }],
+        });
+        state.clock_ms = DWELL_MS;
+        tap(&mut state, KeyCode::Enter);
+        assert!(
+            state
+                .blocks
+                .iter()
+                .any(|b| format!("{b:?}").contains("chose \\\"Downloads/report.pdf")),
+            "{:?}",
+            state.blocks
+        );
+    }
+
+    #[test]
+    fn the_header_follows_the_directory_the_session_is_in() {
+        let mut state = State::new("header in ~".to_owned());
+        state.on_event(Event::Header("header in ~/Downloads".to_owned()));
+        assert_eq!(state.header, "header in ~/Downloads");
     }
 
     #[test]

@@ -1,3 +1,3 @@
-{"kind":"plan","version":2,"summary":"Write into found paths","steps":[
+{"kind":"plan","version":3,"summary":"Write into found paths","steps":[
  {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"home"},"count":1},"depends_on":[],"elevate":false},
  {"id":"s2","action":"fs.write","args":{"target":{"from_step":"s1"},"content":"x","mode":"overwrite"},"depends_on":["s1"],"elevate":false}]}

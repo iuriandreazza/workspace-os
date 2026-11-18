@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Read a file with no name","steps":[
+{"kind":"plan","version":3,"summary":"Read a file with no name","steps":[
  {"id":"s1","action":"fs.read","args":{"target":{"name":"","in":"home","kind":"file"}},"depends_on":[],"elevate":false}]}

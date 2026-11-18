@@ -1,2 +1,2 @@
-{"kind":"plan","version":2,"summary":"Read a file through a path in a name","steps":[
+{"kind":"plan","version":3,"summary":"Read a file through a path in a name","steps":[
  {"id":"s1","action":"fs.read","args":{"target":{"name":"../../etc/passwd","in":"home","kind":"file"}},"depends_on":[],"elevate":false}]}

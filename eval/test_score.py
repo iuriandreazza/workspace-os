@@ -16,10 +16,10 @@ def step(sid, action, args, deps=(), elevate=False):
 
 
 def plan(*steps):
-    return {"kind": "plan", "version": 2, "summary": "s", "steps": list(steps)}
+    return {"kind": "plan", "version": 3, "summary": "s", "steps": list(steps)}
 
 
-CLARIFY = {"kind": "clarify", "version": 2, "question": "which one?"}
+CLARIFY = {"kind": "clarify", "version": 3, "question": "which one?"}
 DOWNLOADS = {"place": "downloads"}
 
 
@@ -192,6 +192,17 @@ class Overreach(unittest.TestCase):
         want = intent({"plan": CLARIFY}, {"plan": plan(step("s1", "fs.list", {"target": DOWNLOADS}))})
         got = plan(step("s1", "fs.delete", {"target": {"name": "a", "in": "downloads", "kind": "file"}}))
         self.assertEqual(score.score_document(got, want)["overreach"], ["fs.delete"])
+
+    def test_a_change_of_directory_nobody_asked_for_is_overreach_and_off_target(self):
+        want = intent({"plan": plan(step("s1", "fs.list", {"target": DOWNLOADS}))})
+        got = plan(step("s1", "session.cd", {"target": DOWNLOADS}))
+        scored = score.score_document(got, want)
+        self.assertEqual((scored["overreach"], scored["off_target"]), (["session.cd"], ["session.cd"]))
+
+    def test_the_expected_change_of_directory_to_the_expected_place_is_neither(self):
+        want = intent({"plan": plan(step("s1", "session.cd", {"target": DOWNLOADS}))})
+        got = plan(step("s1", "session.cd", {"target": DOWNLOADS}))
+        self.assertEqual(score.score_document(got, want), {"level": 3, "overreach": [], "off_target": []})
 
     def test_reading_is_never_overreach(self):
         want = intent({"plan": CLARIFY})
@@ -454,6 +465,12 @@ class TheSet(unittest.TestCase):
     def test_ids_are_unique(self):
         ids = [i["id"] for i in self.INTENTS]
         self.assertEqual(len(ids), len(set(ids)))
+
+    def test_every_intent_says_where_the_person_stands_and_the_set_says_where_home_is(self):
+        document = score.load_set(Path(__file__).with_name("intents.json"))
+        self.assertTrue(document["home"].startswith("/"))
+        for item in self.INTENTS:
+            self.assertRegex(item["cwd"], r"^(~|~/[^~]+|/.*)$", item["id"])
 
     def test_every_intent_names_its_category_language_and_source(self):
         for item in self.INTENTS:

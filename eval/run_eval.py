@@ -96,8 +96,9 @@ def get(url, path):
 
 
 class Runner:
-    def __init__(self, args, schema_text, schema):
+    def __init__(self, args, schema_text, schema, home):
         self.args = args
+        self.home = home
         self.schema = schema
         self.validator = Draft202012Validator(schema)
         self.system = modes.shell_prompt()
@@ -109,8 +110,9 @@ class Runner:
             self.tools, self.by_name = modes.build_tools(schema, args.derive_depends)
             self.system = modes.tools_prompt(self.system, args.derive_depends)
 
-    def body(self, text, retry=None):
-        return modes.build_body(self.args.mode, self.system, text, retry, {
+    def body(self, intent, retry=None):
+        return modes.build_body(self.args.mode, self.system, intent["text"], retry, {
+            "cwd": modes.cwd_for_model(intent["cwd"], self.home),
             "temperature": self.args.temperature,
             "max_tokens": self.args.max_tokens,
             "sampling": json.loads(self.args.sampling),
@@ -121,7 +123,7 @@ class Runner:
 
     def attempt(self, intent, retry=None):
         try:
-            reply, wall = post(self.args.url, self.body(intent["text"], retry), self.args.timeout)
+            reply, wall = post(self.args.url, self.body(intent, retry), self.args.timeout)
         except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, RecursionError) as error:
             return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: {error}"], "output": None}
         try:
@@ -200,7 +202,8 @@ def main():
     schema = json.loads(schema_text)
     Draft202012Validator.check_schema(schema)
     validator = Draft202012Validator(schema)
-    intents = score.load_intents(HERE / "intents.json")
+    intent_set = score.load_set(HERE / "intents.json")
+    intents = intent_set["intents"]
     for intent in intents:
         for accepted in intent["accept"]:
             problems = check_document(accepted["plan"], validator)
@@ -213,7 +216,7 @@ def main():
             sys.exit(f"run_eval: unknown intent ids {sorted(missing)}")
         intents = [i for i in intents if i["id"] in args.only]
 
-    runner = Runner(args, schema_text, schema)
+    runner = Runner(args, schema_text, schema, intent_set["home"])
     out = Path(args.out) if args.out else HERE / "results" / args.label
     if (out / "results.jsonl").exists():
         sys.exit(f"run_eval: {out} already holds a run; remove it or choose another --label")

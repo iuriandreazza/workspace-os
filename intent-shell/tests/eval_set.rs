@@ -18,7 +18,7 @@ fn intents() -> Vec<Value> {
 fn every_intent_has_text_and_something_to_accept() {
     let intents = intents();
     assert!(
-        intents.len() >= 67,
+        intents.len() >= 89,
         "the set is too small to tell models apart"
     );
     for intent in &intents {
@@ -63,7 +63,7 @@ fn every_accepted_plan_passes_the_shells_parser_and_rules() {
 #[test]
 fn every_intent_says_what_it_is_for_the_scorer() {
     for intent in intents() {
-        for field in ["id", "category", "language", "source", "text"] {
+        for field in ["id", "category", "language", "source", "cwd", "text"] {
             assert!(
                 intent[field].as_str().is_some_and(|v| !v.is_empty()),
                 "{}: no {field}",

@@ -1,5 +1,7 @@
 //! One request through the whole pipeline: model, checks, broker,
-//! confirmation, execution, with every decision logged.
+//! confirmation, execution, with every decision logged. The current directory
+//! is session state kept here, in the core, so every adapter and the
+//! deterministic shell behave the same way (ADR 0018).
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -7,14 +9,16 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::action::{Access, Action, printable, quoted, quoted_path};
+use crate::action::{Access, Action, is_hidden, printable, quoted, quoted_path};
 use crate::broker::{Authority, Review, ReviewedAction, ReviewedStep, Verdict, review};
 use crate::label::Labels;
 use crate::plan::{Document, StepId, parse_checked};
-use crate::ports::{Confirm, DecisionLog, Host, Output, Planner, Retry, Search};
+use crate::ports::{
+    Confirm, DecisionLog, EntryKind, Host, Output, Planner, Retry, Search, TreeEntry,
+};
 use crate::reference::Place;
 use crate::resolve::Choices;
-use crate::screen::{self, View};
+use crate::screen::{self, TreeMarks, TreeOptions, View};
 
 /// Attempts at a valid document: the first, and one retry with the error (ADR 0011).
 const MAX_ATTEMPTS: usize = 2;
@@ -70,7 +74,48 @@ pub enum Outcome {
     },
 }
 
+/// What a session remembers between requests. One per session: a `cd` in one
+/// never reaches another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionState {
+    /// A real location, where relative paths in the next request start.
+    pub cwd: PathBuf,
+}
+
+impl SessionState {
+    /// A session starts at the person's home, or at the root when the host has none.
+    pub fn start(host: &dyn Host) -> Self {
+        Self {
+            cwd: host.home().unwrap_or_else(|| PathBuf::from("/")),
+        }
+    }
+
+    /// The directory as the person writes it (`~/Downloads`).
+    pub fn cwd_text(&self, host: &dyn Host) -> String {
+        printable(
+            &Labels::new(&self.cwd, host.home())
+                .cwd_text()
+                .to_string_lossy(),
+            false,
+        )
+    }
+
+    /// The directory as the model is told: the way the person writes it and
+    /// the real location, so it neither guesses a home nor spells a relative
+    /// path from the wrong place.
+    pub fn cwd_for_model(&self, host: &dyn Host) -> String {
+        let written = self.cwd_text(host);
+        let real = printable(&self.cwd.to_string_lossy(), false);
+        if written == real {
+            real
+        } else {
+            format!("{written} ({real})")
+        }
+    }
+}
+
 pub struct Shell<'a> {
+    pub session: &'a mut SessionState,
     pub authority: &'a Authority,
     pub host: &'a dyn Host,
     pub planner: &'a dyn Planner,
@@ -94,8 +139,9 @@ impl Shell<'_> {
     }
 
     fn run(&mut self, request: &str) -> Result<Outcome, String> {
+        let cwd = self.session.cwd.clone();
         self.record(
-            json!({"event": "request", "user": self.authority.user.name, "request": request}),
+            json!({"event": "request", "user": self.authority.user.name, "request": request, "cwd": quoted_path(&cwd)}),
         )?;
         let document = match self.obtain_document(request)? {
             Ok(document) => document,
@@ -111,7 +157,7 @@ impl Shell<'_> {
         // Before the broker may read anything to expand a reference, the plan
         // is on record, and each read is logged just before it runs.
         self.record(json!({"event": "plan_accepted", "summary": plan.summary, "steps": plan.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>()}))?;
-        let reviewed = match self.review_with_choices(&plan)? {
+        let reviewed = match self.review_with_choices(&plan, &cwd)? {
             Ok(reviewed) => reviewed,
             Err(declined) => return Ok(declined),
         };
@@ -142,7 +188,7 @@ impl Shell<'_> {
             self.record(json!({"event": "plan_auto_approved"}))?;
         }
         let (steps, logged) = self.execute(&reviewed);
-        let labels = self.labels_for(&reviewed, &steps);
+        let labels = reviewed.labels.clone();
         Ok(match logged {
             Ok(()) => Outcome::Executed {
                 review: reviewed,
@@ -166,6 +212,7 @@ impl Shell<'_> {
     fn review_with_choices(
         &mut self,
         plan: &crate::plan::Plan,
+        cwd: &Path,
     ) -> Result<Result<Review, Outcome>, String> {
         let mut choices = Choices::default();
         loop {
@@ -178,15 +225,16 @@ impl Shell<'_> {
                         inner: self.host,
                         log: &log,
                     },
+                    cwd,
                     &choices,
                 )
             };
             let Some(ambiguity) = reviewed.first_ambiguity().cloned() else {
                 return Ok(Ok(reviewed));
             };
-            let (question, options) = screen::question(&ambiguity, &reviewed.labels);
-            let picked = self.confirm.choose(&question, &options);
-            let chosen = picked.and_then(|i| ambiguity.candidates.get(i).cloned());
+            let (question, lines, offered) = screen::question(&ambiguity, &reviewed.labels);
+            let picked = self.confirm.choose(&question, &lines);
+            let chosen = picked.and_then(|i| offered.get(i).cloned());
             self.record(json!({
                 "event": "choice", "step": ambiguity.step.as_str(), "what": ambiguity.what,
                 "candidates": ambiguity.candidates.iter().map(|p| quoted_path(p)).collect::<Vec<_>>(),
@@ -199,22 +247,6 @@ impl Shell<'_> {
         }
     }
 
-    /// Friendly names for everything the report mentions, results included.
-    fn labels_for(&self, reviewed: &Review, steps: &[ExecutedStep]) -> Labels {
-        let mut paths: Vec<&Path> = reviewed
-            .steps
-            .iter()
-            .flat_map(|s| &s.items)
-            .flat_map(|i| i.action.accesses().into_iter().map(|(_, p)| p))
-            .collect();
-        for item in steps.iter().flat_map(|s| &s.items) {
-            if let ItemResult::Done(output) = &item.result {
-                paths.extend(output.paths().map(PathBuf::as_path));
-            }
-        }
-        Labels::build(self.host, paths)
-    }
-
     /// Ask the model until a document passes the schema and semantic rules, or give up.
     /// The inner `Err` is an outcome that ends the request, not a log failure.
     fn obtain_document(&mut self, request: &str) -> Result<Result<Document, Outcome>, String> {
@@ -224,7 +256,8 @@ impl Shell<'_> {
                 previous_output: output,
                 error,
             });
-            let raw = match self.planner.plan(request, retry.as_ref()) {
+            let cwd = self.session.cwd_for_model(self.host);
+            let raw = match self.planner.plan(request, &cwd, retry.as_ref()) {
                 Ok(raw) => raw,
                 Err(reason) => {
                     self.record(
@@ -314,12 +347,34 @@ impl Shell<'_> {
         record: &mut ExecutedStep,
     ) -> Result<bool, String> {
         let rendering = item.action.describe();
-        let result = match &item.verdict {
-            Verdict::Refused(why) => ItemResult::NotRun(why.friendly(labels)),
-            Verdict::NeedsRoot if !self.confirm_root(step, &item.action, labels)? => {
+        let entering = match &item.action {
+            Action::Cd { path } => Some(path),
+            _ => None,
+        };
+        let result = match (&item.verdict, entering) {
+            (Verdict::Refused(why), _) => ItemResult::NotRun(why.friendly(labels)),
+            (Verdict::NeedsRoot, _) if !self.confirm_root(step, &item.action, labels)? => {
                 ItemResult::NotRun("root confirmation was not given".to_owned())
             }
-            Verdict::Allowed | Verdict::NeedsRoot => {
+            // The directory was judged at review; what the person waited for
+            // may have changed since, and a session never enters what is not one.
+            (Verdict::Allowed, Some(path))
+                if !self.host.is_dir(path) || !self.host.allows(Access::Read, path) =>
+            {
+                ItemResult::NotRun(format!(
+                    "{} is no longer a directory you can enter",
+                    labels.of(path)
+                ))
+            }
+            (Verdict::Allowed, Some(path)) => {
+                self.record(json!({"event": "cd", "step": step.as_str(), "from": quoted_path(&self.session.cwd), "to": quoted_path(path)}))?;
+                self.session.cwd = path.clone();
+                ItemResult::Done(Output {
+                    text: format!("now in {}", self.session.cwd_text(self.host)),
+                    ..Output::default()
+                })
+            }
+            (Verdict::Allowed | Verdict::NeedsRoot, _) => {
                 let event = if item.output.is_some() {
                     "use_pre_run"
                 } else {
@@ -379,6 +434,22 @@ impl Host for LoggedReads<'_, '_, '_> {
         self.inner.place_roots(place)
     }
 
+    fn home(&self) -> Option<PathBuf> {
+        self.inner.home()
+    }
+
+    fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf {
+        self.inner.canonicalize(path, follow_last)
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        self.inner.is_symlink(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.inner.is_dir(path)
+    }
+
     fn same(&self, a: &Path, b: &Path) -> bool {
         self.inner.same(a, b)
     }
@@ -432,7 +503,7 @@ fn review_json(reviewed: &Review) -> Value {
             json!({"step": step.id.as_str(), "blocked": step.blocked.as_ref().map(ToString::to_string), "items": items})
         })
         .collect();
-    json!({"summary": reviewed.summary, "steps": steps})
+    json!({"summary": reviewed.summary, "cwd": quoted_path(&reviewed.cwd), "steps": steps})
 }
 
 /// Whether the person must confirm this plan: any action that could run and
@@ -480,9 +551,14 @@ impl Outcome {
             } => format!(
                 "{}\n  Ran without asking: it only read or added.\n{}",
                 screen::plan_screen(review, View::Friendly),
-                render_steps(steps, labels)
+                render_steps(steps, labels, &screen::marks_of(review))
             ),
-            Self::Executed { steps, labels, .. } => render_steps(steps, labels),
+            Self::Executed {
+                review,
+                steps,
+                labels,
+                ..
+            } => render_steps(steps, labels, &screen::marks_of(review)),
             Self::LogFailed {
                 reason,
                 plan,
@@ -494,14 +570,14 @@ impl Outcome {
                     plan.as_deref()
                         .map(|p| format!("{p}\n"))
                         .unwrap_or_default(),
-                    render_steps(steps, labels)
+                    render_steps(steps, labels, &TreeMarks::default())
                 )
             }
         }
     }
 }
 
-fn render_steps(steps: &[ExecutedStep], labels: &Labels) -> String {
+fn render_steps(steps: &[ExecutedStep], labels: &Labels, marks: &TreeMarks) -> String {
     let mut out = String::new();
     for step in steps {
         if let Some(why) = &step.not_run {
@@ -523,12 +599,8 @@ fn render_steps(steps: &[ExecutedStep], labels: &Labels) -> String {
                     out.push_str(&format!("{} NOTE: {note}\n", step.id));
                 }
                 // Indented, so output cannot pass for a line of the report.
-                for found in &output.found {
-                    let size = found
-                        .size
-                        .map(|s| format!("  {s} bytes"))
-                        .unwrap_or_default();
-                    out.push_str(&format!("    {}{size}\n", labels.of(&found.path)));
+                for line in result_tree(&item.action, output, labels, marks) {
+                    out.push_str(&format!("    {line}\n"));
                 }
             }
             for line in text.lines() {
@@ -537,4 +609,56 @@ fn render_steps(steps: &[ExecutedStep], labels: &Labels) -> String {
         }
     }
     printable(&out, true)
+}
+
+/// What a listing or a ranking found, as the tree of ADR 0018. Hidden entries
+/// show only when the listed folder is itself hidden; a ranking names its
+/// files, so they all show.
+fn result_tree(
+    action: &Action,
+    output: &Output,
+    labels: &Labels,
+    marks: &TreeMarks,
+) -> Vec<String> {
+    let (root, entries, options) = match action {
+        Action::List { path } => {
+            let entries = if output.tree.is_empty() {
+                files_found(output)
+            } else {
+                output.tree.clone()
+            };
+            let options = TreeOptions {
+                show_hidden: is_hidden(path),
+                ..TreeOptions::default()
+            };
+            (path, entries, options)
+        }
+        Action::FindLargest { path, .. } => {
+            let options = TreeOptions {
+                depth: usize::MAX,
+                show_hidden: true,
+                ..TreeOptions::default()
+            };
+            (path, files_found(output), options)
+        }
+        _ => return Vec::new(),
+    };
+    screen::tree(root, &entries, &[], labels, marks, &options)
+        .into_iter()
+        .map(|line| line.text)
+        .collect()
+}
+
+fn files_found(output: &Output) -> Vec<TreeEntry> {
+    output
+        .found
+        .iter()
+        .map(|found| TreeEntry {
+            path: found.path.clone(),
+            kind: EntryKind::File,
+            size: found.size,
+            readable: true,
+            protected: false,
+        })
+        .collect()
 }

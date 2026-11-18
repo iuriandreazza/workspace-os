@@ -25,14 +25,18 @@ from pathlib import Path
 MUTATING = {
     "fs.write", "fs.move", "fs.delete", "process.run",
     "user.manage", "system.configure", "soul.propose_change",
+    "session.cd",  # changes no file, but changes where the next request's relative paths start
 }
 LEVELS = ("kind", "actions", "exact")
 IDENTIFIER_KEYS = {"id", "depends_on", "from_step", "user", "group", "program", "key"}
 
 
+def load_set(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def load_intents(path):
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
-    return document["intents"]
+    return load_set(path)["intents"]
 
 
 def _dependency_order(steps):
@@ -384,8 +388,8 @@ def baselines(intents_path):
     listing the home folder for everything. Read the table against them."""
     intents = load_intents(intents_path)
     fixed = {
-        "always ask": {"kind": "clarify", "version": 2, "question": "?"},
-        "always list home": {"kind": "plan", "version": 2, "summary": "x", "steps": [
+        "always ask": {"kind": "clarify", "version": 3, "question": "?"},
+        "always list home": {"kind": "plan", "version": 3, "summary": "x", "steps": [
             {"id": "s1", "action": "fs.list", "args": {"target": {"place": "home"}}, "depends_on": [], "elevate": False}]},
     }
     out = ["| Answer without a model | exact | overreach |", "|---|---:|---:|"]

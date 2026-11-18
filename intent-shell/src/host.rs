@@ -12,11 +12,14 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::action::{Access, Action, is_hidden, quoted_path};
-use crate::ports::{Entry, Found, Host, Output, Search};
+use crate::ports::Entry;
+use crate::ports::{EntryKind, Found, Host, Output, Search, TREE_DEPTH, TreeEntry};
 use crate::reference::Place;
 
 const MAX_READ_BYTES: u64 = 64 * 1024;
 const MAX_WALKED_ENTRIES: usize = 100_000;
+/// Entries a listing gathers for the tree view, so a huge folder cannot stall it.
+const MAX_TREE_ENTRIES: usize = 5_000;
 
 pub struct UnixHost {
     home: Option<PathBuf>,
@@ -25,6 +28,110 @@ pub struct UnixHost {
 impl UnixHost {
     pub fn new(home: Option<PathBuf>) -> Self {
         Self { home }
+    }
+
+    fn is_protected(&self, path: &Path) -> bool {
+        path.parent().is_none()
+            || Place::ALL
+                .into_iter()
+                .flat_map(|place| self.place_roots(place))
+                .any(|root| root == path)
+    }
+
+    fn tree_entry(&self, path: PathBuf, meta: &fs::Metadata) -> TreeEntry {
+        let file_type = meta.file_type();
+        let kind = if file_type.is_symlink() {
+            EntryKind::Link(fs::read_link(&path).unwrap_or_default())
+        } else if file_type.is_dir() {
+            EntryKind::Dir
+        } else if file_type.is_file() {
+            EntryKind::File
+        } else {
+            EntryKind::Other
+        };
+        let readable = if file_type.is_dir() {
+            permitted(&path, libc::R_OK | libc::X_OK)
+        } else {
+            permitted(&path, libc::R_OK)
+        };
+        TreeEntry {
+            size: file_type.is_file().then_some(meta.len()),
+            protected: self.is_protected(&path),
+            kind,
+            readable,
+            path,
+        }
+    }
+
+    /// The direct children, which `from_step` may use, and what lies below
+    /// them down to the tree's depth, which only the display may use.
+    fn list(&self, path: &Path) -> Result<Output, String> {
+        self.list_capped(path, MAX_TREE_ENTRIES)
+    }
+
+    fn list_capped(&self, path: &Path, cap: usize) -> Result<Output, String> {
+        refuse_hidden_link(path)?;
+        // Not the whole folder: a huge one must not stall or fill the memory.
+        let mut children: Vec<PathBuf> = fs::read_dir(path)
+            .map_err(|e| io_error(path, e))?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .take(cap + 1)
+            .collect();
+        let listing_cut = children.len() > cap;
+        children.truncate(cap);
+        children.sort();
+        let mut tree = Vec::new();
+        // Level by level, so a huge first folder cannot crowd out its siblings.
+        let mut pending: std::collections::VecDeque<(PathBuf, usize)> =
+            children.iter().map(|c| (c.clone(), 1)).collect();
+        let mut capped = false;
+        while let Some((child, level)) = pending.pop_front() {
+            if tree.len() >= cap {
+                capped = true;
+                break;
+            }
+            let Ok(meta) = fs::symlink_metadata(&child) else {
+                continue;
+            };
+            let entry = self.tree_entry(child.clone(), &meta);
+            // A hidden folder is shown, not opened, and a link is never followed.
+            let opens = level < TREE_DEPTH
+                && entry.kind == EntryKind::Dir
+                && entry.readable
+                && !is_hidden(Path::new(child.file_name().unwrap_or_default()));
+            tree.push(entry);
+            if opens && let Ok(below) = fs::read_dir(&child) {
+                // At most what the cap can still take, so a huge folder is not read whole.
+                let room = cap.saturating_sub(tree.len() + pending.len()).max(1);
+                let mut names: Vec<PathBuf> = below
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .take(room + 1)
+                    .collect();
+                if names.len() > room {
+                    names.truncate(room);
+                    capped = true;
+                }
+                names.sort();
+                pending.extend(names.into_iter().map(|n| (n, level + 1)));
+            }
+        }
+        let mut notes = Vec::new();
+        if listing_cut {
+            notes.push(format!(
+                "the listing stopped after {cap} entries, the first the system returned: more exist"
+            ));
+        } else if capped {
+            notes.push(format!("the tree stopped after {cap} entries: more exist"));
+        }
+        Ok(Output {
+            found: children
+                .into_iter()
+                .map(|path| Found { path, size: None })
+                .collect(),
+            tree,
+            notes,
+            ..Output::default()
+        })
     }
 
     pub fn from_environment() -> Self {
@@ -49,13 +156,11 @@ fn parent_of(path: &Path) -> &Path {
 
 impl Host for UnixHost {
     fn place_roots(&self, place: Place) -> Vec<PathBuf> {
-        // A relative home would make the places depend on the working directory.
-        let Some(home) = self.home.as_ref().filter(|h| h.is_absolute()) else {
+        let Some(home) = self.home() else {
             return Vec::new();
         };
         let folders: Vec<PathBuf> = match place {
-            // On this host the person's files are the home directory.
-            Place::Home | Place::Everywhere => vec![home.clone()],
+            Place::Home => vec![home.clone()],
             Place::Downloads => vec![home.join("Downloads")],
             Place::Documents => vec![home.join("Documents")],
             Place::Desktop => vec![home.join("Desktop")],
@@ -64,7 +169,53 @@ impl Host for UnixHost {
             // macOS calls it Movies. Both count, so neither can be removed whole.
             Place::Videos => vec![home.join("Videos"), home.join("Movies")],
         };
-        folders.into_iter().filter(|p| p.is_dir()).collect()
+        // The real folders, so a place that is a link is judged and shown where it leads.
+        folders
+            .into_iter()
+            .filter_map(|p| fs::canonicalize(p).ok())
+            .filter(|p| p.is_dir())
+            .collect()
+    }
+
+    fn home(&self) -> Option<PathBuf> {
+        // A relative home would make `~` depend on the working directory.
+        let home = self.home.as_ref().filter(|h| h.is_absolute())?;
+        Some(fs::canonicalize(home).unwrap_or_else(|_| home.clone()))
+    }
+
+    fn canonicalize(&self, path: &Path, follow_last: bool) -> PathBuf {
+        if follow_last {
+            if let Ok(real) = fs::canonicalize(path) {
+                return real;
+            }
+            // A link whose target does not exist yet still leads somewhere:
+            // writing to it creates the target, so that is the location.
+            if let Some(target) = dangling_target(path) {
+                return self.canonicalize(&target, true);
+            }
+        }
+        // Resolve the longest part that exists and can be reached; the rest
+        // stays as written, and whether the user may touch it is the broker's.
+        let mut tail: Vec<std::ffi::OsString> = Vec::new();
+        let mut head = path.to_path_buf();
+        while let Some(name) = head.file_name().map(ToOwned::to_owned) {
+            tail.push(name);
+            head.pop();
+            if let Ok(real) = fs::canonicalize(&head) {
+                head = real;
+                break;
+            }
+        }
+        head.extend(tail.iter().rev());
+        head
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        fs::metadata(path).is_ok_and(|m| m.is_dir())
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
     }
 
     fn same(&self, a: &Path, b: &Path) -> bool {
@@ -100,7 +251,7 @@ impl Host for UnixHost {
 
     fn execute(&self, action: &Action) -> Result<Output, String> {
         match action {
-            Action::List { path } => list(path),
+            Action::List { path } => self.list(path),
             Action::Stat { path } => stat(path),
             Action::Read { path } => read(path, MAX_READ_BYTES),
             Action::FindLargest { path, count } => {
@@ -123,21 +274,6 @@ fn io_error(path: &Path, error: std::io::Error) -> String {
 fn quoted_name(path: &Path) -> String {
     path.file_name()
         .map_or_else(|| "\"/\"".to_owned(), |name| quoted_path(Path::new(name)))
-}
-
-fn list(path: &Path) -> Result<Output, String> {
-    let mut paths: Vec<PathBuf> = fs::read_dir(path)
-        .map_err(|e| io_error(path, e))?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .collect();
-    paths.sort();
-    Ok(Output {
-        found: paths
-            .into_iter()
-            .map(|path| Found { path, size: None })
-            .collect(),
-        ..Output::default()
-    })
 }
 
 fn stat(path: &Path) -> Result<Output, String> {
@@ -171,10 +307,30 @@ fn stat(path: &Path) -> Result<Output, String> {
     })
 }
 
-fn read(path: &Path, limit: u64) -> Result<Output, String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    // A plain name can be a link to a hidden file (`notes.txt` to `.ssh/id_rsa`),
-    // and a read of a plain name is not asked about (ADR 0016).
+/// Where a link that leads nowhere yet points, as an absolute path, following
+/// a chain of such links a few steps.
+fn dangling_target(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    for _ in 0..8 {
+        let target = fs::read_link(&current).ok()?;
+        let absolute = if target.is_absolute() {
+            target
+        } else {
+            current.parent()?.join(target)
+        };
+        if fs::symlink_metadata(&absolute).is_err() || fs::canonicalize(&absolute).is_ok() {
+            return Some(absolute);
+        }
+        current = absolute;
+    }
+    None
+}
+
+/// A plain name can be a link to a hidden place (`notes.txt` to `.ssh/id_rsa`),
+/// and looking at a plain name is not asked about (ADR 0016). A path that came
+/// from a listing or a search was never followed, so the host refuses what the
+/// broker could not see.
+fn refuse_hidden_link(path: &Path) -> Result<(), String> {
     if !is_hidden(path)
         && let Ok(real) = fs::canonicalize(path)
         && is_hidden(&real)
@@ -184,6 +340,12 @@ fn read(path: &Path, limit: u64) -> Result<Output, String> {
             quoted_name(path)
         ));
     }
+    Ok(())
+}
+
+fn read(path: &Path, limit: u64) -> Result<Output, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    refuse_hidden_link(path)?;
     // Opening a named pipe or a device can block forever, so the open does not
     // wait, and what was opened (not what the name was a moment ago) must be a
     // regular file.
@@ -224,6 +386,8 @@ fn read(path: &Path, limit: u64) -> Result<Output, String> {
 }
 
 fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, String> {
+    refuse_hidden_link(root)?;
+    let root_is_hidden = is_hidden(root);
     use std::os::unix::fs::MetadataExt;
     let mut files: Vec<(u64, PathBuf)> = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -246,6 +410,11 @@ fn find_largest(root: &Path, count: usize, walk_limit: usize) -> Result<Output, 
             if walked > walk_limit {
                 truncated = true;
                 break;
+            }
+            // Hidden entries are not looked into unless the root is hidden itself:
+            // a ranking of a plain folder asks no question (ADR 0016).
+            if !root_is_hidden && entry.file_name().as_encoded_bytes().first() == Some(&b'.') {
+                continue;
             }
             // `file_type` does not follow symlinks, so the walk stays inside `root`.
             let Ok(kind) = entry.file_type() else {
@@ -323,7 +492,9 @@ fn search(roots: &[PathBuf], needle: &str, walk_limit: usize) -> Result<Search, 
             if name.contains(&needle) {
                 entries.push(Entry {
                     path: path.clone(),
-                    is_dir: kind.is_dir(),
+                    // A link to a folder is a folder to enter, though never walked.
+                    is_dir: kind.is_dir()
+                        || (kind.is_symlink() && fs::metadata(&path).is_ok_and(|m| m.is_dir())),
                 });
             }
             if kind.is_dir() {
@@ -356,7 +527,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("intent-shell-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        // Where a link such as `/var` leads, as `canonicalize` will report it.
+        fs::canonicalize(dir).unwrap()
     }
 
     fn host() -> UnixHost {
@@ -641,7 +813,6 @@ mod tests {
             vec![home.join("Downloads")]
         );
         assert_eq!(host.place_roots(Place::Home), vec![home.clone()]);
-        assert_eq!(host.place_roots(Place::Everywhere), vec![home.clone()]);
         assert!(host.place_roots(Place::Music).is_empty());
         assert!(UnixHost::new(None).place_roots(Place::Home).is_empty());
         fs::remove_dir_all(&home).unwrap();
@@ -718,7 +889,11 @@ mod tests {
     #[test]
     fn an_error_names_the_item_and_not_where_it_is() {
         let dir = temp_dir("errname");
-        let message = list(&dir.join("secret-name")).unwrap_err();
+        let message = host()
+            .execute(&Action::List {
+                path: dir.join("secret-name"),
+            })
+            .unwrap_err();
         assert!(message.contains("secret-name"));
         assert!(
             !message.contains(&dir.to_string_lossy().into_owned()),
@@ -821,5 +996,268 @@ mod tests {
             vec![home.join("Videos"), home.join("Movies")]
         );
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_path_is_resolved_through_links_except_a_last_link_that_is_to_be_removed() {
+        let dir = temp_dir("canonical");
+        fs::create_dir(dir.join("real")).unwrap();
+        fs::write(dir.join("real/file"), "x").unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        let host = host();
+        // A link in the middle always leads where it leads.
+        assert_eq!(
+            host.canonicalize(&dir.join("link/file"), false),
+            dir.join("real/file")
+        );
+        // A last link is the thing named, unless it is a directory to enter.
+        assert_eq!(
+            host.canonicalize(&dir.join("link"), false),
+            dir.join("link")
+        );
+        assert_eq!(host.canonicalize(&dir.join("link"), true), dir.join("real"));
+        // What does not exist stays as written under what does.
+        assert_eq!(
+            host.canonicalize(&dir.join("link/new/er"), false),
+            dir.join("real/new/er")
+        );
+        assert_eq!(host.canonicalize(Path::new("/"), true), Path::new("/"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn what_cannot_be_reached_stays_as_written_for_the_broker_to_refuse() {
+        let dir = temp_dir("unreachable");
+        let locked = dir.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("secret"), "x").unwrap();
+        set_mode(&locked, 0o000);
+        let resolved = host().canonicalize(&locked.join("secret"), true);
+        let allowed = host().allows(Access::Read, &locked.join("secret"));
+        set_mode(&locked, 0o700);
+        assert_eq!(resolved, locked.join("secret"));
+        if !is_root() {
+            assert!(!allowed);
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_home_is_the_real_location_and_only_an_absolute_one() {
+        let dir = temp_dir("home");
+        std::os::unix::fs::symlink(&dir, dir.with_extension("alias")).unwrap();
+        let host = UnixHost::new(Some(dir.with_extension("alias")));
+        assert_eq!(host.home(), Some(dir.clone()));
+        assert_eq!(UnixHost::new(Some(PathBuf::from("rel"))).home(), None);
+        assert_eq!(UnixHost::new(None).home(), None);
+        fs::remove_file(dir.with_extension("alias")).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_listing_gathers_two_levels_for_the_tree_and_only_the_children_for_references() {
+        let dir = temp_dir("tree");
+        fs::create_dir_all(dir.join("films/deep/deeper")).unwrap();
+        fs::write(dir.join("films/old.mkv"), vec![0; 40]).unwrap();
+        fs::write(dir.join("films/deep/x"), "x").unwrap();
+        fs::create_dir_all(dir.join(".cache")).unwrap();
+        fs::write(dir.join(".cache/hidden-child"), "x").unwrap();
+        std::os::unix::fs::symlink(dir.join("films"), dir.join("alias")).unwrap();
+        fs::write(dir.join("notes.txt"), "hello").unwrap();
+        let output = host().execute(&Action::List { path: dir.clone() }).unwrap();
+        let children: Vec<_> = output.paths().cloned().collect();
+        assert_eq!(
+            children,
+            [".cache", "alias", "films", "notes.txt"].map(|n| dir.join(n))
+        );
+        let below: Vec<PathBuf> = output.tree.iter().map(|e| e.path.clone()).collect();
+        assert!(below.contains(&dir.join("films/old.mkv")), "{below:?}");
+        assert!(below.contains(&dir.join("films/deep")), "{below:?}");
+        // Two levels: what is under `deep` is not gathered. A hidden folder is
+        // shown but not opened, and a link is never followed.
+        assert!(!below.contains(&dir.join("films/deep/x")), "{below:?}");
+        assert!(
+            !below.contains(&dir.join(".cache/hidden-child")),
+            "{below:?}"
+        );
+        assert!(!below.contains(&dir.join("alias/old.mkv")), "{below:?}");
+        let by = |name: &str| {
+            output
+                .tree
+                .iter()
+                .find(|e| e.path == dir.join(name))
+                .unwrap()
+        };
+        assert_eq!(by("alias").kind, EntryKind::Link(dir.join("films")));
+        assert_eq!(by("films").kind, EntryKind::Dir);
+        assert_eq!(by("notes.txt").size, Some(5));
+        assert!(by("notes.txt").readable && !by("notes.txt").protected);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_place_and_the_root_are_protected_in_a_listing() {
+        let home = temp_dir("protected");
+        fs::create_dir(home.join("Downloads")).unwrap();
+        let host = UnixHost::new(Some(home.clone()));
+        let output = host.execute(&Action::List { path: home.clone() }).unwrap();
+        assert!(
+            output
+                .tree
+                .iter()
+                .find(|e| e.path == home.join("Downloads"))
+                .unwrap()
+                .protected
+        );
+        assert!(host.is_protected(Path::new("/")));
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_huge_first_folder_does_not_crowd_the_other_top_level_entries_out_of_the_tree() {
+        let dir = temp_dir("bfs");
+        fs::create_dir(dir.join("a-big")).unwrap();
+        for n in 0..30 {
+            fs::write(dir.join(format!("a-big/f{n}")), "").unwrap();
+        }
+        fs::create_dir(dir.join("z-last")).unwrap();
+        fs::write(dir.join("z-last/file"), "x").unwrap();
+        let output = host().list_capped(&dir, 10).unwrap();
+        let has = |p: PathBuf| output.tree.iter().any(|e| e.path == p);
+        assert!(has(dir.join("a-big")) && has(dir.join("z-last")));
+        assert_eq!(output.notes.len(), 1, "{:?}", output.notes);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_a_hidden_folder_is_not_listed_or_searched_by_its_plain_name() {
+        let dir = temp_dir("hidden-link-list");
+        fs::create_dir_all(dir.join(".ssh")).unwrap();
+        fs::write(dir.join(".ssh/id_rsa"), "secret").unwrap();
+        std::os::unix::fs::symlink(dir.join(".ssh"), dir.join("lnk")).unwrap();
+        for action in [
+            Action::List {
+                path: dir.join("lnk"),
+            },
+            Action::FindLargest {
+                path: dir.join("lnk"),
+                count: 3,
+            },
+        ] {
+            let error = host().execute(&action).unwrap_err();
+            assert!(error.contains("hidden location"), "{error}");
+        }
+        assert!(
+            host()
+                .execute(&Action::List {
+                    path: dir.join(".ssh")
+                })
+                .is_ok()
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_leads_nowhere_yet_is_followed_to_where_a_write_would_create_it() {
+        let dir = temp_dir("dangling-write");
+        fs::create_dir(dir.join(".ssh")).unwrap();
+        std::os::unix::fs::symlink(dir.join(".ssh/new_keys"), dir.join("lnk")).unwrap();
+        std::os::unix::fs::symlink("lnk", dir.join("chain")).unwrap();
+        assert_eq!(
+            host().canonicalize(&dir.join("lnk"), true),
+            dir.join(".ssh/new_keys")
+        );
+        assert_eq!(
+            host().canonicalize(&dir.join("chain"), true),
+            dir.join(".ssh/new_keys")
+        );
+        // Naming it to remove it still names the link.
+        assert_eq!(
+            host().canonicalize(&dir.join("lnk"), false),
+            dir.join("lnk")
+        );
+        assert!(host().is_symlink(&dir.join("lnk")));
+        assert!(!host().is_symlink(&dir.join(".ssh")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_listing_of_a_huge_folder_stops_at_the_cap_and_says_so() {
+        let dir = temp_dir("listcap");
+        for n in 0..12 {
+            fs::write(dir.join(format!("f{n:02}")), "").unwrap();
+        }
+        let output = host().list_capped(&dir, 5).unwrap();
+        assert_eq!(output.found.len(), 5);
+        assert!(
+            output.notes[0].contains("listing stopped after 5"),
+            "{:?}",
+            output.notes
+        );
+        let all = host().list_capped(&dir, 50).unwrap();
+        assert_eq!(all.found.len(), 12);
+        assert!(all.notes.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_place_that_is_a_link_is_the_real_folder_it_leads_to() {
+        let home = temp_dir("place-link");
+        fs::create_dir(home.join(".priv")).unwrap();
+        std::os::unix::fs::symlink(home.join(".priv"), home.join("Documents")).unwrap();
+        let host = UnixHost::new(Some(home.clone()));
+        assert_eq!(host.place_roots(Place::Documents), vec![home.join(".priv")]);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_a_folder_is_found_as_a_folder_but_not_walked() {
+        let dir = temp_dir("search-link");
+        fs::create_dir_all(dir.join("real/inside")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("films")).unwrap();
+        let found = search(std::slice::from_ref(&dir), "films", 100).unwrap();
+        assert_eq!(found.entries.len(), 1);
+        assert!(found.entries[0].is_dir);
+        let inside = search(std::slice::from_ref(&dir), "inside", 100).unwrap();
+        assert_eq!(
+            inside.entries.len(),
+            1,
+            "found once, under real/ and not again under the link"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_ranking_of_a_plain_folder_does_not_look_into_hidden_entries() {
+        let dir = temp_dir("rank-hidden");
+        fs::create_dir(dir.join(".ssh")).unwrap();
+        fs::write(dir.join(".ssh/id_rsa"), vec![0; 900]).unwrap();
+        fs::write(dir.join(".hidden-file"), vec![0; 800]).unwrap();
+        fs::write(dir.join("plain"), vec![0; 10]).unwrap();
+        let rank = |path: PathBuf| {
+            host()
+                .execute(&Action::FindLargest { path, count: 5 })
+                .unwrap()
+                .paths()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rank(dir.clone()), [dir.join("plain")]);
+        // Asking for the hidden folder itself is asked about by the broker, and shows it.
+        assert_eq!(rank(dir.join(".ssh")), [dir.join(".ssh/id_rsa")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_huge_child_is_not_read_whole_for_the_tree() {
+        let dir = temp_dir("huge-child");
+        fs::create_dir(dir.join("big")).unwrap();
+        for n in 0..60 {
+            fs::write(dir.join(format!("big/f{n:02}")), "").unwrap();
+        }
+        let output = host().list_capped(&dir, 10).unwrap();
+        assert!(output.tree.len() <= 10, "{}", output.tree.len());
+        assert!(!output.notes.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -16,7 +16,7 @@ MODEL_RS = ROOT / "intent-shell/src/model.rs"
 
 STEP_NAMES = [
     "fsList", "fsStat", "fsRead", "fsFindLargest", "fsWrite", "fsMove",
-    "fsDelete", "processRun", "userManage", "systemConfigure", "soulProposeChange",
+    "fsDelete", "sessionCd", "processRun", "userManage", "systemConfigure", "soulProposeChange",
 ]
 DESCRIPTIONS = {
     "fs.list": "List what is in a place or a folder.",
@@ -26,6 +26,7 @@ DESCRIPTIONS = {
     "fs.write": "Create a file, or overwrite or append to an existing one.",
     "fs.move": "Move or rename a file or folder.",
     "fs.delete": "Delete a file or folder that exists.",
+    "session.cd": "Change the current directory for the next request. A plan of its own: never together with another step.",
     "process.run": "Run a program by name with an argument list (never a shell string).",
     "user.manage": "Add or remove a user, or add or remove a user from a group.",
     "system.configure": "Set a system setting.",
@@ -63,7 +64,7 @@ def shell_prompt(source=None):
 def tools_prompt(prompt, derive_depends=False):
     """The shell prompt without its JSON-document instructions, for native tools."""
     lines = prompt.splitlines()
-    start = next((i for i, line in enumerate(lines) if line.startswith("Things are never named")), None)
+    start = next((i for i, line in enumerate(lines) if line.startswith("Name things with a reference")), None)
     if start is None:
         raise ValueError("cannot find the reference rules in the shell prompt")
     rules = "\n".join(lines[start:])
@@ -161,7 +162,7 @@ def document_from_calls(message, by_name, derive_depends=False):
             return None, "clarify mixed with other calls"
         if set(parsed[0][1]) - {"question"}:
             return None, "clarify has arguments other than question"
-        return {"kind": "clarify", "version": 2, "question": parsed[0][1].get("question", "")}, None
+        return {"kind": "clarify", "version": 3, "question": parsed[0][1].get("question", "")}, None
     steps = []
     for index, (name, arguments) in enumerate(parsed, 1):
         if name not in by_name:
@@ -180,19 +181,27 @@ def document_from_calls(message, by_name, derive_depends=False):
         if "elevate" in arguments:
             step["elevate"] = arguments["elevate"]
         steps.append(step)
-    return {"kind": "plan", "version": 2, "summary": "(from tool calls)", "steps": steps}, None
+    return {"kind": "plan", "version": 3, "summary": "(from tool calls)", "steps": steps}, None
+
+
+def cwd_for_model(written, home):
+    """The current directory as the shell tells the model (`SessionState::cwd_for_model`):
+    the way the person writes it and the real location, once when they are the same."""
+    real = home + written[1:] if written == "~" or written.startswith("~/") else written
+    return real if written == real else f"{written} ({real})"
 
 
 def build_body(mode, system, text, retry, settings):
     """The body of one chat request, as `intent-shell/src/model.rs` builds it
-    (system prompt, then `Request: ...`, then the refused answer and why).
+    (system prompt, then `Current directory: ...` and `Request: ...`, then the
+    refused answer and why).
 
-    `settings` carries temperature, max_tokens, sampling (extra fields),
-    no_thinking, and either `response_format` (grammar) or `tools` (tools).
+    `settings` carries cwd (as `cwd_for_model` writes it), temperature, max_tokens,
+    sampling (extra fields), no_thinking, and either `response_format` (grammar) or `tools` (tools).
     """
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": f"Request: {text}"},
+        {"role": "user", "content": f"Current directory: {settings['cwd']}\nRequest: {text}"},
     ]
     if retry:
         messages.append({"role": "assistant", "content": retry["previous"]})
