@@ -124,6 +124,12 @@ class Runner:
     def attempt(self, intent, retry=None):
         try:
             reply, wall = post(self.args.url, self.body(intent, retry), self.args.timeout)
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")
+            unusable = modes.unusable_output(error.code, detail)
+            if unusable:
+                return {"valid": False, "level": 0, "overreach": [], "errors": [unusable], "output": None}
+            return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: {error} {detail[:200]}"], "output": None}
         except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, RecursionError) as error:
             return {"valid": False, "level": 0, "overreach": [], "errors": [f"request failed: {error}"], "output": None}
         try:

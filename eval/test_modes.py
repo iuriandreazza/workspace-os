@@ -160,6 +160,16 @@ class Names(unittest.TestCase):
         self.assertIn("other than question", error)
 
 
+class Server(unittest.TestCase):
+    def test_a_tool_call_nested_without_end_is_an_unusable_answer(self):
+        detail = '{"error":{"code":400,"message":"input is nested more than 64 levels deep","type":"invalid_request_error"}}'
+        self.assertIn("nests without end", modes.unusable_output(400, detail))
+
+    def test_any_other_error_is_still_a_failed_request(self):
+        self.assertIsNone(modes.unusable_output(400, '{"error":{"message":"the request exceeds the available context size"}}'))
+        self.assertIsNone(modes.unusable_output(500, "input is nested more than 64 levels deep"))
+
+
 class Body(unittest.TestCase):
     SETTINGS = {"cwd": "~", "temperature": 0, "max_tokens": 1024, "response_format": {"type": "json_schema"}, "tools": TOOLS}
 

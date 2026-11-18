@@ -191,6 +191,18 @@ def cwd_for_model(written, home):
     return real if written == real else f"{written} ({real})"
 
 
+def unusable_output(code, detail):
+    """The error text when the server refused its own model's output, else None.
+
+    Seen with Gemma 4 in tools mode: the model writes the same open brace until the
+    server's parser stops at 64 levels and answers 400. The same request succeeds for
+    other intents, so this is an unusable answer, not a failing server.
+    """
+    if code == 400 and "nested more than" in detail:
+        return "the model's tool call nests without end (the server refused to parse it)"
+    return None
+
+
 def build_body(mode, system, text, retry, settings):
     """The body of one chat request, as `intent-shell/src/model.rs` builds it
     (system prompt, then `Current directory: ...` and `Request: ...`, then the
