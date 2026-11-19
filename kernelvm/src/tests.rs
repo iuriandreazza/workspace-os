@@ -603,3 +603,35 @@ fn a_block_over_pages_an_earlier_region_mapped_is_split_not_refused() {
         Err(MapError::Overlap)
     );
 }
+
+#[test]
+fn a_small_region_inside_a_mapped_block_is_accepted_when_identical() {
+    let mut arena = Arena::new(16);
+    let root = ram_window(
+        &mut arena,
+        &[
+            (0x4000_0000, 0x8000_0000),
+            (0x4800_0000, 0x4800_1000),
+            (0x4020_0000, 0x4040_0000),
+        ],
+        0..0,
+    );
+    assert_eq!(arena.tables.len(), 1, "nothing was split");
+    assert_eq!(
+        translate(&arena, root, 0x4800_0800).unwrap().output,
+        0x4800_0800
+    );
+    // The same place with another permission, or another output, is refused.
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    mapper
+        .map_range(0x4000_0000, 0x4000_0000, GIGABYTE, Permissions::ReadWrite)
+        .unwrap();
+    assert_eq!(
+        mapper.map_range(0x4800_0000, 0x4800_0000, PAGE_SIZE, Permissions::Text),
+        Err(MapError::Overlap)
+    );
+    assert_eq!(
+        mapper.map_range(0x4800_0000, 0x5000_0000, PAGE_SIZE, Permissions::ReadWrite),
+        Err(MapError::Overlap)
+    );
+}

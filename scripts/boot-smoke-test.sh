@@ -820,6 +820,28 @@ extra_reserved_frames=$MEMRESERVE_FRAMES
 extra_reserved_ranges=2
 expected_blob_size=""
 check_boot memreserve -dtb "$memreserve_dtb" -kernel "$KERNEL_ELF"
+
+# Every frame below the image reserved: the allocator then hands the page tables
+# frames from the tail of the image's own 2 MiB, which the boot tables must map.
+below_dtb="$work_dir/reserved-below-image.dtb"
+python3 -I - "$dtb" "$below_dtb" <<'PY'
+import struct, sys
+source, target = sys.argv[1:3]
+blob = open(source, "rb").read()
+fields = list(struct.unpack(">10I", blob[:40]))
+rsvmap, structure, strings, strings_size = fields[4], fields[2], fields[3], fields[8]
+entry = struct.pack(">2Q", 0x40000000, 0x200000)
+body = entry + blob[rsvmap:strings + strings_size]
+fields[2], fields[3] = structure + len(entry), strings + len(entry)
+total = (rsvmap + len(body) + 7) // 8 * 8
+fields[1] = total
+open(target, "wb").write((struct.pack(">10I", *fields) + blob[40:rsvmap] + body).ljust(total, b"\0"))
+PY
+start_qemu reserved-below-image -dtb "$below_dtb" -kernel "$KERNEL_ELF"
+wait_for_line "$RESUME_MARKER"
+expect_once "mmu: write xor execute holds" "write xor execute report with the frames below the image reserved"
+stop_qemu
+echo "PASS (reserved-below-image): page tables built in the image's own 2 MiB"
 extra_reserved_frames=0
 extra_reserved_ranges=0
 uefi_firmware="$(find_uefi_firmware)"

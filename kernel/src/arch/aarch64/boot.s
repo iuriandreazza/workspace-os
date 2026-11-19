@@ -195,8 +195,9 @@ _start:
 
     // The image's pages, at level 3: 512 entries cover 2 MiB from the start of
     // the image (link.ld checks that it fits). Text is read and execute,
-    // .rodata read only, .data, .bss and the stack read and write, and the
-    // guard page below the stack stays empty. Nothing is writable and
+    // .rodata read only, .data, .bss, the stack and the rest of the 2 MiB
+    // (RAM the allocator may give to the tables of phase B) read and write, and
+    // the guard page below the stack stays empty. Nothing is writable and
     // executable.
     adrp x9, __image_start
     adrp x10, boot_l3
@@ -204,7 +205,6 @@ _start:
     adrp x12, __rodata_end
     adrp x13, __data_end
     adrp x14, __stack_bottom
-    adrp x15, __stack_top
     mov  x1, #0
 8:
     add  x2, x9, x1, lsl #12
@@ -217,9 +217,7 @@ _start:
     b.lo 12f                        // .data and .bss
     cmp  x2, x14
     b.lo 13f                        // guard page
-    cmp  x2, x15
-    b.hs 13f                        // beyond the stack
-    b    12f                        // stack
+    b    12f                        // stack, and the rest of the 2 MiB
 10:
     orr  x3, x2, x26
     orr  x3, x3, #{READ_ONLY}

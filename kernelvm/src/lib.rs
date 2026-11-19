@@ -268,7 +268,18 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
     ) -> Result<(), MapError> {
         let mut table = self.root;
         for walked in 1..level {
-            table = self.child(table, level_index(virtual_address, walked))?;
+            let index = level_index(virtual_address, walked);
+            let descriptor = self.memory.table(table).0[index];
+            if descriptor & 3 == 1 {
+                // A bigger block already maps this: fine if it maps it the
+                // way this range wants, a conflict otherwise.
+                let size = span(walked);
+                let base = physical.wrapping_sub(virtual_address & (size - 1));
+                let same = base.is_multiple_of(size)
+                    && descriptor == leaf(&self.types, base, permissions, walked);
+                return if same { Ok(()) } else { Err(MapError::Overlap) };
+            }
+            table = self.child(table, index)?;
         }
         let slot = &mut self.memory.table_mut(table).0[level_index(virtual_address, level)];
         let wanted = leaf(&self.types, physical, permissions, level);

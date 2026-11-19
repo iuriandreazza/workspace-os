@@ -214,10 +214,13 @@ fn check_boot_tables(layout: &ImageLayout, types: MemoryTypes) -> Result<(), Err
         types,
         &(0..0),
     );
+    // The tables of phase A cover 2 MiB from the start of the image: the part
+    // after the stack is read and write too, and the guard page is empty.
+    let tail = kernelvm::BLOCK_SIZE - (layout.stack.end - layout.text.start);
     let expected = (
         size(&layout.text),
         size(&layout.rodata),
-        size(&layout.data) + size(&layout.stack),
+        size(&layout.data) + size(&layout.stack) + tail,
     );
     let found = (report.text, report.read_only, report.read_write);
     if !report.is_clean() || report.device != 0 || found != expected {

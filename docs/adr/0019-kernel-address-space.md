@@ -123,7 +123,9 @@ unchanged.
 4. Build one level 3 table of 512 entries that covers the 2 MiB from the start
    of the image (`link.ld` asserts that the image, guard page and stack fit):
    text `RX`, `.rodata` `R`, `.data`/`.bss`/stack `RW` and never executed, the
-   guard page empty. No page is writable and executable. Link it under a level 2
+   guard page empty, and the rest of the 2 MiB after the stack read and write
+   (frames the allocator may hand to phase B's tables). No page is writable and
+   executable. Link it under a level 2
    and a level 1 table at the indexes of the image's virtual address.
 5. Clean and invalidate the tables by address (`dc civac` over the line size
    read from `CTR_EL0`, never by set and way,
@@ -337,11 +339,6 @@ image at the physical address the ELF names. Lifting it is a separate item.
   something else. The boot code does not initialise `TCR2_EL1` or `SCTLR2_EL1`
   (writing them on a core without the feature is undefined). No machine here
   has the feature; it is untested.
-- **The free part of the image's 2 MiB is unmapped in phase A on the direct
-  path** (the level 3 table maps only the image and stack). The allocator hands
-  out the lowest frames first, which are below the image, so phase B's tables
-  never land there unless a machine needs more than about 250 of them before
-  the switch; then writing a table faults. Untested.
 - **Stale cache lines.** Phase A and `FrameTables::allocate` invalidate
   (`dc ivac`) table memory before writing it and clean and invalidate it after;
   the TCG cannot show whether that is enough on a core with caches in an unknown
