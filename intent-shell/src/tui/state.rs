@@ -266,7 +266,14 @@ impl State {
                 self.busy("saying");
             }
             Event::Said(text) => {
+                let width = usize::from(self.width);
+                let before = self.history_lines(width).len();
                 self.blocks.extend(text.map(Block::Reply));
+                // The scroll counts lines up from the end: what the reply adds
+                // must be added to it, or the text being read moves.
+                if self.scroll > 0 {
+                    self.scroll += self.history_lines(width).len() - before;
+                }
                 if matches!(
                     self.mode,
                     Mode::Busy {
@@ -1234,10 +1241,14 @@ mod tests {
     #[test]
     fn a_reply_does_not_move_the_person_who_is_reading_back() {
         let mut state = State::new("h".to_owned());
-        state.on_event(Event::OutcomeAwaitingReply("done\n".to_owned()));
-        state.scroll = 7;
+        let long: String = (1..=50).map(|n| format!("l{n}\n")).collect();
+        state.on_event(Event::OutcomeAwaitingReply(long));
+        state.height = 12;
+        state.on_key(press(KeyCode::PageUp));
+        let reading = state.visible_history(80, 5);
+        assert_ne!(reading.last().unwrap().1, "l50");
         state.on_event(Event::Said(Some("hello".to_owned())));
-        assert_eq!(state.scroll, 7);
+        assert_eq!(state.visible_history(80, 5), reading);
         state.on_event(Event::Outcome("again\n".to_owned()));
         assert_eq!(state.scroll, 0);
     }

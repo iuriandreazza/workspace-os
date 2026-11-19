@@ -186,6 +186,7 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 36. a line that is not valid text taken for the end of the input: fails `a_line_that_is_not_text_at_a_question_is_not_the_end_of_the_input`
 37. a reply that throws the reader back to the bottom of the history: fails `a_reply_does_not_move_the_person_who_is_reading_back`
 38. the end of the input remembered for the next request: fails `the_end_of_the_input_is_forgotten_for_the_next_request`
+39. a reply that shifts the text the reader is looking at: fails `a_reply_does_not_move_the_person_who_is_reading_back`
 
 
 Two mutations the task names cannot be written: "reply before the confirm or
@@ -261,6 +262,10 @@ subject of ADR 0024 and S4b, and is not changed here.
 - The "short length option" the ADR mentions is not added: the cap is fixed at 400
   characters and two sentences. S3d's `/commands` or S8 can add it.
 - Per-user personality, the interview and the evolution of the SOUL are S8, S9 and S10.
+- An address given as a host name is resolved by the system's resolver, which no
+  deadline here can interrupt; the default `127.0.0.1:8089` is not affected.
+- A reply is also asked for after "no plan", as ADR 0021 says, even when the
+  server hung: after the planner's own wait the reply may wait up to 30 s more.
 - The reply is one call per request with a fixed timeout of 30 s; the interface
   blocks typing while it waits. Streaming the reply would remove the wait and is
   not done.
