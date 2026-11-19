@@ -24,6 +24,14 @@ selftest-compiler-trap = []
 selftest-write-text = []
 selftest-execute-data = []
 selftest-execute-rodata = []
+# The boot stack overflows and the report must leave `.bss` whole (ADR 0025).
+selftest-stack-overflow = []
+# An exception taken by the exception handler itself must be reported as
+# nested, not handled on the same stack again (ADR 0025).
+selftest-nested-exception = []
+# Sets `TCR2_EL1.PIE` just before the code that clears it, which stands for
+# firmware that left it set (ADR 0025).
+selftest-dirty-tcr2 = []
 
 [[bin]]
 name = "kernel"

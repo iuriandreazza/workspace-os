@@ -5,12 +5,17 @@
 //! tested on the host. What is here is the part that touches memory by
 //! physical address and system registers.
 
+// An error here ends the boot with a report, and there is no heap to box the
+// audit it carries in.
+#![allow(clippy::result_large_err)]
+
 use core::arch::asm;
 use core::fmt::{self, Write};
 use core::ops::Range;
 
 use kernelvm::{
-    ImageLayout, LayoutError, MapError, Mapper, MemoryTypes, Table, TableMemory, TableRead,
+    Expectation, ImageLayout, LayoutError, MapError, Mapper, MemoryTypes, Permissions, Table,
+    TableMemory, TableRead,
 };
 use physmem::FrameAllocator;
 
@@ -25,6 +30,8 @@ unsafe extern "C" {
     safe static __data_end: u8;
     safe static __stack_bottom: u8;
     safe static __stack_top: u8;
+    safe static __exception_stack_bottom: u8;
+    safe static __exception_stack_top: u8;
 }
 
 macro_rules! physical_of {
@@ -40,6 +47,7 @@ fn layout() -> Result<ImageLayout, LayoutError> {
         physical_of!(__text_end)..physical_of!(__rodata_end),
         physical_of!(__rodata_end)..physical_of!(__data_end),
         physical_of!(__stack_bottom)..physical_of!(__stack_top),
+        physical_of!(__exception_stack_bottom)..physical_of!(__exception_stack_top),
     )
 }
 
@@ -204,28 +212,114 @@ fn size(range: &Range<u64>) -> u64 {
 }
 
 /// Checks that the boot tables, which `boot.s` builds in assembly the host
-/// cannot test, give the image the permissions `ImageLayout` does.
+/// cannot test, map each part of the image to its own frames with its own
+/// permissions and the Normal memory type.
 fn check_boot_tables(layout: &ImageLayout, types: MemoryTypes) -> Result<(), Error> {
+    // The tables of phase A cover 2 MiB from the start of the image: the part
+    // after the stacks is read and write too, and the guard pages are empty.
+    let tail = layout.exception_stack.end..layout.text.start + kernelvm::BLOCK_SIZE;
+    let [text, rodata, data, stack, exception_stack] = layout.parts();
+    let known = [
+        text,
+        rodata,
+        data,
+        stack,
+        exception_stack,
+        (tail.clone(), Permissions::ReadWrite),
+    ];
     let report = kernelvm::audit(
         &PhysicalTables,
         read_ttbr1(),
         kernelvm::KERNEL_OFFSET,
-        types,
-        &(0..0),
+        &Expectation {
+            types,
+            forbidden: &(0..0),
+            device: &(0..0),
+            known: Some(&known),
+        },
     );
-    // The tables of phase A cover 2 MiB from the start of the image: the part
-    // after the stack is read and write too, and the guard page is empty.
-    let tail = kernelvm::BLOCK_SIZE - (layout.stack.end - layout.text.start);
     let expected = (
         size(&layout.text),
         size(&layout.rodata),
-        size(&layout.data) + size(&layout.stack) + tail,
+        size(&layout.data) + size(&layout.stack) + size(&layout.exception_stack) + size(&tail),
     );
     let found = (report.text, report.read_only, report.read_write);
     if !report.is_clean() || report.device != 0 || found != expected {
         return Err(Error::BootTables(report));
     }
     Ok(())
+}
+
+/// The pages the console's registers occupy: the only Device memory the lower
+/// window holds.
+fn device_pages(board: &Board) -> Range<u64> {
+    let start = board.uart.base & !(kernelvm::PAGE_SIZE - 1);
+    let end = (board.uart.base + board.uart.size).next_multiple_of(kernelvm::PAGE_SIZE);
+    start..end
+}
+
+/// Reads `ID_AA64MMFR3_EL1`, which is zero where it does not exist.
+fn read_mmfr3() -> u64 {
+    let mmfr3: u64;
+    // SAFETY: reading an ID register has no side effects; one the processor
+    // does not have is reserved and reads as zero. It is named by encoding.
+    unsafe {
+        asm!("mrs {}, S3_0_C0_C7_3", out(reg) mmfr3, options(nomem, nostack, preserves_flags))
+    };
+    mmfr3
+}
+
+/// `TCR2_EL1.PIE` (bit 1) and `.D128` (bit 5): permission indirection and 128-bit descriptors,
+/// neither of which the kernel's tables use.
+const TCR2_PIE: u64 = 1 << 1;
+const TCR2_D128: u64 = 1 << 5;
+
+/// Reports the registers `boot.s` cleared where they exist, and panics if one
+/// holds a feature the kernel's tables do not use (ADR 0025). Nothing is read
+/// that the processor lacks: the read would be UNDEFINED.
+fn verify_translation_extensions(mut out: impl Write) {
+    let mmfr3 = read_mmfr3();
+    let s1pie = (mmfr3 >> 8) & 0xf != 0;
+    let tcr2: Option<u64> = ((mmfr3 & 0xf) != 0).then(|| {
+        let value: u64;
+        // SAFETY: `TCRX` says `TCR2_EL1` exists; reading it has no side effects.
+        unsafe {
+            asm!("mrs {}, S3_0_C2_C0_3", out(reg) value, options(nomem, nostack, preserves_flags))
+        };
+        value
+    });
+    let sctlr2: Option<u64> = (((mmfr3 >> 4) & 0xf) != 0).then(|| {
+        let value: u64;
+        // SAFETY: `SCTLRX` says `SCTLR2_EL1` exists; reading it has no side effects.
+        unsafe {
+            asm!("mrs {}, S3_0_C1_C0_3", out(reg) value, options(nomem, nostack, preserves_flags))
+        };
+        value
+    });
+    klog!(
+        Info,
+        out,
+        "mmu: permission indirection {}, TCR2_EL1 {}, SCTLR2_EL1 {}",
+        if s1pie { "present" } else { "absent" },
+        Register(tcr2),
+        Register(sctlr2)
+    );
+    assert!(
+        tcr2.is_none_or(|value| value & (TCR2_PIE | TCR2_D128) == 0),
+        "mmu: TCR2_EL1 holds permission indirection or 128-bit descriptors"
+    );
+}
+
+/// A system register's value, or that it does not exist.
+struct Register(Option<u64>);
+
+impl fmt::Display for Register {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(f, "{value:#x}"),
+            None => f.write_str("absent"),
+        }
+    }
 }
 
 /// Builds the kernel's tables from frames of `frames` and switches to them.
@@ -333,18 +427,33 @@ fn read_ttbr0() -> u64 {
 /// page that translates to nothing, no alias of the image in the lower half,
 /// and `SCTLR_EL1.WXN` set. The walk reads the live registers and the live
 /// tables, not what `init` meant to build.
-pub fn verify(mut out: impl Write) {
+pub fn verify(mut out: impl Write, board: &Board) {
     let types = memory_types().unwrap_or_else(|e| panic!("mmu: {e}"));
     let layout = layout().unwrap_or_else(|e| panic!("mmu: {e}"));
     let (upper_root, lower_root) = (read_ttbr1(), read_ttbr0());
+    let parts = layout.parts();
     let upper = kernelvm::audit(
         &PhysicalTables,
         upper_root,
         kernelvm::KERNEL_OFFSET,
-        types,
-        &(0..0),
+        &Expectation {
+            types,
+            forbidden: &(0..0),
+            device: &(0..0),
+            known: Some(&parts),
+        },
     );
-    let lower = kernelvm::audit(&PhysicalTables, lower_root, 0, types, &layout.span());
+    let lower = kernelvm::audit(
+        &PhysicalTables,
+        lower_root,
+        0,
+        &Expectation {
+            types,
+            forbidden: &layout.span(),
+            device: &device_pages(board),
+            known: None,
+        },
+    );
     klog!(
         Info,
         out,
@@ -366,7 +475,8 @@ pub fn verify(mut out: impl Write) {
     assert!(
         upper.text == size(&layout.text)
             && upper.read_only == size(&layout.rodata)
-            && upper.read_write == size(&layout.data) + size(&layout.stack)
+            && upper.read_write
+                == size(&layout.data) + size(&layout.stack) + size(&layout.exception_stack)
             && upper.device == 0,
         "mmu: the upper half does not map the image by section: {upper:?}"
     );
@@ -382,6 +492,12 @@ pub fn verify(mut out: impl Write) {
     assert!(
         super::system_control() & kernelvm::SCTLR_WXN != 0,
         "mmu: SCTLR_EL1.WXN is not set"
+    );
+    verify_translation_extensions(&mut out);
+    klog!(
+        Ok,
+        out,
+        "mmu: every leaf maps its own frame with its own memory type"
     );
     klog!(
         Ok,

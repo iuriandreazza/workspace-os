@@ -115,6 +115,30 @@ _start:
     // vector table: VBAR_EL1 is still whatever it was, so a fault in this stretch
     // goes to an unknown address (a hang, or the firmware's handler).
 
+    // Permission indirection and the other extensions of the translation
+    // registers (ADR 0025): where TCR2_EL1 and SCTLR2_EL1 exist their reset
+    // values are unknown, and a set TCR2_EL1.PIE would give the descriptors'
+    // AP and PXN bits another meaning. ID_AA64MMFR3_EL1 reads as zero where it
+    // does not exist, and writing a register the processor lacks is UNDEFINED,
+    // with no vector table to catch it: each is written only if its field says
+    // it exists. The registers are named by encoding, which every assembler
+    // accepts: ID_AA64MMFR3_EL1, TCR2_EL1 and SCTLR2_EL1.
+    mrs  x0, S3_0_C0_C7_3
+    ubfx x1, x0, #0, #4             // TCRX
+    cbz  x1, 40f
+.if {SELFTEST_DIRTY_TCR2}
+    // Test build: stands for firmware that left TCR2_EL1.PIE set.
+    mov  x2, #(1 << 1)
+    msr  S3_0_C2_C0_3, x2
+.endif
+    msr  S3_0_C2_C0_3, xzr
+40:
+    ubfx x1, x0, #4, #4             // SCTLRX
+    cbz  x1, 41f
+    msr  S3_0_C1_C0_3, xzr
+41:
+    isb
+
     // The boot tables are written below, in memory whose cache state is
     // unknown on the direct path: invalidate their lines first, so that no
     // stale dirty line is written back over them later. Nothing of value lives
@@ -195,9 +219,9 @@ _start:
 
     // The image's pages, at level 3: 512 entries cover 2 MiB from the start of
     // the image (link.ld checks that it fits). Text is read and execute,
-    // .rodata read only, .data, .bss, the stack and the rest of the 2 MiB
+    // .rodata read only, .data, .bss, the stacks and the rest of the 2 MiB
     // (RAM the allocator may give to the tables of phase B) read and write, and
-    // the guard page below the stack stays empty. Nothing is writable and
+    // the guard pages below the two stacks stay empty. Nothing is writable and
     // executable.
     adrp x9, __image_start
     adrp x10, boot_l3
@@ -205,6 +229,8 @@ _start:
     adrp x12, __rodata_end
     adrp x13, __data_end
     adrp x14, __stack_bottom
+    adrp x15, __stack_top
+    adrp x16, __exception_stack_bottom
     mov  x1, #0
 8:
     add  x2, x9, x1, lsl #12
@@ -216,8 +242,12 @@ _start:
     cmp  x2, x13
     b.lo 12f                        // .data and .bss
     cmp  x2, x14
-    b.lo 13f                        // guard page
-    b    12f                        // stack, and the rest of the 2 MiB
+    b.lo 13f                        // guard page below the stack
+    cmp  x2, x15
+    b.lo 12f                        // stack
+    cmp  x2, x16
+    b.lo 13f                        // guard page below the exception stack
+    b    12f                        // exception stack, and the rest of the 2 MiB
 10:
     orr  x3, x2, x26
     orr  x3, x3, #{READ_ONLY}

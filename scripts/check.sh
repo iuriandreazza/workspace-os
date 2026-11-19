@@ -36,7 +36,7 @@ bash -n eval/run-matrix.sh
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings
-cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap,selftest-write-text,selftest-execute-data,selftest-execute-rodata -- -D warnings
+cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap,selftest-write-text,selftest-execute-data,selftest-execute-rodata,selftest-stack-overflow,selftest-nested-exception,selftest-dirty-tcr2 -- -D warnings
 # The device tree reader, the frame allocator, the handoff structure
 # (`bootinfo`) and the kernel's page tables (`kernelvm`) are plain Rust with
 # unit tests, so they are checked and tested on the host: the test harness

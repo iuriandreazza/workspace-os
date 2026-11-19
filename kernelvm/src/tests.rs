@@ -50,12 +50,19 @@ fn layout() -> ImageLayout {
         BASE + 0x1d000..BASE + 0x22000,
         BASE + 0x22000..BASE + 0x64000,
         BASE + 0x65000..BASE + 0x75000,
+        BASE + 0x76000..BASE + 0x7a000,
     )
     .unwrap()
 }
 
-fn no_alias() -> Range<u64> {
-    0..0
+/// An expectation with nothing forbidden, no Device range and no known ranges.
+fn open() -> Expectation<'static> {
+    Expectation {
+        types: TYPES,
+        forbidden: &(0..0),
+        device: &(0..0),
+        known: None,
+    }
 }
 
 /// The upper half the kernel builds: the image at its physical address plus
@@ -151,24 +158,33 @@ fn blocks_keep_only_the_bits_of_their_size() {
 
 #[test]
 fn layout_is_checked() {
-    let ok = |t: (u64, u64), r: (u64, u64), d: (u64, u64), s: (u64, u64)| {
-        ImageLayout::new(t.0..t.1, r.0..r.1, d.0..d.1, s.0..s.1)
+    let ok = |t: (u64, u64), r: (u64, u64), d: (u64, u64), s: (u64, u64), e: (u64, u64)| {
+        ImageLayout::new(t.0..t.1, r.0..r.1, d.0..d.1, s.0..s.1, e.0..e.1)
     };
-    assert!(ok((0, 4096), (4096, 8192), (8192, 12288), (16384, 20480)).is_ok());
+    let (t, r, d, s, e) = (
+        (0, 4096),
+        (4096, 8192),
+        (8192, 12288),
+        (16384, 20480),
+        (24576, 28672),
+    );
+    assert!(ok(t, r, d, s, e).is_ok());
     assert_eq!(
-        ok((0, 4096), (4096, 8192), (8192, 12288), (16384 + 1, 20480)),
+        ok(t, r, d, (16384 + 1, 20480), e),
         Err(LayoutError::Unaligned)
     );
+    assert_eq!(ok((0, 8192), r, d, s, e), Err(LayoutError::Misordered));
     assert_eq!(
-        ok((0, 8192), (4096, 8192), (8192, 12288), (16384, 20480)),
+        ok((0, 0), (0, 0), (0, 0), s, e),
         Err(LayoutError::Misordered)
     );
     assert_eq!(
-        ok((0, 0), (0, 0), (0, 0), (16384, 20480)),
-        Err(LayoutError::Misordered)
+        ok(t, r, d, (12288, 20480), e),
+        Err(LayoutError::NoGuardPage)
     );
+    // The exception stack needs its own guard page above the boot stack.
     assert_eq!(
-        ok((0, 4096), (4096, 8192), (8192, 12288), (12288, 20480)),
+        ok(t, r, d, s, (20480, 28672)),
         Err(LayoutError::NoGuardPage)
     );
 }
@@ -185,6 +201,7 @@ fn image_sections_get_their_own_permissions() {
         (&layout.rodata, false, false),
         (&layout.data, true, false),
         (&layout.stack, true, false),
+        (&layout.exception_stack, true, false),
     ] {
         for page in [range.start, range.end - PAGE_SIZE] {
             let found = at(page);
@@ -207,7 +224,17 @@ fn the_guard_page_and_everything_around_the_image_is_unmapped() {
     let guard = layout.data.end + KERNEL_OFFSET;
     assert!(translate(&arena, root, guard).is_none());
     assert!(translate(&arena, root, layout.stack.start + KERNEL_OFFSET - 1).is_none());
+    // The page between the two stacks, and the one above the exception stack.
     assert!(translate(&arena, root, layout.stack.end + KERNEL_OFFSET).is_none());
+    assert!(
+        translate(
+            &arena,
+            root,
+            layout.exception_stack.start + KERNEL_OFFSET - 1
+        )
+        .is_none()
+    );
+    assert!(translate(&arena, root, layout.exception_stack.end + KERNEL_OFFSET).is_none());
     assert!(translate(&arena, root, layout.text.start + KERNEL_OFFSET - 1).is_none());
     assert!(translate(&arena, root, 0x0001_0000_0000_0000).is_none());
 }
@@ -218,11 +245,14 @@ fn the_upper_half_audits_clean_and_counts_each_kind() {
     let root = upper(&mut arena);
     let layout = layout();
     let size = |r: &Range<u64>| r.end - r.start;
-    let report = audit(&arena, root, KERNEL_OFFSET, TYPES, &no_alias());
+    let report = audit(&arena, root, KERNEL_OFFSET, &open());
     assert!(report.is_clean());
     assert_eq!(report.text, size(&layout.text));
     assert_eq!(report.read_only, size(&layout.rodata));
-    assert_eq!(report.read_write, size(&layout.data) + size(&layout.stack));
+    assert_eq!(
+        report.read_write,
+        size(&layout.data) + size(&layout.stack) + size(&layout.exception_stack)
+    );
     assert_eq!(report.device, 0);
 }
 
@@ -233,7 +263,7 @@ fn a_page_that_is_writable_and_executable_is_found() {
     let at = KERNEL_OFFSET + BASE;
     let table = page_table(&arena, root, at);
     arena.table_mut(table).0[level_index(at, 3)] &= !READ_ONLY;
-    let report = audit(&arena, root, KERNEL_OFFSET, TYPES, &no_alias());
+    let report = audit(&arena, root, KERNEL_OFFSET, &open());
     assert_eq!(report.writable_executable, Some(at));
     assert!(!report.is_clean());
 }
@@ -245,11 +275,11 @@ fn a_page_for_el0_is_found() {
     let at = KERNEL_OFFSET + BASE + 0x22000;
     let table = page_table(&arena, root, at);
     arena.table_mut(table).0[level_index(at, 3)] &= !UNPRIVILEGED_EXECUTE_NEVER;
-    let report = audit(&arena, root, KERNEL_OFFSET, TYPES, &no_alias());
+    let report = audit(&arena, root, KERNEL_OFFSET, &open());
     assert_eq!(report.user_reachable, Some(at));
     let table = page_table(&arena, root, at);
     arena.table_mut(table).0[level_index(at, 3)] |= UNPRIVILEGED_EXECUTE_NEVER | USER_ACCESSIBLE;
-    let report = audit(&arena, root, KERNEL_OFFSET, TYPES, &no_alias());
+    let report = audit(&arena, root, KERNEL_OFFSET, &open());
     assert_eq!(report.user_reachable, Some(at));
 }
 
@@ -286,7 +316,15 @@ fn the_window_maps_ram_but_not_the_image_or_its_guard() {
     assert!(at(ram.end).is_none());
     assert!(at(ram.start - 1).is_none());
 
-    let report = audit(&arena, root, 0, TYPES, &span);
+    let report = audit(
+        &arena,
+        root,
+        0,
+        &Expectation {
+            forbidden: &span,
+            ..open()
+        },
+    );
     assert!(report.is_clean());
     assert_eq!(
         report.read_write,
@@ -300,7 +338,15 @@ fn an_alias_of_the_image_is_found() {
     let mut arena = Arena::new(16);
     let span = layout().span();
     let root = ram_window(&mut arena, &[(0x4000_0000, 0x4800_0000)], 0..0);
-    let report = audit(&arena, root, 0, TYPES, &span);
+    let report = audit(
+        &arena,
+        root,
+        0,
+        &Expectation {
+            forbidden: &span,
+            ..open()
+        },
+    );
     assert!(report.aliased.is_some());
     assert!(!report.is_clean());
 }
@@ -365,7 +411,16 @@ fn device_registers_map_as_device_without_execute() {
         assert!(found.writable && !found.executable);
     }
     assert!(translate(&arena, root, 0x0900_2000).is_none());
-    let report = audit(&arena, root, 0, TYPES, &no_alias());
+    let device = 0x0900_0000..0x0900_2000;
+    let report = audit(
+        &arena,
+        root,
+        0,
+        &Expectation {
+            device: &device,
+            ..open()
+        },
+    );
     assert_eq!(report.device, 0x2000);
     assert!(report.is_clean());
 }
@@ -451,7 +506,7 @@ fn a_malformed_entry_is_counted_and_a_gigabyte_block_is_read() {
     arena.table_mut(root).0[0] = 0x2; // neither valid nor a table
     arena.table_mut(root).0[1] = leaf(&TYPES, GIGABYTE, Permissions::ReadWrite, 2);
     arena.table_mut(root).0[2] = leaf(&TYPES, 2 * GIGABYTE, Permissions::ReadWrite, 2);
-    let report = audit(&arena, root, 0, TYPES, &no_alias());
+    let report = audit(&arena, root, 0, &open());
     assert_eq!(report.malformed, 1);
     assert_eq!(report.read_write, 2 * GIGABYTE);
     let found = translate(&arena, root, 2 * GIGABYTE + 0x1234).unwrap();
@@ -510,7 +565,7 @@ fn gigabyte_aligned_ram_uses_one_block_per_gigabyte() {
     let found = translate(&arena, root, 0x1_3fff_f123).unwrap();
     assert_eq!(found.output, 0x1_3fff_f123);
     assert!(found.writable && !found.executable);
-    let report = audit(&arena, root, 0, TYPES, &no_alias());
+    let report = audit(&arena, root, 0, &open());
     assert_eq!(report.read_write, 4 << 30);
     assert!(report.is_clean());
     // A machine with 400 GiB of RAM needs one table, not hundreds.
@@ -530,7 +585,18 @@ fn a_gigabyte_block_is_not_split_around_the_hole() {
     let root = ram_window(&mut arena, &[(0x4000_0000, 0x8000_0000)], span.clone());
     assert!(translate(&arena, root, span.start).is_none());
     assert!(translate(&arena, root, span.end).is_some());
-    assert!(audit(&arena, root, 0, TYPES, &span).is_clean());
+    assert!(
+        audit(
+            &arena,
+            root,
+            0,
+            &Expectation {
+                forbidden: &span,
+                ..open()
+            }
+        )
+        .is_clean()
+    );
 }
 
 #[test]
@@ -577,7 +643,7 @@ fn a_block_over_pages_an_earlier_region_mapped_is_split_not_refused() {
         assert_eq!(found.output, address);
         assert!(found.writable && !found.executable);
     }
-    assert!(audit(&arena, root, 0, TYPES, &no_alias()).is_clean());
+    assert!(audit(&arena, root, 0, &open()).is_clean());
     // The same for a gigabyte: a region ends inside one a later region covers.
     let mut arena = Arena::new(16);
     let root = ram_window(
@@ -634,4 +700,181 @@ fn a_small_region_inside_a_mapped_block_is_accepted_when_identical() {
         mapper.map_range(0x4800_0000, 0x5000_0000, PAGE_SIZE, Permissions::ReadWrite),
         Err(MapError::Overlap)
     );
+}
+
+// ---- The audit checks what each leaf maps and with which memory type ------
+
+/// The expectation of the kernel's upper half: the image by section, nothing
+/// else.
+fn image_expectation(parts: &[(Range<u64>, Permissions)]) -> Expectation<'_> {
+    Expectation {
+        known: Some(parts),
+        ..open()
+    }
+}
+
+/// Changes the leaf of the page at `at` in the upper half.
+fn tamper(arena: &mut Arena, root: u64, at: u64, change: impl FnOnce(u64) -> u64) {
+    let table = page_table(arena, root, at);
+    let slot = &mut arena.table_mut(table).0[level_index(at, 3)];
+    *slot = change(*slot);
+}
+
+#[test]
+fn the_image_audits_clean_against_its_sections() {
+    let mut arena = Arena::new(8);
+    let root = upper(&mut arena);
+    let parts = layout().parts();
+    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    assert!(report.is_clean(), "{report:?}");
+}
+
+#[test]
+fn a_page_that_maps_another_frame_is_found() {
+    let mut arena = Arena::new(8);
+    let root = upper(&mut arena);
+    let at = KERNEL_OFFSET + BASE + 0x23000;
+    // One page further: still inside the data, so only the address is wrong.
+    tamper(&mut arena, root, at, |d| d + PAGE_SIZE);
+    let parts = layout().parts();
+    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    assert_eq!(report.wrong_output, Some(at));
+    assert_eq!(report.wrong_section, None);
+    assert!(!report.is_clean());
+}
+
+#[test]
+fn a_page_that_maps_the_wrong_section_is_found() {
+    let mut arena = Arena::new(8);
+    let root = upper(&mut arena);
+    // The first page of `.data` made to map the first page of `.rodata`, with
+    // the permissions of data: the totals stay as they are.
+    let at = KERNEL_OFFSET + BASE + 0x22000;
+    tamper(&mut arena, root, at, |d| d - 5 * PAGE_SIZE);
+    let parts = layout().parts();
+    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    assert_eq!(report.wrong_output, Some(at));
+    assert_eq!(report.wrong_section, Some(at));
+    assert_eq!(report.read_write, 0x42000 + 0x10000 + 0x4000);
+}
+
+#[test]
+fn permissions_swapped_between_sections_are_found_though_the_totals_hold() {
+    let mut arena = Arena::new(8);
+    let root = upper(&mut arena);
+    // Two pages exchange their permission bits: one text page becomes read
+    // only, one read only page becomes text. The sizes by kind are unchanged.
+    let (text_page, rodata_page) = (KERNEL_OFFSET + BASE, KERNEL_OFFSET + BASE + 0x1d000);
+    let set_bits = |wanted: u64| {
+        move |d: u64| {
+            let bits = READ_ONLY | PRIVILEGED_EXECUTE_NEVER;
+            (d & !bits) | wanted
+        }
+    };
+    let before = {
+        let parts = layout().parts();
+        audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts))
+    };
+    tamper(
+        &mut arena,
+        root,
+        text_page,
+        set_bits(READ_ONLY | PRIVILEGED_EXECUTE_NEVER),
+    );
+    tamper(&mut arena, root, rodata_page, set_bits(READ_ONLY));
+    let parts = layout().parts();
+    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    assert_eq!(
+        (report.text, report.read_only),
+        (before.text, before.read_only)
+    );
+    assert_eq!(report.wrong_section, Some(text_page));
+}
+
+#[test]
+fn a_memory_type_that_is_not_normal_is_found_in_the_image() {
+    for (name, index) in [("device", TYPES.device_index), ("unused", 5)] {
+        let mut arena = Arena::new(8);
+        let root = upper(&mut arena);
+        let at = KERNEL_OFFSET + BASE + 0x10000;
+        tamper(&mut arena, root, at, |d| {
+            (d & !ATTRIBUTE_INDEX_MASK) | (u64::from(index) << ATTRIBUTE_INDEX_SHIFT)
+        });
+        let report = audit(&arena, root, KERNEL_OFFSET, &open());
+        assert_eq!(report.wrong_memory_type, Some(at), "{name}");
+        assert!(!report.is_clean());
+    }
+}
+
+#[test]
+fn the_device_range_is_device_memory_and_nothing_else_is() {
+    let uart = 0x0900_0000..0x0900_1000;
+    let expectation = Expectation {
+        device: &uart,
+        ..open()
+    };
+    let mut arena = Arena::new(16);
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    map_device(&mut mapper, uart.start, 0x1000).unwrap();
+    map_ram_region(&mut mapper, 0x4000_0000..0x4001_0000, &(0..0)).unwrap();
+    let root = mapper.root();
+    assert!(audit(&arena, root, 0, &expectation).is_clean());
+
+    // The UART mapped as Normal memory.
+    tamper(&mut arena, root, uart.start, |d| {
+        (d & !ATTRIBUTE_INDEX_MASK) | (u64::from(TYPES.normal_index) << ATTRIBUTE_INDEX_SHIFT)
+    });
+    assert_eq!(
+        audit(&arena, root, 0, &expectation).wrong_memory_type,
+        Some(uart.start)
+    );
+    // Restored, and RAM mapped as Device instead.
+    tamper(&mut arena, root, uart.start, |d| {
+        (d & !ATTRIBUTE_INDEX_MASK) | (u64::from(TYPES.device_index) << ATTRIBUTE_INDEX_SHIFT)
+    });
+    tamper(&mut arena, root, 0x4000_8000, |d| {
+        (d & !ATTRIBUTE_INDEX_MASK) | (u64::from(TYPES.device_index) << ATTRIBUTE_INDEX_SHIFT)
+    });
+    assert_eq!(
+        audit(&arena, root, 0, &expectation).wrong_memory_type,
+        Some(0x4000_8000)
+    );
+}
+
+#[test]
+fn a_window_page_that_maps_another_frame_is_found() {
+    let mut arena = Arena::new(16);
+    let root = ram_window(&mut arena, &[(0x4000_0000, 0x4001_0000)], 0..0);
+    let at = 0x4000_3000;
+    tamper(&mut arena, root, at, |d| d + PAGE_SIZE);
+    let report = audit(&arena, root, 0, &open());
+    assert_eq!(report.wrong_output, Some(at));
+}
+
+#[test]
+fn a_leaf_outside_the_known_ranges_is_found() {
+    let mut arena = Arena::new(8);
+    let root = upper(&mut arena);
+    let mut parts = layout().parts();
+    parts[4].0 = parts[4].0.start..parts[4].0.end - PAGE_SIZE;
+    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    assert_eq!(
+        report.wrong_section,
+        Some(KERNEL_OFFSET + layout().exception_stack.end - PAGE_SIZE)
+    );
+}
+
+#[test]
+fn leaf_permissions_are_read_back_from_the_bits() {
+    for permissions in [
+        Permissions::Text,
+        Permissions::ReadOnly,
+        Permissions::ReadWrite,
+        Permissions::Device,
+    ] {
+        let found = Leaf::decode(leaf(&TYPES, 0x4000_0000, permissions, 3), 3);
+        assert_eq!(found.permissions(TYPES), Some(permissions));
+    }
+    let both = leaf(&TYPES, 0, Permissions::ReadWrite, 3) & !PRIVILEGED_EXECUTE_NEVER;
+    assert_eq!(Leaf::decode(both, 3).permissions(TYPES), None);
 }

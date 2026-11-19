@@ -99,6 +99,113 @@ impl Board {
     }
 }
 
+/// What reading the hand-over (the boot info, the memory map and the device
+/// tree, or the device tree alone) gave: how many bytes went into the digest
+/// and the digest itself, FNV-1a over 64 bits. Two reads that disagree are not
+/// reading the same memory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct HandoffDigest {
+    pub bytes: usize,
+    pub value: u64,
+}
+
+impl HandoffDigest {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn new() -> Self {
+        Self {
+            bytes: 0,
+            value: Self::OFFSET_BASIS,
+        }
+    }
+
+    fn bytes(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.value = (self.value ^ u64::from(byte)).wrapping_mul(Self::PRIME);
+        }
+        self.bytes += data.len();
+    }
+
+    fn number(&mut self, value: u64) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn region(&mut self, region: &Region) {
+        self.number(region.base);
+        self.number(region.size);
+    }
+}
+
+impl Board {
+    /// A digest of everything the kernel read from the hand-over: the fields of
+    /// the boot info, every entry of the memory map, every region the memory
+    /// and reservation walks give, and all the bytes of the device tree blob.
+    /// It is taken before the kernel switches to its own tables and again,
+    /// from a fresh read, after (ADR 0025): the second read goes through the
+    /// lower window, so a window that lost or misplaced a region differs.
+    pub fn handoff_digest(&self) -> HandoffDigest {
+        let mut digest = HandoffDigest::new();
+        digest.region(&self.memory);
+        digest.region(&self.uart);
+        digest.region(&self.device_tree);
+        match self.entry {
+            Entry::Direct => digest.number(0),
+            Entry::Bootloader {
+                version_major,
+                version_minor,
+                boot_mode,
+                map_entries,
+                boot_cpu,
+                rsdp,
+                efi_system_table,
+            } => {
+                digest.number(1);
+                digest.number(u64::from(version_major));
+                digest.number(u64::from(version_minor));
+                digest.number(u64::from(boot_mode));
+                digest.number(map_entries as u64);
+                digest.number(boot_cpu);
+                digest.number(rsdp);
+                digest.number(efi_system_table);
+            }
+        }
+        for entry in self.map_entries().into_iter().flatten() {
+            digest.number(entry.base);
+            digest.number(entry.length);
+            digest.bytes(entry.kind().name().as_bytes());
+        }
+        // A tree that cannot be walked ends the digest early, which differs
+        // from a read that could.
+        let _ = self.for_each_memory_region(|region| digest.region(&region));
+        let _ = self.for_each_reserved_region(|region| digest.region(&region));
+        if self.device_tree.size > 0 {
+            // SAFETY: the blob is the device tree the kernel validated at this
+            // address and size; the memory is reserved from the allocator and
+            // nothing writes to it.
+            let blob = unsafe {
+                core::slice::from_raw_parts(
+                    self.device_tree.base as usize as *const u8,
+                    self.device_tree.size as usize,
+                )
+            };
+            digest.bytes(blob);
+        }
+        digest
+    }
+
+    /// Reads the hand-over again from where the loader left it: the boot info
+    /// at `handoff_address` on the bootloader path, the device tree where it
+    /// was found on the direct one.
+    pub fn read_again(&self, handoff_address: usize) -> Result<Board, HandoffError> {
+        match self.entry {
+            Entry::Direct => read_device_tree(self.device_tree.base as usize)
+                .map_err(HandoffError::BadDeviceTree),
+            Entry::Bootloader { .. } => from_boot_info(handoff_address).map_err(|(error, _)| error),
+        }
+    }
+}
+
 /// Reads the device tree and makes the console usable.
 ///
 /// `boot_address` is what the loader passed in `x0`, zero when it passed

@@ -78,6 +78,14 @@
 #   uefi-768, uefi-el2-high  Enter starts Normal (boot mode 0)
 #   uefi-el2              the key `1` starts Normal (boot mode 0)
 #
+# Every normal boot also checks what ADR 0025 adds: the audit of the live
+# tables finds each leaf mapping its own frame with its own memory type, the
+# kernel reads the boot info, the memory map and the device tree again after
+# the switch, through the lower window, and gets the same digest, and the
+# permission-indirection registers are as expected. Two boots run on `-cpu max`,
+# which has FEAT_S1PIE, directly and through the bootloader; two more use a
+# kernel that sets `TCR2_EL1.PIE` just before the code that must clear it.
+#
 # Three more boots use kernels built to raise an exception nothing resumes
 # from, and must end in a kernel panic that names it:
 #
@@ -252,6 +260,11 @@ memory_mib_of() {
 extra_reserved_frames=0
 extra_reserved_ranges=0
 expected_blob_size=""
+# What the kernel must say about the permission-indirection registers: QEMU's
+# `cortex-a72` has none, `-cpu max` has them and the kernel clears them.
+readonly EXTENSIONS_ABSENT="mmu: permission indirection absent, TCR2_EL1 absent, SCTLR2_EL1 absent"
+readonly EXTENSIONS_CLEARED="mmu: permission indirection present, TCR2_EL1 0x0, SCTLR2_EL1 0x0"
+expected_extensions="$EXTENSIONS_ABSENT"
 
 # check_frames MEMORY_MIB: the frame allocator's report is coherent with the
 # amount of RAM and the layout the linker chose.
@@ -259,6 +272,7 @@ check_frames() {
     local mib="$1" counts total reserved free
     expect_once "reserved kernel image $image_range" "kernel image reservation"
     expect_once "reserved boot stack $stack_range" "boot stack reservation"
+    expect_once "reserved exception stack $exception_range" "exception stack reservation"
     expect_once "in memory map" "frame map report"
     counts="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: \([0-9]*\) in memory map, \([0-9]*\) reserved, \([0-9]*\) free$/\1 \2 \3/p')"
     [[ -n "$counts" ]] || fail "frame map report has an unexpected format"
@@ -319,8 +333,13 @@ check_mmu() {
     [[ "$(echo "$upper" | wc -l)" -eq 1 && -n "$upper" ]] || fail "upper half report not found exactly once"
     read -r text read_only read_write <<< "$upper"
     [[ $((text)) -eq "$text_bytes" && $((read_only)) -eq "$rodata_bytes" \
-        && $((read_write)) -eq $((data_bytes + stack_bytes)) ]] \
-        || fail "upper half maps text $text, read only $read_only, read write $read_write; the linker placed $text_bytes, $rodata_bytes and $((data_bytes + stack_bytes)) bytes"
+        && $((read_write)) -eq $((data_bytes + stack_bytes + exception_stack_bytes)) ]] \
+        || fail "upper half maps text $text, read only $read_only, read write $read_write; the linker placed $text_bytes, $rodata_bytes and $((data_bytes + stack_bytes + exception_stack_bytes)) bytes"
+    # The audit also checked every leaf's output address, memory type and
+    # section (ADR 0025), and the registers the boot code clears.
+    expect_once "mmu: every leaf maps its own frame with its own memory type" "audit of addresses and memory types"
+    expect_once "$expected_extensions" "permission indirection registers"
+    check_handoff_read_again
     lower="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: lower half at 0x[0-9a-f]*: read write \(0x[0-9a-f]*\) bytes, device \(0x[0-9a-f]*\), text \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
     [[ "$(echo "$lower" | wc -l)" -eq 1 && -n "$lower" ]] || fail "lower half report not found exactly once"
     read -r lower_rw device lower_text <<< "$lower"
@@ -330,6 +349,22 @@ check_mmu() {
         [[ $((lower_rw)) -eq $(($1 * 1024 * 1024 - image_span_bytes)) ]] \
             || fail "lower half maps $lower_rw bytes of RAM, expected $(($1 * 1024 * 1024 - image_span_bytes))"
     fi
+}
+
+# check_handoff_read_again: the kernel read the boot info, the memory map and the
+# device tree again after the switch, through the lower window (ADR 0025), and
+# got what it had read before. The digest must cover at least the device tree
+# blob the kernel reserved, or it would not show a window that lost it.
+check_handoff_read_again() {
+    local line bytes blob blob_start blob_end
+    expect_once "handoff: read again after the switch, " "read of the hand-over after the switch"
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  handoff: read again after the switch, \([0-9]*\) bytes, digest 0x[0-9a-f]*, as before it$/\1/p')"
+    bytes="$line"
+    [[ -n "$bytes" ]] || fail "the read of the hand-over after the switch has an unexpected format"
+    blob="$(plain_log | sed -n 's/^  kernel  .\{4\}  reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
+    read -r blob_start blob_end <<< "$blob"
+    [[ "$bytes" -gt $((blob_end - blob_start)) ]] \
+        || fail "the hand-over digest covers $bytes bytes, fewer than the $((blob_end - blob_start)) of the device tree"
 }
 
 # check_boot NAME QEMU_IMAGE_ARGS...
@@ -384,10 +419,23 @@ check_panic() {
 # to break write-xor-execute (ADR 0019) must end in a kernel panic that reports
 # the exception exactly: its class, the low bits of its syndrome (ISS, as a
 # regular expression), the address of the faulting instruction (a number, or
-# START..END it must lie in) and the fault address. A boot where the violation
+# START..END it must lie in) and the fault address (the same). A boot where the violation
 # is allowed prints `selftest:` and panics with another message, so it fails.
+# FAULT_ALSO, when set, is a line the kernel must print after the report, and
+# FAULT_ABSENT one it must not print anywhere.
+FAULT_ALSO=""
+FAULT_ABSENT=""
+# in_range VALUE EXPECTED: VALUE is the number EXPECTED, or lies in START..END.
+in_range() {
+    if [[ "$2" == *..* ]]; then
+        [[ $(($1)) -ge $((${2%%..*})) && $(($1)) -lt $((${2##*..})) ]]
+    else
+        [[ $(($1)) -eq $(($2)) ]]
+    fi
+}
+
 check_fault() {
-    local name="$1" class_name="$2" class="$3" iss="$4" pc_range="$5" far="$6" line pc
+    local name="$1" class_name="$2" class="$3" iss="$4" pc_range="$5" far="$6" line pc fault_address
     shift 6
     start_qemu "$name" "$@"
     for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
@@ -401,19 +449,26 @@ check_fault() {
     [[ "$line" =~ ^unhandled\ synchronous\ exception:\ ${class_name}\ \(class\ ${class},\ iss\ ${iss},\ esr\ 0x[0-9a-f]+\)\ at\ (0x[0-9a-f]+),\ fault\ address\ (0x[0-9a-f]+)$ ]] \
         || fail "the fault is not '$class_name (class $class, iss $iss) ... fault address $far': $line"
     pc="${BASH_REMATCH[1]}"
-    [[ $((BASH_REMATCH[2])) -eq $((far)) ]] \
-        || fail "fault address ${BASH_REMATCH[2]}, expected $(printf '%#x' $((far)))"
-    if [[ "$pc_range" == *..* ]]; then
-        [[ $((pc)) -ge $((${pc_range%%..*})) && $((pc)) -lt $((${pc_range##*..})) ]] \
-            || fail "the faulting instruction $pc is outside the kernel's code ($pc_range)"
-    else
-        [[ $((pc)) -eq $((pc_range)) ]] || fail "the faulting instruction is $pc, expected $pc_range"
+    fault_address="${BASH_REMATCH[2]}"
+    in_range "$fault_address" "$far" || fail "fault address $fault_address, expected $far"
+    in_range "$pc" "$pc_range" || fail "the faulting instruction $pc is not $pc_range"
+    if [[ -n "$FAULT_ALSO" ]]; then
+        # Printed after the report, by the panic handler of the build.
+        for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
+            grep -qF "$FAULT_ALSO" "$serial_log" && break
+            qemu_is_running || break
+            sleep 0.1
+        done
+        grep -qF "$FAULT_ALSO" "$serial_log" || fail "after the fault the kernel did not print '$FAULT_ALSO'"
+    fi
+    if [[ -n "$FAULT_ABSENT" ]] && grep -qF "$FAULT_ABSENT" "$serial_log"; then
+        fail "the log holds '$FAULT_ABSENT'"
     fi
     # The tables had passed their audit before the violation was tried.
     expect_once "mmu: write xor execute holds" "write xor execute report before the violation"
     grep -qF "selftest: " "$serial_log" || fail "the violation was never tried"
     stop_qemu
-    echo "PASS ($boot_name): $class_name at $(printf '%#x' $((far))) ended in a kernel panic"
+    echo "PASS ($boot_name): $class_name at $fault_address ended in a kernel panic"
 }
 
 # find_uefi_firmware: prints the AArch64 UEFI firmware image QEMU can load with
@@ -547,7 +602,7 @@ check_uefi_boot() {
     # placed the image (the stack included): a loader that misplaces or cuts
     # the image cannot print this.
     expect_once "started at EL$bootloader_el" "bootloader's exception level"
-    expect_once "kernel loaded at $(hex "$(physical_symbol __image_start)")..$(hex "$(physical_symbol __stack_top)"), entry $(hex "$entry")" \
+    expect_once "kernel loaded at $(hex "$(physical_symbol __image_start)")..$(hex "$(physical_symbol __exception_stack_top)"), entry $(hex "$entry")" \
         "bootloader's report of the kernel placement"
     expect_once "$EXPECTED_BANNER" "boot banner"
     expect_once "$UART_REPORT" "UART report"
@@ -575,6 +630,7 @@ check_uefi_boot() {
     expect_once ", x2|x3 0" "x2 and x3 at entry"
     expect_once "reserved kernel image $image_range" "kernel image reservation"
     expect_once "reserved boot stack $stack_range" "boot stack reservation"
+    expect_once "reserved exception stack $exception_range" "exception stack reservation"
 
     # The kernel found an intact copy of the device tree, as big as the firmware's.
     local blob_size copy
@@ -753,16 +809,25 @@ image_start_address=$(( $(physical_symbol __image_start) ))
 if [[ "$image_start_address" -ne "$entry" ]]; then
     fail "__image_start is not the entry point $entry"
 fi
-image_end_address=$(( $(physical_symbol __stack_top) ))
+image_end_address=$(( $(physical_symbol __exception_stack_top) ))
 hex() { printf '0x%x' "$1"; }
 image_range="$(hex "$(physical_symbol __image_start)")..$(hex "$(physical_symbol __stack_bottom)")"
 stack_range="$(hex "$(physical_symbol __stack_bottom)")..$(hex "$(physical_symbol __stack_top)")"
+# The guard page above the boot stack is reserved with the exception stack.
+exception_range="$(hex "$(physical_symbol __stack_top)")..$(hex "$(physical_symbol __exception_stack_top)")"
 # What the kernel's page tables must map, by section, from the linker's symbols.
 text_bytes=$(( $(symbol_address __text_end) - $(symbol_address __image_start) ))
 rodata_bytes=$(( $(symbol_address __rodata_end) - $(symbol_address __text_end) ))
 data_bytes=$(( $(symbol_address __data_end) - $(symbol_address __rodata_end) ))
 stack_bytes=$(( $(symbol_address __stack_top) - $(symbol_address __stack_bottom) ))
-image_span_bytes=$(( $(symbol_address __stack_top) - $(symbol_address __image_start) ))
+exception_stack_bytes=$(( $(symbol_address __exception_stack_top) - $(symbol_address __exception_stack_bottom) ))
+# The probe the stack-overflow boot checks is the last thing in `.bss`, right
+# below the guard page: only there does it see what a stack that ran past the
+# guard page writes first.
+[[ "$(symbol_address __stack_probe_end)" == "$(symbol_address __bss_end)" \
+    && "$(symbol_address __bss_end)" == "$(symbol_address __data_end)" ]] \
+    || fail "the .bss probe is not the last thing before the guard page"
+image_span_bytes=$(( $(symbol_address __exception_stack_top) - $(symbol_address __image_start) ))
 bss_start="$(physical_symbol __bss_start)"
 bss_end="$(physical_symbol __bss_end)"
 bss_size=$((bss_end - bss_start))
@@ -915,6 +980,12 @@ check_uefi_refusal uefi-load-busy "$work_dir/relocated.img" \
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"
+# An exception taken by the handler itself, on the exception stack, is reported
+# as nested (ADR 0025) and not handled on the same stack again.
+nested_elf="$work_dir/nested-exception.elf"
+build_with_feature selftest-nested-exception "$nested_elf"
+cargo build --quiet --target-dir "$TARGET_DIR"
+check_panic nested-exception "$nested_elf" "nested exception on the exception stack: BRK (AArch64) (class 0x3c, iss 0x0000802"
 
 # Write-xor-execute (ADR 0019): a write to the kernel's code, a jump into
 # constants and a jump into data each end in a reported fault, in every way the
@@ -928,12 +999,22 @@ rodata_elf="$work_dir/execute-rodata.elf"
 build_with_feature selftest-write-text "$write_elf"
 build_with_feature selftest-execute-data "$data_elf"
 build_with_feature selftest-execute-rodata "$rodata_elf"
+# A stack overflow (ADR 0025): the recursion's first store below the boot stack
+# hits the guard page, which is a level 3 translation fault on a store (DFSC
+# 0b000111, WnR set: the syndrome ends in 0x47), at an address in the guard
+# page, from kernel code. The report must be made on the exception stack: the
+# probe the linker reserves at the top of `.bss`, which a handler working on the
+# overflowed stack would overwrite, is whole afterwards, and no nested exception
+# was reported.
+overflow_elf="$work_dir/stack-overflow.elf"
+build_with_feature selftest-stack-overflow "$overflow_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
-for kind in write execute-data execute-rodata; do
+for kind in write execute-data execute-rodata stack-overflow; do
     case "$kind" in
         write) elf="$write_elf" ;;
         execute-data) elf="$data_elf" ;;
         execute-rodata) elf="$rodata_elf" ;;
+        stack-overflow) elf="$overflow_elf" ;;
     esac
     # The addresses come from the very ELF that boots: a build with another
     # feature may lay the sections out differently.
@@ -944,7 +1025,14 @@ for kind in write execute-data execute-rodata; do
         write) fault=(data\ abort 0x25 '0x[0-9a-f]{5}4f' "$text_range" "$(symbol_of "$elf" __image_start)") ;;
         execute-data) fault=(instruction\ abort 0x21 0x000000f "$(symbol_of "$elf" __rodata_end)" "$(symbol_of "$elf" __rodata_end)") ;;
         execute-rodata) fault=(instruction\ abort 0x21 0x000000f "$(symbol_of "$elf" __text_end)" "$(symbol_of "$elf" __text_end)") ;;
+        stack-overflow) fault=(data\ abort 0x25 '0x[0-9a-f]{5}47' "$text_range" "$(symbol_of "$elf" __data_end)..$(symbol_of "$elf" __stack_bottom)") ;;
     esac
+    FAULT_ALSO=""
+    FAULT_ABSENT=""
+    if [[ "$kind" == stack-overflow ]]; then
+        FAULT_ALSO="selftest: .bss stack probe intact"
+        FAULT_ABSENT="nested exception"
+    fi
     check_fault "$kind" "${fault[@]}" -kernel "$elf"
     check_fault "$kind-el2" "${fault[@]}" -machine virtualization=on -kernel "$elf"
     BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
@@ -954,3 +1042,35 @@ for kind in write execute-data execute-rodata; do
         -drive "file=$image,format=raw,if=virtio"
     BOOT_TIMEOUT_SECONDS=10
 done
+FAULT_ALSO=""
+FAULT_ABSENT=""
+
+# Permission indirection (ADR 0025): `-cpu max` has FEAT_S1PIE, so the kernel
+# writes and then reads back TCR2_EL1 and SCTLR2_EL1. QEMU resets them to zero,
+# so a kernel that never wrote them would pass; the build with
+# `selftest-dirty-tcr2` sets TCR2_EL1.PIE first, as firmware might have left it,
+# and only a kernel that clears it passes.
+expected_extensions="$EXTENSIONS_CLEARED"
+check_boot cpu-max -cpu max -kernel "$KERNEL_ELF"
+dirty_elf="$work_dir/dirty-tcr2.elf"
+build_with_feature selftest-dirty-tcr2 "$dirty_elf"
+cargo build --quiet --target-dir "$TARGET_DIR"
+dirty_image="$work_dir/dirty-tcr2.img"
+python3 -I scripts/make-disk-image.py "$dirty_image" target/aarch64-unknown-uefi/debug/bootloader.efi "$dirty_elf" > /dev/null
+# check_extensions NAME QEMU_ARGS...: the kernel built to dirty TCR2_EL1 boots
+# and reports the registers cleared.
+check_extensions() {
+    start_qemu "$@"
+    wait_for_line "$RESUME_MARKER"
+    expect_once "$EXTENSIONS_CLEARED" "permission indirection registers"
+    expect_once "mmu: write xor execute holds" "write xor execute report"
+    stop_qemu
+    echo "PASS ($boot_name): TCR2_EL1 cleared although it was set before"
+}
+check_extensions dirty-tcr2 -cpu max -kernel "$dirty_elf"
+BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+check_extensions uefi-dirty-tcr2 -cpu max -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
+    -drive "file=$dirty_image,format=raw,if=virtio"
+check_uefi_boot uefi-cpu-max 256 1 normal enter -cpu max
+BOOT_TIMEOUT_SECONDS=10
+expected_extensions="$EXTENSIONS_ABSENT"
