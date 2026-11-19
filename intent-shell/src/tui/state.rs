@@ -233,7 +233,11 @@ impl State {
     /// Apply what the worker said. Returns whether the person is now asked
     /// something, so the caller can discard keys typed before it was drawn.
     pub fn on_event(&mut self, event: Event) -> bool {
-        self.scroll = 0;
+        // A reply that arrives while the person reads back through the history
+        // must not throw them to the bottom.
+        if !matches!(event, Event::Said(_)) {
+            self.scroll = 0;
+        }
         self.asked_ms = self.clock_ms;
         if !matches!(event, Event::Busy(_)) {
             self.forced_quit = false;
@@ -1225,5 +1229,16 @@ mod tests {
                 assert!(!line.starts_with(crate::reply::MARK), "{line:?} at {width}");
             }
         }
+    }
+
+    #[test]
+    fn a_reply_does_not_move_the_person_who_is_reading_back() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::OutcomeAwaitingReply("done\n".to_owned()));
+        state.scroll = 7;
+        state.on_event(Event::Said(Some("hello".to_owned())));
+        assert_eq!(state.scroll, 7);
+        state.on_event(Event::Outcome("again\n".to_owned()));
+        assert_eq!(state.scroll, 0);
     }
 }

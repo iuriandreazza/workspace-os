@@ -57,8 +57,9 @@ outcome, then `OutcomeAwaitingReply` (the result and `saying…` at once), then 
 alters the result; it only delays the next prompt.
 
 `ports::Speaker` is the port. `model::LlamaSpeaker` is its adapter: the same
-`llama-server`, no `response_format`, no tools, `max_tokens` 200, a 30 s read
-timeout and a 5 s connect timeout. The planner prompt, the grammar and the plan
+`llama-server`, no `response_format`, no tools, `max_tokens` 200, a 30 s deadline
+for the connection and the answer together (the connection is cut at 5 s inside it).
+The planner prompt, the grammar and the plan
 schema are not touched (ADR 0024 and S4b own them). Connecting now has a limit
 for the planner too, a transport change only.
 
@@ -183,6 +184,8 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 34. the reason a step was not run taken from the host's text: fails `a_step_that_was_not_run_is_told_to_the_model_in_the_codes_words_not_the_hosts`
 35. a reply asked for after the input ended at a question (line adapter): fails `when_the_input_ends_at_a_question_no_reply_is_asked_for`
 36. a line that is not valid text taken for the end of the input: fails `a_line_that_is_not_text_at_a_question_is_not_the_end_of_the_input`
+37. a reply that throws the reader back to the bottom of the history: fails `a_reply_does_not_move_the_person_who_is_reading_back`
+38. the end of the input remembered for the next request: fails `the_end_of_the_input_is_forgotten_for_the_next_request`
 
 
 Two mutations the task names cannot be written: "reply before the confirm or

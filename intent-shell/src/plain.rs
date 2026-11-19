@@ -109,6 +109,12 @@ fn parse_choice(answer: &str, count: usize) -> Option<usize> {
 }
 
 impl TerminalConfirm {
+    /// The end of the input only counts for the request it happened in: at a
+    /// terminal the person may press Ctrl-D at a question and carry on.
+    fn begin_request(&mut self) {
+        self.input_ended = false;
+    }
+
     fn answer(&mut self) -> Option<String> {
         let (line, ended) = read_line();
         self.input_ended |= ended;
@@ -205,6 +211,7 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
             continue;
         }
         let entry = setup.entry();
+        confirm.begin_request();
         let mut shell = Shell {
             session: &mut session,
             authority: &setup.authority,
@@ -234,7 +241,7 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Entry, is_details, is_yes, numbered, parse_choice, prompt};
+    use super::{Entry, TerminalConfirm, is_details, is_yes, numbered, parse_choice, prompt};
     use crate::ports::ChoiceLine;
 
     #[test]
@@ -298,5 +305,12 @@ mod tests {
         for no in ["", "\n", "n\n", "yep", "ye", " \n"] {
             assert!(!is_yes(no), "{no:?}");
         }
+    }
+
+    #[test]
+    fn the_end_of_the_input_is_forgotten_for_the_next_request() {
+        let mut confirm = TerminalConfirm { input_ended: true };
+        confirm.begin_request();
+        assert!(!confirm.input_ended);
     }
 }
