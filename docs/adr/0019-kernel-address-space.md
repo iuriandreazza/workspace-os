@@ -290,8 +290,10 @@ image at the physical address the ELF names. Lifting it is a separate item.
   `boot_stack()` return physical addresses, converted in one place, because the
   frame allocator reserves physical ranges and silently ignores ranges outside
   its window: a virtual range would leave the kernel's own frames free.
-- `boot.s` sets `VBAR_EL1` after the jump. A fault in phase A (a few dozen
-  instructions) hangs instead of ending in a panic.
+- `boot.s` sets `VBAR_EL1` after the jump. `VBAR_EL1` has an unknown reset
+  value, so a fault in phase A (a few dozen instructions) goes to an unknown
+  address (a hang on the direct path, the firmware's handler on the other)
+  instead of ending in a panic.
 - The frame allocator hands out frames for the tables, so the free count after
   boot is a few tens of frames lower than the count the allocator reports before
   `mmu::init`.
@@ -325,6 +327,21 @@ image at the physical address the ELF names. Lifting it is a separate item.
 - **The audit does not look at memory type or shareability** of a leaf, only at
   permissions and aliasing: an image page with a wrong `AttrIndx` passes the
   walk and every fault boot.
+- **Cores with permission indirection (FEAT_S1PIE)** reset `TCR2_EL1.PIE`
+  to an unknown value; if it is set, the descriptors' `AP` and `PXN` bits mean
+  something else. The boot code does not initialise `TCR2_EL1` or `SCTLR2_EL1`
+  (writing them on a core without the feature is undefined). No machine here
+  has the feature; it is untested.
+- **The walk checks totals, not addresses**: it does not compare a leaf's
+  output address with the page it should map, and after the switch nothing but
+  the UART is read through the lower window, so a window that dropped a region
+  the kernel still points into would pass every boot.
+- **The direct path's lower map in phase A** treats the first gigabyte as Device
+  and the rest as Normal (non-cacheable with `C` clear), which allows
+  speculative accesses to addresses with nothing behind them; QEMU `virt`
+  tolerates it and the path is for QEMU only (ADR 0008). The layout assumption
+  is in arch code because it is gone once phase B rebuilds the window from the
+  device tree.
 - **Memory above 512 GiB** (RAM, not only the UART) is refused with an error at
   boot, as the bootloader's identity map already limits it.
 - **Executable memory outside the image** does not exist after phase B on either

@@ -271,10 +271,13 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
             table = self.child(table, level_index(virtual_address, walked))?;
         }
         let slot = &mut self.memory.table_mut(table).0[level_index(virtual_address, level)];
-        if *slot != 0 {
+        let wanted = leaf(&self.types, physical, permissions, level);
+        // Mapping the same thing twice is not a conflict: two regions of a
+        // device tree may share a page once widened to whole pages.
+        if *slot != 0 && *slot != wanted {
             return Err(MapError::Overlap);
         }
-        *slot = leaf(&self.types, physical, permissions, level);
+        *slot = wanted;
         Ok(())
     }
 

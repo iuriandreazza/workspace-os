@@ -111,7 +111,8 @@ _start:
     // loaded at, while the linker placed it in the upper half (ADR 0019):
     // `adrp` of a symbol therefore gives the symbol's physical address, and
     // `ldr x, =symbol` its virtual one. Nothing here uses the stack or a
-    // vector table, and a fault in this stretch hangs.
+    // vector table: VBAR_EL1 is still whatever it was, so a fault in this stretch
+    // goes to an unknown address (a hang, or the firmware's handler).
 
     // Rust assumes zero-initialised statics, and the boot tables below are in
     // `.bss`.
@@ -300,15 +301,22 @@ _start:
 22:
     // The bootloader path keeps its identity map in TTBR0_EL1 and its lower
     // half of TCR_EL1; the upper half is ours.
+    // TTBR1_EL1 is written first: while EPD1 is still set from the firmware
+    // no walk reads it, and once the new TCR_EL1 enables walks it is ours.
+    adrp x0, boot_l1_high
+    msr  ttbr1_el1, x0
+    isb
     mrs  x0, tcr_el1
     mov  x1, #{TCR_UPPER_MASK}
     bic  x0, x0, x1
     ldr  x1, ={TCR_UPPER_HALF}
     orr  x0, x0, x1
     msr  tcr_el1, x0
+    b    25f
 23:
     adrp x0, boot_l1_high
     msr  ttbr1_el1, x0
+25:
     isb
     tlbi vmalle1
     dsb  nsh

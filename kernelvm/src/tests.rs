@@ -532,3 +532,24 @@ fn a_gigabyte_block_is_not_split_around_the_hole() {
     assert!(translate(&arena, root, span.end).is_some());
     assert!(audit(&arena, root, 0, TYPES, &span).is_clean());
 }
+
+#[test]
+fn regions_that_share_a_page_map_it_once() {
+    let mut arena = Arena::new(16);
+    let root = ram_window(
+        &mut arena,
+        &[(0x4000_0000, 0x4000_0800), (0x4000_0800, 0x4000_1000)],
+        0..0,
+    );
+    let found = translate(&arena, root, 0x4000_0000).unwrap();
+    assert!(found.writable && !found.executable);
+    // The same page asked for with other permissions is still a conflict.
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    mapper
+        .map_range(0x4000_0000, 0x4000_0000, PAGE_SIZE, Permissions::ReadWrite)
+        .unwrap();
+    assert_eq!(
+        mapper.map_range(0x4000_0000, 0x4000_0000, PAGE_SIZE, Permissions::Text),
+        Err(MapError::Overlap)
+    );
+}
