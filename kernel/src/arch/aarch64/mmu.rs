@@ -126,11 +126,10 @@ impl TableMemory for FrameTables<'_, '_> {
             // being written back over the table later.
             unsafe { asm!("dc ivac, {}", in(reg) line, options(nostack, preserves_flags)) };
         }
-        // SAFETY: the frame was just handed out, so nothing else uses it. The
-        // map the kernel runs on covers RAM at its physical address, except
-        // the free part of the image's own 2 MiB on the direct path before the
-        // switch; the allocator hands out the lowest frames first, which lie
-        // below the image on the machines this runs on (a limit, ADR 0019).
+        // SAFETY: the frame was just handed out, so nothing else uses it, and
+        // the map the kernel runs on covers RAM at its physical address: the
+        // bootloader's map, or on the direct path the boot map (1 GiB blocks,
+        // and the image's own 2 MiB, tail included), then the lower window.
         unsafe { core::ptr::write(address as usize as *mut Table, Table::EMPTY) };
         Some(address)
     }

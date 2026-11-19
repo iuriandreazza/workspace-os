@@ -344,9 +344,10 @@ image at the physical address the ELF names. Lifting it is a separate item.
   the TCG cannot show whether that is enough on a core with caches in an unknown
   state.
 - **The walk checks totals, not addresses**: it does not compare a leaf's
-  output address with the page it should map, and after the switch nothing but
-  the UART is read through the lower window, so a window that dropped a region
-  the kernel still points into would pass every boot.
+  output address with the page it should map, and after the switch only the
+  UART and the page tables themselves are read through the lower window, so a
+  window that dropped the boot info, the memory map or the device tree copy would
+  pass every boot.
 - **The direct path's lower map in phase A** treats the first gigabyte as Device
   and the rest as Normal (non-cacheable with `C` clear), which allows
   speculative accesses to addresses with nothing behind them; QEMU `virt`

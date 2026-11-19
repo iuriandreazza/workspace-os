@@ -840,6 +840,11 @@ PY
 start_qemu reserved-below-image -dtb "$below_dtb" -kernel "$KERNEL_ELF"
 wait_for_line "$RESUME_MARKER"
 expect_once "mmu: write xor execute holds" "write xor execute report with the frames below the image reserved"
+# The test only means something if the allocator did give out frames from the
+# tail of the image's 2 MiB: the first free frame is then above the stack.
+reused="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: reused \(0x[0-9a-f]*\) after freeing it$/\1/p')"
+[[ -n "$reused" && $((reused)) -ge "$image_end_address" && $((reused)) -lt $((image_start_address + 2 * 1024 * 1024)) ]] \
+    || fail "the first free frame $reused is not in the tail of the image's 2 MiB (above $(printf '%#x' "$image_end_address"))"
 stop_qemu
 echo "PASS (reserved-below-image): page tables built in the image's own 2 MiB"
 extra_reserved_frames=0
