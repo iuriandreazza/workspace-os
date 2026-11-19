@@ -248,10 +248,10 @@ pub fn facts(request: &str, outcome: &Outcome) -> Option<String> {
             lines.extend(review_facts(review));
         }
         Outcome::Executed {
+            review,
             asked,
             steps,
             labels,
-            ..
         } => {
             lines.push(if *asked {
                 "result: the person confirmed and the plan ran".to_owned()
@@ -259,8 +259,14 @@ pub fn facts(request: &str, outcome: &Outcome) -> Option<String> {
                 "result: the plan ran without a question, because it only read or added".to_owned()
             });
             for step in steps {
+                let reviewed = review.steps.iter().find(|s| s.id == step.id);
                 if let Some(why) = &step.not_run {
-                    lines.push(format!("step {}: not run: {}", step.id, quote(why)));
+                    // The reason as the review recorded it, so the words are the code's.
+                    let said = match reviewed.and_then(|s| s.blocked.as_ref()) {
+                        Some(blocked) => reason(blocked, labels),
+                        None => why.clone(),
+                    };
+                    lines.push(format!("step {}: not run: {}", step.id, quote(&said)));
                 }
                 for item in &step.items {
                     let said = quote(&screen::say(&item.action, labels));
@@ -270,7 +276,15 @@ pub fn facts(request: &str, outcome: &Outcome) -> Option<String> {
                             format!("done, {} items found", output.found.len())
                         }
                         ItemResult::Failed(_) => "failed".to_owned(),
-                        ItemResult::NotRun(why) => format!("not run: {}", quote(why)),
+                        ItemResult::NotRun(why) => {
+                            let refused = reviewed
+                                .and_then(|s| s.items.iter().find(|i| i.action == item.action))
+                                .and_then(|i| match &i.verdict {
+                                    Verdict::Refused(refusal) => Some(reason(refusal, labels)),
+                                    _ => None,
+                                });
+                            format!("not run: {}", quote(refused.as_deref().unwrap_or(why)))
+                        }
                     };
                     lines.push(format!("step {}: {said} -> {state}", step.id));
                 }

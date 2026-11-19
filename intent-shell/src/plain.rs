@@ -12,7 +12,11 @@ use crate::screen::fit;
 use crate::session::{Entry, SessionState, Shell};
 use crate::setup::{Setup, planner_of};
 
-struct TerminalConfirm;
+struct TerminalConfirm {
+    /// Set when the input ended at a question: the session is over, and there
+    /// is no one to read a reply.
+    input_ended: bool,
+}
 
 fn read_line() -> Option<String> {
     let _ = io::stdout().flush();
@@ -101,12 +105,20 @@ fn parse_choice(answer: &str, count: usize) -> Option<usize> {
     (1..=count).contains(&number).then(|| number - 1)
 }
 
+impl TerminalConfirm {
+    fn answer(&mut self) -> Option<String> {
+        let line = read_line();
+        self.input_ended |= line.is_none();
+        line
+    }
+}
+
 impl Confirm for TerminalConfirm {
     fn plan(&mut self, screen: &str, details: &str) -> bool {
         println!("{screen}");
         loop {
             print!("  [y] run the steps marked ok   [d] details   [n] cancel > ");
-            let Some(answer) = read_line() else {
+            let Some(answer) = self.answer() else {
                 return false;
             };
             if is_details(&answer) {
@@ -120,7 +132,7 @@ impl Confirm for TerminalConfirm {
     fn root_action(&mut self, panel: &str, _who: &User) -> bool {
         println!("{panel}");
         print!("  [y] confirm this exact action   [n] refuse > ");
-        read_line().is_some_and(|answer| is_yes(&answer))
+        self.answer().is_some_and(|answer| is_yes(&answer))
     }
 
     fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize> {
@@ -136,7 +148,7 @@ impl Confirm for TerminalConfirm {
         let options = lines.iter().filter(|l| l.option.is_some()).count();
         loop {
             print!("  number, or Enter to cancel > ");
-            let answer = read_line()?;
+            let answer = self.answer()?;
             if answer.trim().is_empty() {
                 return None;
             }
@@ -168,7 +180,7 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
         speaker,
         profile: *profile,
     });
-    let mut confirm = TerminalConfirm;
+    let mut confirm = TerminalConfirm { input_ended: false };
     let mut session = SessionState::start(&setup.host);
     println!("{}", setup.header(&session));
     loop {
@@ -204,6 +216,7 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
         // After the result is on screen: the reply is only ever an addition.
         if let Some(reply) = voice
             .as_ref()
+            .filter(|_| !confirm.input_ended)
             .and_then(|voice| reply::reply_to(voice, request, &outcome, &mut setup.log))
         {
             let width = if io::stdout().is_terminal() {

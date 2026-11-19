@@ -25,6 +25,8 @@ struct Server {
     /// The bodies of the requests the server got, in order.
     seen: Arc<Mutex<Vec<String>>>,
     reply: Arc<Mutex<Reply>>,
+    /// The plan the server answers a planning request with.
+    plan: Arc<Mutex<String>>,
     stop: std::sync::mpsc::Sender<()>,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -37,7 +39,8 @@ impl Server {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let reply = Arc::new(Mutex::new(Reply::Text(String::new())));
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
-        let (log, mode) = (Arc::clone(&seen), Arc::clone(&reply));
+        let plan = Arc::new(Mutex::new(PLAN.to_owned()));
+        let (log, mode, plans) = (Arc::clone(&seen), Arc::clone(&reply), Arc::clone(&plan));
         let handle = thread::spawn(move || {
             while stopped.try_recv().is_err() {
                 let Ok((mut stream, _)) = listener.accept() else {
@@ -49,7 +52,7 @@ impl Server {
                 let is_plan = body.contains("response_format");
                 log.lock().unwrap().push(body);
                 let answer = if is_plan {
-                    Some(PLAN.to_owned())
+                    Some(plans.lock().unwrap().clone())
                 } else {
                     match mode.lock().unwrap().clone() {
                         Reply::Text(text) => Some(text),
@@ -74,6 +77,7 @@ impl Server {
             address,
             seen,
             reply,
+            plan,
             stop,
             handle: Some(handle),
         }
@@ -320,4 +324,21 @@ fn a_profile_file_the_person_names_that_does_not_exist_stops_the_shell_with_a_me
     let _ = fs::remove_dir_all(&home);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("/nowhere/p"));
+}
+
+#[test]
+fn when_the_input_ends_at_a_question_no_reply_is_asked_for() {
+    let server = Server::start();
+    server.says(Reply::Text("never".to_owned()));
+    *server.plan.lock().unwrap() = r#"{"kind":"plan","version":3,"summary":"Delete it","steps":[{"id":"s1","action":"fs.delete","args":{"target":{"name":"keep.txt","in":"home","kind":"file"}},"depends_on":[],"elevate":false}]}"#.to_owned();
+    // The session's only line is the request: the input ends at the question.
+    let run = session(&server, "eof", &[], None);
+    assert!(run.stdout.contains("[y] run the steps"), "{}", run.stdout);
+    assert!(run.home.join("keep.txt").exists());
+    assert!(
+        server.reply_requests().is_empty(),
+        "{:?}",
+        server.reply_requests()
+    );
+    assert!(!run.stdout.contains("  » "), "{}", run.stdout);
 }

@@ -693,3 +693,36 @@ fn a_named_pipe_with_no_writer_is_an_empty_profile_not_a_hang() {
         .expect("opening the pipe did not block");
     assert!(matches!(loaded, Ok((_, Source::DefaultAfterProblem(_)))));
 }
+
+#[test]
+fn a_step_that_was_not_run_is_told_to_the_model_in_the_codes_words_not_the_hosts() {
+    // The pre-run read of s1 fails on the host; s2 depends on it; s3 still runs.
+    let host = files().failing("/work");
+    let plan = format!(
+        r#"{{"kind":"plan","version":3,"summary":"x","steps":[{},{},{}]}}"#,
+        r#"{"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":false}"#,
+        r#"{"id":"s2","action":"fs.delete","args":{"target":{"from_step":"s1"}},"depends_on":["s1"],"elevate":false}"#,
+        r#"{"id":"s3","action":"fs.stat","args":{"target":{"name":"a","in":"downloads","kind":"file"}},"depends_on":[],"elevate":false}"#,
+    );
+    let scenario = Scenario {
+        outputs: vec![plan],
+        host,
+        administrator: false,
+        confirm: true,
+    };
+    let speaker = ScriptedSpeaker::says("ok");
+    let run = spoken(&scenario, "x", speaking(&speaker, Profile::DirectTechnical));
+    assert!(
+        matches!(run.decided.outcome, Outcome::Executed { .. }),
+        "{:?}",
+        run.decided.outcome
+    );
+    let asked = speaker.asked.borrow();
+    let facts = &asked[0].1;
+    assert!(facts.contains("not run"), "{facts}");
+    assert!(!facts.contains("input/output error"), "{facts}");
+    assert!(
+        facts.contains("the read this step needed failed\""),
+        "{facts}"
+    );
+}

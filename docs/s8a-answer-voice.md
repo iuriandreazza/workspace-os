@@ -180,6 +180,8 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 31. the notice about a bad profile not shown in the interface: fails `a_notice_is_the_first_thing_in_the_history_and_none_adds_nothing`
 32. `»` not reserved: fails `text_from_a_file_cannot_contain_the_mark_so_no_wrapped_line_can_start_like_a_reply`
 33. a reply asked for after leaving at a question: fails `leaving_at_a_question_does_not_wait_for_a_reply_to_the_refusal`
+34. the reason a step was not run taken from the host's text: fails `a_step_that_was_not_run_is_told_to_the_model_in_the_codes_words_not_the_hosts`
+35. a reply asked for after the input ended at a question (line adapter): fails `when_the_input_ends_at_a_question_no_reply_is_asked_for`
 
 
 Two mutations the task names cannot be written: "reply before the confirm or
