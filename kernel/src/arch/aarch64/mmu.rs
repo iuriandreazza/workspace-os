@@ -119,8 +119,18 @@ impl TableMemory for FrameTables<'_, '_> {
         let address = self.frames.alloc()?;
         *slot = address;
         self.count += 1;
-        // SAFETY: the frame was just handed out, so nothing else uses it, and
-        // it is RAM the boot map covers at its physical address.
+        let line_size = data_cache_line_size();
+        for line in (address..address + kernelvm::PAGE_SIZE).step_by(line_size) {
+            // SAFETY: invalidating a line of a frame that was just handed out
+            // discards nothing anyone needs; it keeps a stale dirty line from
+            // being written back over the table later.
+            unsafe { asm!("dc ivac, {}", in(reg) line, options(nostack, preserves_flags)) };
+        }
+        // SAFETY: the frame was just handed out, so nothing else uses it. The
+        // map the kernel runs on covers RAM at its physical address, except
+        // the free part of the image's own 2 MiB on the direct path before the
+        // switch; the allocator hands out the lowest frames first, which lie
+        // below the image on the machines this runs on (a limit, ADR 0019).
         unsafe { core::ptr::write(address as usize as *mut Table, Table::EMPTY) };
         Some(address)
     }

@@ -7,7 +7,8 @@
 //
 // Known limit: the handled path trusts SP. A fault with a corrupt stack
 // pointer faults again while saving the context. The guard page below the stack
-// (ADR 0019) turns an overflow into that fault, not into a report.
+// (ADR 0019) makes an overflow fault, but the nested faults move SP down 288
+// bytes each until the saves land in .bss and a report is printed over it.
 
 // Layout of `TrapFrame` in exceptions.rs, checked there with const asserts.
 .equ FRAME_SIZE, 288

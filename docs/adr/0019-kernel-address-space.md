@@ -337,6 +337,15 @@ image at the physical address the ELF names. Lifting it is a separate item.
   something else. The boot code does not initialise `TCR2_EL1` or `SCTLR2_EL1`
   (writing them on a core without the feature is undefined). No machine here
   has the feature; it is untested.
+- **The free part of the image's 2 MiB is unmapped in phase A on the direct
+  path** (the level 3 table maps only the image and stack). The allocator hands
+  out the lowest frames first, which are below the image, so phase B's tables
+  never land there unless a machine needs more than about 250 of them before
+  the switch; then writing a table faults. Untested.
+- **Stale cache lines.** Phase A and `FrameTables::allocate` invalidate
+  (`dc ivac`) table memory before writing it and clean and invalidate it after;
+  the TCG cannot show whether that is enough on a core with caches in an unknown
+  state.
 - **The walk checks totals, not addresses**: it does not compare a leaf's
   output address with the page it should map, and after the switch nothing but
   the UART is read through the lower window, so a window that dropped a region

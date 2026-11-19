@@ -49,8 +49,9 @@ SECTIONS
     . = ALIGN(PAGE);
     __data_end = .;
 
-    /* One unmapped page below the stack: an overflow faults instead of
-       overwriting .bss. */
+    /* One unmapped page below the stack: an overflow faults. The exception
+       handler then works on the same stack, so this is not a full guard
+       (ADR 0019, "Known limits"). */
     . += PAGE;
 
     /* 64 KiB boot stack; AArch64 requires a 16-byte aligned stack pointer.

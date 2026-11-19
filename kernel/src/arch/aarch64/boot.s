@@ -7,7 +7,8 @@
 //   the boot info. The processor is the boot processor, already at EL1 with
 //   the MMU and the caches on and the identity map installed, so none of the
 //   work the direct path does to get there is done: no parking by MPIDR, no
-//   drop from a higher level, and SCTLR_EL1 is left alone.
+//   drop from a higher level, and SCTLR_EL1 is left alone until the jump into
+//   the upper half, where only WXN is added (ADR 0019).
 .section .text.boot
 .global _start
 _start:
@@ -113,6 +114,24 @@ _start:
     // `ldr x, =symbol` its virtual one. Nothing here uses the stack or a
     // vector table: VBAR_EL1 is still whatever it was, so a fault in this stretch
     // goes to an unknown address (a hang, or the firmware's handler).
+
+    // The boot tables are written below, in memory whose cache state is
+    // unknown on the direct path: invalidate their lines first, so that no
+    // stale dirty line is written back over them later. Nothing of value lives
+    // in this range (it is .bss), so discarding is safe on the bootloader path
+    // too.
+    adrp x0, boot_tables_start
+    adrp x1, boot_tables_end
+    mrs  x2, ctr_el0                // DminLine: log2 of the smallest line, in words
+    ubfx x2, x2, #16, #4
+    mov  x3, #4
+    lsl  x2, x3, x2
+26:
+    dc   ivac, x0
+    add  x0, x0, x2
+    cmp  x0, x1
+    b.lo 26b
+    dsb  sy
 
     // Rust assumes zero-initialised statics, and the boot tables below are in
     // `.bss`.
