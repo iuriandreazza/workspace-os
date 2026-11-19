@@ -561,3 +561,45 @@ fn an_empty_region_maps_nothing() {
     assert!(translate(&arena, root, 0x4000_0000).is_none());
     assert_eq!(arena.tables.len(), 1);
 }
+
+#[test]
+fn a_block_over_pages_an_earlier_region_mapped_is_split_not_refused() {
+    let mut arena = Arena::new(16);
+    // The first region ends inside the first page of the 2 MiB that the
+    // second starts at, so that block is already a table when the second asks.
+    let root = ram_window(
+        &mut arena,
+        &[(0x4000_0000, 0x4020_0800), (0x4020_0800, 0x8000_0000)],
+        0..0,
+    );
+    for address in [0x4020_0000, 0x4020_1000, 0x4030_0000, 0x7fff_f000] {
+        let found = translate(&arena, root, address).unwrap();
+        assert_eq!(found.output, address);
+        assert!(found.writable && !found.executable);
+    }
+    assert!(audit(&arena, root, 0, TYPES, &no_alias()).is_clean());
+    // The same for a gigabyte: a region ends inside one a later region covers.
+    let mut arena = Arena::new(16);
+    let root = ram_window(
+        &mut arena,
+        &[(0x4000_0000, 0x4000_1800), (0x4000_1800, 0xc000_0000)],
+        0..0,
+    );
+    assert_eq!(
+        translate(&arena, root, 0xbfff_f000).unwrap().output,
+        0xbfff_f000
+    );
+    assert_eq!(
+        translate(&arena, root, 0x4000_1000).unwrap().output,
+        0x4000_1000
+    );
+    // A conflicting permission under the table is still refused.
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    mapper
+        .map_range(0x4020_1000, 0x4020_1000, PAGE_SIZE, Permissions::Text)
+        .unwrap();
+    assert_eq!(
+        mapper.map_range(0x4020_0000, 0x4020_0000, BLOCK_SIZE, Permissions::ReadWrite),
+        Err(MapError::Overlap)
+    );
+}

@@ -304,27 +304,65 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
         if !is_canonical(virtual_address) || !is_canonical(last) {
             return Err(MapError::NotCanonical);
         }
+        self.map_with_blocks_up_to(virtual_address, physical, length, permissions, GIGABYTE)
+    }
+
+    /// `map_range` with blocks no bigger than `largest`. Where a block meets a
+    /// table that is already there (an earlier range mapped part of it with
+    /// smaller pieces), the block is mapped with smaller pieces too, which
+    /// accepts what is identical and refuses what is not.
+    fn map_with_blocks_up_to(
+        &mut self,
+        virtual_address: u64,
+        physical: u64,
+        length: u64,
+        permissions: Permissions,
+        largest: u64,
+    ) -> Result<(), MapError> {
         let mut done = 0;
         while done < length {
             let (at, to) = (virtual_address + done, physical + done);
-            if at.is_multiple_of(GIGABYTE)
-                && to.is_multiple_of(GIGABYTE)
-                && length - done >= GIGABYTE
-            {
-                self.set_leaf(at, to, permissions, 1)?;
-                done += GIGABYTE;
-            } else if at.is_multiple_of(BLOCK_SIZE)
-                && to.is_multiple_of(BLOCK_SIZE)
-                && length - done >= BLOCK_SIZE
-            {
-                self.set_leaf(at, to, permissions, 2)?;
-                done += BLOCK_SIZE;
-            } else {
-                self.set_leaf(at, to, permissions, 3)?;
-                done += PAGE_SIZE;
+            let size = [GIGABYTE, BLOCK_SIZE]
+                .into_iter()
+                .find(|&size| {
+                    size <= largest
+                        && at.is_multiple_of(size)
+                        && to.is_multiple_of(size)
+                        && length - done >= size
+                })
+                .unwrap_or(PAGE_SIZE);
+            let level = match size {
+                GIGABYTE => 1,
+                BLOCK_SIZE => 2,
+                _ => 3,
+            };
+            match self.set_leaf(at, to, permissions, level) {
+                Err(MapError::Overlap) if size > PAGE_SIZE && self.is_table_at(at, level) => {
+                    let smaller = if size == GIGABYTE {
+                        BLOCK_SIZE
+                    } else {
+                        PAGE_SIZE
+                    };
+                    self.map_with_blocks_up_to(at, to, size, permissions, smaller)?;
+                }
+                other => other?,
             }
+            done += size;
         }
         Ok(())
+    }
+
+    /// Whether the entry for `virtual_address` at `level` is a table.
+    fn is_table_at(&self, virtual_address: u64, level: u8) -> bool {
+        let mut table = self.root;
+        for walked in 1..level {
+            let descriptor = self.memory.table(table).0[level_index(virtual_address, walked)];
+            if descriptor & 3 != 3 {
+                return false;
+            }
+            table = descriptor & ADDRESS_MASK;
+        }
+        self.memory.table(table).0[level_index(virtual_address, level)] & 3 == 3
     }
 }
 

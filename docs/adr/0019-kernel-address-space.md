@@ -274,7 +274,7 @@ image at the physical address the ELF names. Lifting it is a separate item.
 
 | Option | For | Against |
 |---|---|---|
-| New crate `kernelvm` (chosen) | Host tests for the maps the kernel builds; the kernel cannot be tested on the host (bare metal, `test = false`) | A crate to maintain; one more line in `scripts/check.sh` |
+| New crate `kernelvm` (chosen) | Host tests for the maps the kernel builds; the kernel cannot be tested on the host (bare metal, `test = false`). It holds AArch64 descriptor and register encodings outside `kernel/src/arch/`, as `bootinfo::paging` already does: the rule that architecture code lives under `arch/` is kept for everything that touches the machine, and this crate touches none | A crate to maintain; one more line in `scripts/check.sh` |
 | Extend `bootinfo::paging` | One crate | That module builds the bootloader's identity map from a pool of tables with no permissions (Normal means read, write, execute) and no way to read it back; `bootinfo` is shared with the bootloader and being edited by K2d. Only `MemoryTypes::from_mair` is common, and it is five lines |
 | In the kernel | No crate | Not testable on the host |
 
@@ -295,8 +295,8 @@ image at the physical address the ELF names. Lifting it is a separate item.
   address (a hang on the direct path, the firmware's handler on the other)
   instead of ending in a panic.
 - The frame allocator hands out frames for the tables, so the free count after
-  boot is a few tens of frames lower than the count the allocator reports before
-  `mmu::init`.
+  boot is a handful of frames lower (eight on a 128 MiB machine) than the count the
+  allocator reports before `mmu::init`.
 - The gate adds: the walk of the live tables at every boot, with the sizes
   checked against the ELF's symbols; and boots that end in a fault, each with the
   exception class, the syndrome's permission-fault bits, the faulting instruction
