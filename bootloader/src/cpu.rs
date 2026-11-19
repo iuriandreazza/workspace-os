@@ -199,6 +199,20 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
     // SCTLR_EL1: the reserved-as-one bits and the MMU and caches on. Everything
     // else, alignment checks and WXN included, is off.
     let sctlr_el1 = 0x30d0_0800 | SCTLR_M | SCTLR_C | SCTLR_I;
+    // The kernel clears TCR2_EL1 and SCTLR2_EL1 where they exist (ADR 0026),
+    // and EL1 may only write them if HCRX_EL2.TCR2En and SCTLR2En allow it. The
+    // register itself exists only with FEAT_HCX, and its other bits have unknown
+    // reset values: write it, with those two enables set for the registers the
+    // processor has and the rest clear, only where it exists.
+    let (mmfr1, mmfr3): (u64, u64);
+    // SAFETY: reading ID registers has no side effects; ID_AA64MMFR3_EL1 is
+    // reserved and reads as zero where it does not exist.
+    unsafe {
+        asm!("mrs {}, S3_0_C0_C7_1", out(reg) mmfr1, options(nomem, nostack, preserves_flags));
+        asm!("mrs {}, S3_0_C0_C7_3", out(reg) mmfr3, options(nomem, nostack, preserves_flags));
+    }
+    let has_hcrx = u64::from((mmfr1 >> 40) & 0xf != 0);
+    let hcrx = (u64::from(mmfr3 & 0xf != 0) << 14) | (u64::from((mmfr3 >> 4) & 0xf != 0) << 15);
     // SAFETY: the caller guarantees the map and the entry. EL1's translation
     // registers are written while EL1 runs nothing, so no switch is visible;
     // the `eret` takes the kernel to EL1 with the MMU on, in the identity map.
@@ -224,6 +238,9 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
             "msr cptr_el2, x9",
             "msr mdcr_el2, xzr",
             "msr hstr_el2, xzr",
+            "cbz x10, 2f",
+            "msr S3_4_C1_C2_2, x11",
+            "2:",
             "mrs x9, midr_el1",
             "msr vpidr_el2, x9",
             "mrs x9, mpidr_el1",
@@ -245,6 +262,8 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
             in("x6") mair,
             in("x7") tcr_el1,
             in("x8") sctlr_el1,
+            in("x10") has_hcrx,
+            in("x11") hcrx,
             options(noreturn)
         )
     }

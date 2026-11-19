@@ -66,10 +66,11 @@ sync_exception_entry:
     // An exception taken on the exception stack itself (the handler or the
     // report faulted) must not reuse it: the interrupted SP is within one
     // stack size below the top, or in the guard page below that (the handler
-    // overflowed it).
+    // overflowed it). SP exactly at the bottom of the guard page is the empty
+    // boot stack, not an overflow.
     sub  x0, sp, x0
     cmp  x0, #(EXCEPTION_STACK_SIZE + 0x1000)
-    b.ls nested_exception_entry
+    b.lo nested_exception_entry
     sub  x0, sp, x0
     sub  sp, sp, #FRAME_SIZE
     str  x0, [sp, #FRAME_SP]

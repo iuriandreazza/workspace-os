@@ -827,6 +827,11 @@ exception_stack_bytes=$(( $(symbol_address __exception_stack_top) - $(symbol_add
 [[ "$(symbol_address __stack_probe_end)" == "$(symbol_address __bss_end)" \
     && "$(symbol_address __bss_end)" == "$(symbol_address __data_end)" ]] \
     || fail "the .bss probe is not the last thing before the guard page"
+# exceptions.s decides whether an exception is nested from the size of the
+# exception stack, which only link.ld defines: the two must agree.
+[[ "$(sed -n 's/^\.equ EXCEPTION_STACK_SIZE, \(0x[0-9a-f]*\)$/\1/p' kernel/src/arch/aarch64/exceptions.s)" ]] \
+    && [[ $(( $(sed -n 's/^\.equ EXCEPTION_STACK_SIZE, \(0x[0-9a-f]*\)$/\1/p' kernel/src/arch/aarch64/exceptions.s) )) -eq "$exception_stack_bytes" ]] \
+    || fail "exceptions.s and link.ld disagree on the size of the exception stack"
 image_span_bytes=$(( $(symbol_address __exception_stack_top) - $(symbol_address __image_start) ))
 bss_start="$(physical_symbol __bss_start)"
 bss_end="$(physical_symbol __bss_end)"
@@ -1078,6 +1083,10 @@ check_extensions dirty-tcr2-el3-el2 -cpu max -machine secure=on,virtualization=o
 BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
 check_extensions uefi-dirty-tcr2 -cpu max -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
     -drive "file=$dirty_image,format=raw,if=virtio"
+check_extensions uefi-el2-dirty-tcr2 -cpu max -machine virt,acpi=off,virtualization=on -m 256M -bios "$uefi_firmware" \
+    -drive "file=$dirty_image,format=raw,if=virtio"
 check_uefi_boot uefi-cpu-max 256 1 normal enter -cpu max
+# The bootloader's own drop from EL2 must enable the writes too.
+check_uefi_boot uefi-cpu-max-el2 256 2 normal enter -cpu max -machine virtualization=on
 BOOT_TIMEOUT_SECONDS=10
 expected_extensions="$EXTENSIONS_ABSENT"

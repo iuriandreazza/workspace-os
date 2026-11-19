@@ -90,6 +90,17 @@ exist and `HXEn` (bit 38) where `HCRX_EL2` does, so that EL2 may write it, and t
 exists) with `TCR2En` and `SCTLR2En` (bits 14 and 15) set for the same cases and
 the rest clear.
 
+The same holds for the bootloader's own drop from EL2 to EL1
+(`enter_kernel_from_el2`, which writes `HCRX_EL2` under the same conditions;
+found in round 2: the UEFI boot at EL2 on `-cpu max` ended in the firmware's
+exception handler at the first `TCR2_EL1` write).
+
+When the kernel is entered at EL1 or EL2 by something else, the firmware or
+hypervisor must have let that level write them (`SCR_EL3.HXEn` and `TCR2En`,
+`HCRX_EL2.TCR2En`); fine-grained trap controls (`HFGWTR_EL2.nTCR2_EL1`) are not
+cleared, as no other trap control of that kind is. QEMU without EL3 does not
+exercise these preconditions, so they are read against the architecture.
+
 The condition is the register's own existence (`TCRX`, `SCTLRX`), not S1PIE
 alone: S1PIE implies `TCR2_EL1`, and a core with `TCR2_EL1` but no S1PIE also
 gets its unknown reset value cleared. The registers are written with the MMU in
