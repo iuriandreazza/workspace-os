@@ -382,6 +382,7 @@ check_handoff_read_again() {
     bytes="$line"
     [[ -n "$bytes" ]] || fail "the read of the hand-over after the switch has an unexpected format"
     blob="$(plain_log | sed -n 's/^  kernel  .\{4\}  reserved device tree \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\)$/\1 \2/p')"
+    [[ -n "$blob" ]] || fail "the device tree reservation was not reported, so the digest cannot be checked against it"
     read -r blob_start blob_end <<< "$blob"
     [[ "$bytes" -gt $((blob_end - blob_start)) ]] \
         || fail "the hand-over digest covers $bytes bytes, fewer than the $((blob_end - blob_start)) of the device tree"

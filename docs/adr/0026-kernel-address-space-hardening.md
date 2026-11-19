@@ -88,7 +88,7 @@ output (found in review, reproduced on `-cpu max` at EL2 and EL3): the EL3
 path sets `SCR_EL3.TCR2En` and `SCTLR2En` (bits 43 and 44) where the registers
 exist and `HXEn` (bit 38) where `HCRX_EL2` does, so that EL2 may write it, and the EL2 path writes `HCRX_EL2` (where `ID_AA64MMFR1_EL1.HCX` says it
 exists) with `TCR2En` and `SCTLR2En` (bits 14 and 15) set for the same cases and
-the rest clear.
+the rest clear (when no enable is needed the register is not written, and keeps its reset value).
 
 The same holds for the bootloader's own drop from EL2 to EL1
 (`enter_kernel_from_el2`, which writes `HCRX_EL2` under the same conditions, and
@@ -203,7 +203,7 @@ only reports the register's value, would pass the removal of the write.
 - `link.ld`, `boot.s`, `exceptions.s`, `exceptions.rs`, `mmu.rs` and `kernelvm`
   change. The linker script exports `__exception_stack_bottom`,
   `__exception_stack_top`, `__stack_probe_start` and `__stack_probe_end`.
-- The ELF segment is 20 KiB larger. `kernel_image()` and `boot_stack()` keep
+- The ELF segment is at least 28 KiB larger: the 16 KiB exception stack, its 4 KiB guard page and the 8 KiB `.bss` probe (which `.bss` aligns to a page). `kernel_image()` and `boot_stack()` keep
   their meaning; `exception_stack()` is new and the allocator reserves it.
 - `ImageLayout` has a fifth part and the audit has a new signature.
 - The gate adds: a boot that overflows the stack, direct and through the
