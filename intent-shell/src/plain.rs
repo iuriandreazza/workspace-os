@@ -18,14 +18,17 @@ struct TerminalConfirm {
     input_ended: bool,
 }
 
-fn read_line() -> Option<String> {
+/// A line from the input, and whether the input has ended (as opposed to one
+/// bad line, which is only no answer).
+fn read_line() -> (Option<String>, bool) {
     let _ = io::stdout().flush();
     let mut line = String::new();
     match io::stdin().read_line(&mut line) {
-        Ok(0) | Err(_) => None,
+        Ok(0) => (None, true),
+        Err(_) => (None, false),
         Ok(_) => {
             echo_if_scripted(&line);
-            Some(line)
+            (Some(line), false)
         }
     }
 }
@@ -107,8 +110,8 @@ fn parse_choice(answer: &str, count: usize) -> Option<usize> {
 
 impl TerminalConfirm {
     fn answer(&mut self) -> Option<String> {
-        let line = read_line();
-        self.input_ended |= line.is_none();
+        let (line, ended) = read_line();
+        self.input_ended |= ended;
         line
     }
 }

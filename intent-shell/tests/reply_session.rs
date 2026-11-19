@@ -14,6 +14,8 @@ use std::time::Duration;
 
 const PLAN: &str = r#"{"kind":"plan","version":3,"summary":"List the home","steps":[{"id":"s1","action":"fs.list","args":{"target":{"place":"home"}},"depends_on":[],"elevate":false}]}"#;
 
+const DELETE: &str = r#"{"kind":"plan","version":3,"summary":"Delete it","steps":[{"id":"s1","action":"fs.delete","args":{"target":{"name":"keep.txt","in":"home","kind":"file"}},"depends_on":[],"elevate":false}]}"#;
+
 #[derive(Clone)]
 enum Reply {
     Text(String),
@@ -145,6 +147,16 @@ struct Run {
 
 /// One session of one request, in a home that is the same for every run.
 fn session(server: &Server, name: &str, extra: &[&str], profile: Option<&str>) -> Run {
+    session_with_input(server, name, extra, profile, b"list my home\n")
+}
+
+fn session_with_input(
+    server: &Server,
+    name: &str,
+    extra: &[&str],
+    profile: Option<&str>,
+    input: &[u8],
+) -> Run {
     let home =
         std::env::temp_dir().join(format!("intent-shell-reply-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
@@ -172,12 +184,7 @@ fn session(server: &Server, name: &str, extra: &[&str], profile: Option<&str>) -
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"list my home\n")
-        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
     let output = child.wait_with_output().unwrap();
     let run = Run {
         stdout: String::from_utf8(output.stdout).unwrap(),
@@ -330,7 +337,7 @@ fn a_profile_file_the_person_names_that_does_not_exist_stops_the_shell_with_a_me
 fn when_the_input_ends_at_a_question_no_reply_is_asked_for() {
     let server = Server::start();
     server.says(Reply::Text("never".to_owned()));
-    *server.plan.lock().unwrap() = r#"{"kind":"plan","version":3,"summary":"Delete it","steps":[{"id":"s1","action":"fs.delete","args":{"target":{"name":"keep.txt","in":"home","kind":"file"}},"depends_on":[],"elevate":false}]}"#.to_owned();
+    *server.plan.lock().unwrap() = DELETE.to_owned();
     // The session's only line is the request: the input ends at the question.
     let run = session(&server, "eof", &[], None);
     assert!(run.stdout.contains("[y] run the steps"), "{}", run.stdout);
@@ -341,4 +348,21 @@ fn when_the_input_ends_at_a_question_no_reply_is_asked_for() {
         server.reply_requests()
     );
     assert!(!run.stdout.contains("  » "), "{}", run.stdout);
+}
+
+#[test]
+fn a_line_that_is_not_text_at_a_question_is_not_the_end_of_the_input() {
+    let server = Server::start();
+    server.says(Reply::Text("noted".to_owned()));
+    *server.plan.lock().unwrap() = DELETE.to_owned();
+    // Two requests: the first question gets a line that is not valid text, the second a no.
+    let run = session_with_input(
+        &server,
+        "badline",
+        &[],
+        None,
+        b"delete it\n\xff\ndelete it\nn\n",
+    );
+    assert_eq!(server.reply_requests().len(), 2, "{}", run.stdout);
+    assert!(run.home.join("keep.txt").exists());
 }

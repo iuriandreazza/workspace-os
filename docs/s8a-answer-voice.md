@@ -160,7 +160,7 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 11. request not quoted in the facts: fails `a_hostile_file_name_reaches_the_model_only_as_a_quoted_string`, `what_the_model_is_given_is_the_outcome_in_friendly_names_and_nothing_from_the_machine`
 12. lines one cell too wide: fails `every_line_of_a_wrapped_reply_is_marked_and_fits`, `every_wrapped_line_of_a_reply_on_a_narrow_screen_is_marked`
 13. named missing profile is not an error: fails `a_profile_file_the_person_names_that_does_not_exist_stops_the_shell_with_a_message`, `a_profile_file_the_person_named_and_that_is_missing_is_an_error_naming_it`
-14. no read timeout on the reply: fails `a_server_that_never_answers_ends_the_reply_at_the_timeout_not_never`
+14. no timeout on the reply: fails `a_server_that_never_answers_ends_the_reply_at_the_timeout_not_never`
 15. --no-reply ignored: fails `replies_need_a_model_and_are_on_unless_turned_off`, `the_reply_comes_after_the_result_marked_and_the_rest_is_byte_for_byte_the_output_without_it`, `with_a_model_a_request_goes_to_the_model_and_is_not_read_as_a_command`
 16. --no-reply flag does nothing: fails `replies_are_on_by_default_and_the_profile_file_defaults_to_the_config_directory`, `the_reply_comes_after_the_result_marked_and_the_rest_is_byte_for_byte_the_output_without_it`, `with_a_model_a_request_goes_to_the_model_and_is_not_read_as_a_command`
 17. blank line printed when there is no reply: fails `a_server_error_on_the_reply_leaves_exactly_the_output_of_a_session_without_replies`
@@ -182,6 +182,7 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 33. a reply asked for after leaving at a question: fails `leaving_at_a_question_does_not_wait_for_a_reply_to_the_refusal`
 34. the reason a step was not run taken from the host's text: fails `a_step_that_was_not_run_is_told_to_the_model_in_the_codes_words_not_the_hosts`
 35. a reply asked for after the input ended at a question (line adapter): fails `when_the_input_ends_at_a_question_no_reply_is_asked_for`
+36. a line that is not valid text taken for the end of the input: fails `a_line_that_is_not_text_at_a_question_is_not_the_end_of_the_input`
 
 
 Two mutations the task names cannot be written: "reply before the confirm or
