@@ -170,6 +170,11 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 24. cap before escaping: fails `escaping_cannot_grow_the_reply_past_its_cap`
 25. timeout per read, not for the whole answer: fails `a_server_that_drips_bytes_is_cut_at_the_total_timeout`
 26. profile file read to its end: the test on `/dev/zero` aborts the test run (out of memory)
+27. machine text (an I/O error) in a refusal given to the model: fails `a_refusal_that_carries_machine_text_reaches_the_model_as_a_fixed_sentence`
+28. the profile file opened blocking: fails `a_named_pipe_with_no_writer_is_an_empty_profile_not_a_hang`
+29. the result sent without the wait for the reply: fails `the_result_is_sent_first_and_the_reply_after_it_with_saying_in_between`
+30. a late reply ends any wait: fails `no_request_can_start_between_the_result_and_its_reply_and_a_late_reply_cannot_end_a_wait`
+31. the notice about a bad profile not shown in the interface: fails `a_notice_is_the_first_thing_in_the_history_and_none_adds_nothing`
 
 
 Two mutations the task names cannot be written: "reply before the confirm or
