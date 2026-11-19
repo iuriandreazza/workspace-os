@@ -63,8 +63,8 @@ passing.
 | `kernel/src/board.rs` | Reads memory and UART from the device tree; QEMU `virt` fallback location of the blob |
 | `devicetree/` | Minimal, allocation-free device tree reader with host unit tests |
 | `kernel/src/drivers/` | Device drivers that live in the kernel for now |
-| `bootloader/` | UEFI application: loads the kernel from the EFI system partition and enters it with a `BootInfo` (built for `aarch64-unknown-uefi`) |
-| `bootinfo/` | The handoff structure, memory map conversion, ELF placement and identity map page tables, shared by bootloader and kernel, with host unit tests |
+| `bootloader/` | UEFI application: boot menu, loads the kernel from the EFI system partition and enters it with a `BootInfo`, and starts Linux or another system's EFI loader from the entries of `\WSOS.CFG` (built for `aarch64-unknown-uefi`) |
+| `bootinfo/` | The handoff structure, memory map conversion, ELF placement, identity map page tables, the boot menu logic, the entry file parser and the PE check, shared by bootloader and kernel, with host unit tests |
 | `docs/adr/` | Architecture decision records |
 
 ## Decisions

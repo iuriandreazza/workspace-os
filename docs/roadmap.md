@@ -3,7 +3,7 @@ title: "Roadmap"
 type: roadmap
 status: active
 created: 2026-11-15
-updated: 2026-11-16
+updated: 2026-11-19
 tags: [roadmap, planning, kernel, slm, drivers]
 ---
 
@@ -58,7 +58,7 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K2b-2 | Own UEFI bootloader, part 1b: a Rust UEFI application that loads the kernel from the EFI system partition, leaves boot services and jumps to it with the structure of ADR 0013, plus a bootable disk image. First, find out which tables (device tree, ACPI) each firmware publishes and whether VirtualBox's Arm serial port works (ADR 0013, "What is not yet known"). Edits `boot.s` and `board.rs`, which K3 also touches | The banner under QEMU with UEFI firmware, in the gate; the banner under VirtualBox on the ARM Mac, recorded by hand. Result: `bootloader/`, `bootinfo/`, `scripts/build-disk-image.sh`, `docs/booting-the-image.md` | done |
 | K2b-3 | What K2b-2 left open: the bootloader's missing-file and busy-load-address refusals, the kernel's rejection of an invalid boot info, `rsdp`, and a directed reading of the cache, TLB and break-before-make code against ARMv8-A. Finishes the review that stopped at round 5 of PR 15 | Boots that end in the bootloader's error messages; host tests of the handoff checks; every new test confirmed by mutation | done |
 | K2c | Own UEFI bootloader, part 2: the boot menu, with the normal entry and the recovery entry (ADR 0007) | Each menu entry reaches the kernel with a different boot mode, checked in the gate. Result: `bootinfo/src/menu.rs`, `bootloader/src/menu.rs`, the menu section of `docs/booting-the-image.md` | done |
-| K2d | Loading other kernels, mechanism only (ADR 0008): Linux through its EFI entry with a command line and an initial ramdisk, and other systems by starting their own EFI loader. Entries written by hand for now | A Linux kernel started by our bootloader under QEMU prints its first lines | blocked: K2c |
+| K2d | Loading other kernels, mechanism only (ADR 0008): Linux through its EFI entry with a command line and an initial ramdisk, and other systems by starting their own EFI loader. Entries written by hand for now | A Linux kernel started by our bootloader under QEMU prints its first lines. Result: `bootinfo/src/{config,pe,initrd}.rs`, `bootloader/src/other.rs`, ADR 0025 (proposed), `docs/k2d-other-kernels.md` | done |
 | K2e | Graphical boot menu: draw on the firmware framebuffer, with a background image, a font and a theme the installer can set. The text menu over the serial console stays, because the gate reads it | To be designed | later |
 | K3 | Physical frame allocator fed by the device tree memory map | Allocate, free and reuse frames at boot; exhausting memory is reported, not a hang | done |
 | K4 | MMU: kernel page tables, higher-half mapping, write-xor-execute | A write to kernel code and a jump into data each end in a reported fault | next |
@@ -89,7 +89,7 @@ them (ADR 0009). It builds on the bootloader items of track K.
 | Item | Session | Done when | Status |
 |---|---|---|---|
 | B1-1 | Research, documentation only: language model or purpose-trained classifier and its size; the inputs it can read from a disk and the typed decision it returns; how inference can run in the UEFI environment (memory, floating point, no operating system); licences of candidate models and runtimes (ADR 0005, ADR 0017). Touches no code, so it runs in parallel with track K | Every claim has a source that was actually read; what could not be verified is listed. Result: `docs/b1-boot-model-research.md` | done |
-| B1-2 | ADR from the research of B1-1, with inference time measured in the UEFI environment under QEMU | ADR accepted, with the measured estimate and the exact commands | blocked: K2c |
+| B1-2 | ADR from the research of B1-1, with inference time measured in the UEFI environment under QEMU | ADR accepted, with the measured estimate and the exact commands | next |
 | B2 | Corpus and training, offline: disk layouts and kernel images from several systems, the training run, and an evaluation harness on the host | Accuracy on a held-out part of the corpus, recorded in `docs/` | blocked: B1-2 |
 | B3 | Inference in the bootloader: the model decides, decisions are stored with a fingerprint of the disk, the last successful decisions are the fallback, and the loader checks the format before jumping | With the model: Linux and our kernel are found on a disk with no hand-written entries. Without the model: our kernel still boots. A deliberately wrong decision ends in an error on the menu | blocked: B2, K2d |
 | B4 | Integrity of the model's weights at boot | Replaced weights are refused | blocked: B3 |
