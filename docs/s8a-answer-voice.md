@@ -138,7 +138,7 @@ All of these run in `./scripts/check.sh`.
 | `a_hostile_reply_changes_no_decision_...`, `a_reply_that_is_a_plan_...`, `no_line_of_the_deterministic_screens_...` | seven hostile texts; no extra planner call, no extra action; every line marked; no control character |
 | `a_model_that_cannot_be_reached_or_fails_or_writes_nothing_...`, `a_reply_that_cannot_be_logged_...` | degradation |
 | profile file tests (absent, named and absent, each preset, unknown and free text and binary and huge, a directory) | defined behaviour and the message |
-| `model.rs`: no schema, no tools; a server that never answers ends at the timeout (bounded, it cannot hang the gate); nothing listening is an error | the adapter |
+| `model.rs`: no schema, no tools; a server that never answers, or drips bytes, ends at the timeout (bounded, it cannot hang the gate); nothing listening is an error | the adapter |
 | `tui` state and `serve` tests | order result, saying, reply; none changes nothing; leaving; no reply with no model; every wrapped line marked at widths 12, 24 and 40 |
 | `tests/reply_session.rs` | the real binary against a fake server: the output without the marked lines is byte for byte the `--no-reply` output; a 500 on the reply gives exactly that output; a reply that is a plan or a command is only text; the profile file picks the voice; a bad one says so |
 
@@ -166,6 +166,10 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 20. saying not abandoned on leaving: fails `leaving_abandons_a_wait_for_the_model_or_for_a_reply_but_never_a_running_step`
 21. reply sent before the result: fails `with_no_model_there_is_no_reply_even_if_a_speaker_is_given`, `without_a_reply_the_events_are_those_of_today_and_a_failed_one_only_ends_the_wait`
 22. host error text in the facts: fails `a_failure_of_the_host_and_a_refusal_are_told_without_the_host_text_and_with_the_reason`
+23. the line adapter wraps with the screen's width table: fails `a_wide_character_the_width_table_does_not_know_cannot_wrap_into_an_unmarked_line`
+24. cap before escaping: fails `escaping_cannot_grow_the_reply_past_its_cap`
+25. timeout per read, not for the whole answer: fails `a_server_that_drips_bytes_is_cut_at_the_total_timeout`
+26. profile file read to its end: the test on `/dev/zero` aborts the test run (out of memory)
 
 
 Two mutations the task names cannot be written: "reply before the confirm or
