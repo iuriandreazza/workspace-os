@@ -161,7 +161,8 @@ Things that matter, each found by running it:
   part of RAM. With 1024 MiB that reservation covers `0x40200000` and the
   bootloader stops with the firmware's memory map printed and "the kernel's load
   address is not free RAM". 2048 MiB and 4096 MiB leave it free. This lasts until
-  the kernel is relocatable (K4).
+  the kernel can be loaded elsewhere: the higher half of K4 (ADR 0019) separates
+  the virtual address from the physical one but keeps the physical one fixed.
 - **ACPI off** gives a device tree. With it on, VirtualBox's firmware publishes
   only an ACPI table.
 - **The serial port is a PL011 at `0xffdde000`**, named by the device tree. The

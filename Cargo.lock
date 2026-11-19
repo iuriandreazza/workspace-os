@@ -309,8 +309,13 @@ version = "0.1.0"
 dependencies = [
  "bootinfo",
  "devicetree",
+ "kernelvm",
  "physmem",
 ]
+
+[[package]]
+name = "kernelvm"
+version = "0.1.0"
 
 [[package]]
 name = "libc"

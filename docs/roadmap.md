@@ -61,8 +61,8 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K2d | Loading other kernels, mechanism only (ADR 0008): Linux through its EFI entry with a command line and an initial ramdisk, and other systems by starting their own EFI loader. Entries written by hand for now | A Linux kernel started by our bootloader under QEMU prints its first lines | blocked: K2c |
 | K2e | Graphical boot menu: draw on the firmware framebuffer, with a background image, a font and a theme the installer can set. The text menu over the serial console stays, because the gate reads it | To be designed | later |
 | K3 | Physical frame allocator fed by the device tree memory map | Allocate, free and reuse frames at boot; exhausting memory is reported, not a hang | done |
-| K4 | MMU: kernel page tables, higher-half mapping, write-xor-execute | A write to kernel code and a jump into data each end in a reported fault | next |
-| K5 | Kernel heap allocator | Boot-time allocation stress test | blocked: K4 |
+| K4 | MMU: kernel page tables, higher-half mapping, write-xor-execute | A write to kernel code and a jump into data each end in a reported fault. Result: `kernelvm/`, `kernel/src/arch/aarch64/{boot.s,link.ld,mmu.rs}`, `docs/adr/0019-kernel-address-space.md` | done |
+| K5 | Kernel heap allocator | Boot-time allocation stress test | next |
 | K6 | Interrupts: interrupt controller and generic timer | A boot that counts timer ticks | blocked: K5 |
 | K7 | Kernel threads, context switch, round-robin scheduler. Mechanism and policy kept apart (ADR 0002) | Two threads interleave output in a checked order | blocked: K6 |
 | K8 | Userspace: EL0, one address space per process, system call entry, first user program | A user program prints through a system call; an illegal access kills only that program | blocked: K7 |

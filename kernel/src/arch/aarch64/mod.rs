@@ -1,10 +1,26 @@
 use core::arch::{asm, global_asm};
 use core::ops::Range;
 
-global_asm!(include_str!("boot.s"));
+// The constants are the ones `kernelvm` builds descriptors and register values
+// from, so that the boot code and the Rust that replaces its tables agree.
+global_asm!(
+    include_str!("boot.s"),
+    DIRECT_ENTRY_MAIR = const kernelvm::DIRECT_ENTRY_MAIR,
+    NORMAL_PAGE_BITS = const kernelvm::NORMAL_PAGE_BITS,
+    NORMAL_BLOCK_BITS = const kernelvm::NORMAL_BLOCK_BITS,
+    DEVICE_BLOCK_BITS = const kernelvm::DEVICE_BLOCK_BITS,
+    TABLE_BITS = const kernelvm::TABLE_BITS,
+    READ_ONLY = const kernelvm::READ_ONLY,
+    PXN = const kernelvm::PRIVILEGED_EXECUTE_NEVER,
+    TCR_BOTH_HALVES = const kernelvm::TCR_BOTH_HALVES,
+    TCR_UPPER_MASK = const kernelvm::TCR_UPPER_HALF_MASK,
+    TCR_UPPER_HALF = const kernelvm::TCR_UPPER_HALF,
+    WXN = const kernelvm::SCTLR_WXN,
+);
 global_asm!(include_str!("exceptions.s"));
 
 mod exceptions;
+pub mod mmu;
 
 // Addresses the linker script defines; only their addresses mean anything.
 unsafe extern "C" {
@@ -19,14 +35,20 @@ macro_rules! address_of {
     };
 }
 
+/// The physical address of a symbol: the linker gives every symbol its
+/// virtual address, the physical one is a fixed offset below.
+fn physical(address: usize) -> usize {
+    kernelvm::physical_of(address as u64) as usize
+}
+
 /// Physical addresses of the loaded kernel: code, data and `.bss`.
 pub fn kernel_image() -> Range<usize> {
-    address_of!(__image_start)..address_of!(__stack_bottom)
+    physical(address_of!(__image_start))..physical(address_of!(__stack_bottom))
 }
 
 /// Physical addresses of the boot stack, which sits right after the image.
 pub fn boot_stack() -> Range<usize> {
-    address_of!(__stack_bottom)..address_of!(__stack_top)
+    physical(address_of!(__stack_bottom))..physical(address_of!(__stack_top))
 }
 
 #[cfg(feature = "selftest-compiler-trap")]

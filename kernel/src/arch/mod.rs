@@ -1,5 +1,6 @@
 mod aarch64;
 
+pub use aarch64::mmu;
 #[cfg(feature = "selftest-compiler-trap")]
 pub use aarch64::raise_compiler_trap;
 #[cfg(feature = "selftest-unhandled-class")]

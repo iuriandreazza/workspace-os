@@ -6,8 +6,8 @@
 // handled yet and ends in a kernel panic that names the entry.
 //
 // Known limit: the handled path trusts SP. A fault with a corrupt stack
-// pointer faults again while saving the context. Guard pages come with the
-// MMU (K4).
+// pointer faults again while saving the context. The guard page below the stack
+// (ADR 0019) turns an overflow into that fault, not into a report.
 
 // Layout of `TrapFrame` in exceptions.rs, checked there with const asserts.
 .equ FRAME_SIZE, 288

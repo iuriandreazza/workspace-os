@@ -125,6 +125,11 @@ pub extern "C" fn kernel_main(
     memory::report(&frames, &board, &mut console);
     memory::selftest(&mut frames, &board, &mut console);
 
+    if let Err(error) = arch::mmu::init(&mut frames, &board) {
+        panic!("mmu: {error}");
+    }
+    arch::mmu::verify(&mut console);
+
     let entry = match board.entry {
         board::Entry::Direct => "direct load by the QEMU loader",
         board::Entry::Bootloader { .. } => "UEFI bootloader, boot info",
@@ -143,6 +148,12 @@ pub extern "C" fn kernel_main(
     arch::run_selftest();
     klog!(Ok, console, "resumed after breakpoint");
 
+    #[cfg(feature = "selftest-write-text")]
+    arch::mmu::write_to_text();
+    #[cfg(feature = "selftest-execute-data")]
+    arch::mmu::execute_data();
+    #[cfg(feature = "selftest-execute-rodata")]
+    arch::mmu::execute_rodata();
     #[cfg(feature = "selftest-unhandled-class")]
     arch::raise_unhandled_class();
     #[cfg(feature = "selftest-compiler-trap")]
