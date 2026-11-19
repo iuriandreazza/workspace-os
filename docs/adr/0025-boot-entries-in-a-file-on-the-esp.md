@@ -30,7 +30,7 @@ the EFI system partition.
   our own kernel.
 - At most seven entries from the file, so that every entry has a digit key
   (the built-in two take 1 and 2).
-- Format: one `key value` per line, `#` starts a comment; an `entry <label>`
+- Format: one `key value` per line; a line that starts with `#` is a comment; an `entry <label>`
   line opens an entry, and the keys after it belong to it.
 
 ```

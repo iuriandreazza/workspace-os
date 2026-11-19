@@ -174,5 +174,13 @@ number of pages, which is why it is one.
   the supported way is the `initrd` key.
 - The gate's Linux boots end in a kernel panic for lack of a root filesystem,
   by design; what is checked is the start.
+- Not in the gate: a refusal for an empty file, a chainloaded loader that
+  returns an error status (same code path as the success the gate runs), and
+  the contents of the initrd (the kernel unpacks it, which checks its headers;
+  only its size is read back).
+- If the firmware refused to uninstall the initrd protocol after Linux's stub
+  returned, a second Linux entry could find the stale handle. The stub reads
+  the protocol with `HandleProtocol`, which does not block an uninstall, and
+  EDK2 uninstalls it here; no firmware that refuses was seen.
 - A Linux boot under emulation on the CI runner is slower than on Apple
   silicon; the job's timeout was raised for it.

@@ -26,6 +26,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends qemu-system-arm qemu-efi-aarch64
 
+      # The Linux kernel the boot test starts (scripts/fetch-test-kernel.sh checks
+      # it against its pinned SHA-256 whether it comes from here or the mirror).
+      - name: Cache the test kernel
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/workspace-os
+          key: test-kernel-${{ hashFiles('scripts/fetch-test-kernel.sh') }}
+
       # Without arguments rustup installs what rust-toolchain.toml pins, and
       # fails the step if it cannot.
       - name: Install Rust toolchain

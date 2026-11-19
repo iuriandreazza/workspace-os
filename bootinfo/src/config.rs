@@ -55,6 +55,10 @@ pub fn validate_path(path: &str) -> Result<(), PathError> {
         match part {
             "" => return Err(PathError::EmptyComponent),
             "." | ".." => return Err(PathError::DotComponent),
+            // FAT drivers drop or keep these differently.
+            _ if part.starts_with(' ') || part.ends_with(' ') => {
+                return Err(PathError::BadCharacter(' '));
+            }
             _ => {}
         }
     }
@@ -463,6 +467,8 @@ mod tests {
         assert_eq!(validate_path(""), Err(PathError::NotAbsolute));
         assert_eq!(validate_path("\\"), Err(PathError::EmptyComponent));
         assert_eq!(validate_path("\\a*"), Err(PathError::BadCharacter('*')));
+        assert_eq!(validate_path("\\A \\B"), Err(PathError::BadCharacter(' ')));
+        assert_eq!(validate_path("\\ A"), Err(PathError::BadCharacter(' ')));
         assert_eq!(validate_path("\\a\tb"), Err(PathError::BadCharacter('\t')));
     }
 }

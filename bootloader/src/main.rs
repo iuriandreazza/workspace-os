@@ -57,6 +57,8 @@ enum Failure {
     KernelMissing,
     /// A step on the kernel file failed: what was being done, and why.
     KernelFile(&'static str, Status),
+    /// Something else about the kernel file, in a few words.
+    KernelNote(&'static str),
     Elf(elf::ElfError),
     Map(bootinfo::BuildError),
     Table(PageError),
@@ -80,6 +82,7 @@ impl core::fmt::Display for Failure {
             Self::KernelMissing => {
                 write!(f, "{KERNEL_PATH} is not on the EFI system partition")
             }
+            Self::KernelNote(text) => write!(f, "{KERNEL_PATH}: {text}"),
             Self::KernelFile(action, status) => {
                 write!(f, "cannot {action} {KERNEL_PATH}: {status:?}")
             }
@@ -117,6 +120,8 @@ enum FileError {
     /// A step on the file failed: what was being done, and why.
     Step(&'static str, Status),
     Message(&'static str),
+    /// The file is bigger than the caller allows; nothing was read.
+    TooBig,
     Firmware(uefi::Error),
 }
 
@@ -128,7 +133,7 @@ impl From<uefi::Error> for FileError {
 
 /// Reads a whole file of the partition the bootloader started from into
 /// memory of the type the kernel receives. The buffer is page aligned.
-fn read_file(path: &uefi::CStr16) -> Result<&'static mut [u8], FileError> {
+fn read_file(path: &uefi::CStr16, limit: usize) -> Result<&'static mut [u8], FileError> {
     let image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle())?;
     let device = image.device().ok_or(FileError::Message(
         "the bootloader was not started from a device",
@@ -154,6 +159,9 @@ fn read_file(path: &uefi::CStr16) -> Result<&'static mut [u8], FileError> {
         .get_info::<FileInfo>(&mut info_buffer.0)
         .map_err(|e| FileError::Step("read the size of", e.status()))?
         .file_size() as usize;
+    if size > limit {
+        return Err(FileError::TooBig);
+    }
     let buffer = allocate_pages(pages_for(size.max(1)))?;
     match file.read(&mut buffer[..size]) {
         Ok(read) if read == size => Ok(&mut buffer[..size]),
@@ -179,10 +187,11 @@ fn release(bytes: &mut [u8]) {
 }
 
 fn read_kernel_file() -> Outcome<&'static mut [u8]> {
-    read_file(KERNEL_PATH).map_err(|error| match error {
+    read_file(KERNEL_PATH, usize::MAX).map_err(|error| match error {
         FileError::Missing => Failure::KernelMissing,
         FileError::Step(action, status) => Failure::KernelFile(action, status),
-        FileError::Message(text) => Failure::Message(text),
+        FileError::Message(text) => Failure::KernelNote(text),
+        FileError::TooBig => Failure::Message("the kernel file is too big"),
         FileError::Firmware(error) => Failure::Firmware(error),
     })
 }
@@ -191,16 +200,15 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
 /// No file is no entries; a file that cannot be read is said, and is no
 /// entries either, so that it can never keep our own kernel from starting.
 fn read_config() -> Option<&'static str> {
-    let bytes = match read_file(CONFIG_PATH) {
-        Ok(bytes) if bytes.len() <= MAX_CONFIG_BYTES => bytes,
-        Ok(bytes) => {
+    let bytes = match read_file(CONFIG_PATH, MAX_CONFIG_BYTES) {
+        Ok(bytes) => bytes,
+        Err(FileError::Missing) => return None,
+        Err(FileError::TooBig) => {
             ui::error(format_args!(
                 "{CONFIG_PATH} is over {MAX_CONFIG_BYTES} bytes: ignored"
             ));
-            release(bytes);
             return None;
         }
-        Err(FileError::Missing) => return None,
         Err(FileError::Step(step, status)) => {
             ui::error(format_args!("cannot {step} {CONFIG_PATH}: {status:?}"));
             return None;

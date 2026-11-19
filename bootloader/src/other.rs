@@ -13,7 +13,7 @@ use bootinfo::config::MAX_COMMAND_LINE;
 use bootinfo::initrd::{self, Reply};
 use bootinfo::menu::{Action, Linux};
 use bootinfo::pe::{self, PeError};
-use uefi::boot::{self, LoadImageSource};
+use uefi::boot::{self, LoadImageSource, OpenProtocolAttributes, OpenProtocolParams};
 use uefi::prelude::*;
 use uefi::proto::device_path::build::{self, DevicePathBuilder};
 use uefi::proto::device_path::{DevicePath, DeviceType};
@@ -125,7 +125,7 @@ fn read_image<'a>(what: &'static str, path: &'a str) -> Result<&'static mut [u8]
 fn read_file_at<'a>(what: &'static str, path: &'a str) -> Result<&'static mut [u8], Refusal<'a>> {
     let mut units = [0u16; PATH_UNITS];
     let name = ucs2(path, &mut units)?;
-    let bytes = read_file(name).map_err(|error| match error {
+    let bytes = read_file(name, usize::MAX).map_err(|error| match error {
         FileError::Missing => Refusal::Missing { what, path },
         FileError::Step(step, status) => Refusal::File {
             what,
@@ -134,6 +134,11 @@ fn read_file_at<'a>(what: &'static str, path: &'a str) -> Result<&'static mut [u
             status,
         },
         FileError::Message(why) => Refusal::Unreadable { what, path, why },
+        FileError::TooBig => Refusal::Unreadable {
+            what,
+            path,
+            why: "too big",
+        },
         FileError::Firmware(error) => Refusal::File {
             what,
             path,
@@ -192,8 +197,19 @@ fn partition_file_path<'b>(
         step: "find the partition the bootloader started from",
         status: Status::NOT_FOUND,
     })?;
-    let device_path = boot::open_protocol_exclusive::<DevicePath>(device)
-        .map_err(firmware("read the device path of the partition"))?;
+    // SAFETY: `GetProtocol` only reads the pointer, and it is used before this
+    // function returns. Not exclusive: a driver may hold the path open.
+    let device_path = unsafe {
+        boot::open_protocol::<DevicePath>(
+            OpenProtocolParams {
+                handle: device,
+                agent: boot::image_handle(),
+                controller: None,
+            },
+            OpenProtocolAttributes::GetProtocol,
+        )
+    }
+    .map_err(firmware("read the device path of the partition"))?;
     let too_big = |_| Refusal::Firmware {
         step: "build a device path",
         status: Status::BUFFER_TOO_SMALL,
@@ -375,7 +391,10 @@ fn run_image<'a>(
     let mut options = [0u16; MAX_COMMAND_LINE + 1];
     if let Some(command_line) = command_line.filter(|text| !text.is_empty()) {
         let mut length = 0;
-        for (slot, character) in options.iter_mut().zip(command_line.chars()) {
+        for (slot, character) in options
+            .iter_mut()
+            .zip(command_line.chars().take(MAX_COMMAND_LINE))
+        {
             // `bootinfo::config` allows printable ASCII only.
             *slot = u16::from(u8::try_from(character).unwrap_or(b'?'));
             length += 1;
@@ -421,6 +440,6 @@ fn run_image<'a>(
         Err(error) => error.status(),
     };
     drop(installed);
-    let _ = boot::unload_image(child);
+    // No `unload_image`: the firmware unloads an application that returns.
     Ok(status)
 }

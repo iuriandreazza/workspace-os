@@ -852,7 +852,9 @@ expect_plain_absent() {
 # start_other NAME IMAGE: boots IMAGE on the console that takes keys, and waits
 # for the menu to be drawn with its countdown.
 start_other() {
-    BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+    # Linux is decompressed and booted under emulation, on a runner that may be
+    # slower than a laptop: the wait is longer than for our own kernel.
+    BOOT_TIMEOUT_SECONDS=$((UEFI_BOOT_TIMEOUT_SECONDS * 2))
     start_qemu "$1" --keys -machine virt,acpi=off -m 512M -bios "$uefi_firmware" \
         -drive "file=$2,format=raw,if=virtio"
     wait_for_line "$MENU_READY"

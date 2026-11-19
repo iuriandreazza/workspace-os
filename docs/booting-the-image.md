@@ -81,7 +81,7 @@ the menu holds Normal and Recovery only; with it the entries follow them,
 numbered from 3 (seven at most, so each has a digit).
 
 ```
-# comments start with a hash
+# a line that starts with a hash is a comment
 entry Alpine Linux
 linux \VMLINUZ
 cmdline console=ttyAMA0 earlycon
