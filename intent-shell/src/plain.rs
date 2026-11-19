@@ -204,7 +204,6 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
         // After the result is on screen: the reply is only ever an addition.
         if let Some(reply) = voice
             .as_ref()
-            .filter(|_| entry == Entry::Request)
             .and_then(|voice| reply::reply_to(voice, request, &outcome, &mut setup.log))
         {
             let width = if io::stdout().is_terminal() {
