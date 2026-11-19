@@ -27,6 +27,7 @@ use ratatui::crossterm::execute;
 use crate::broker::Authority;
 use crate::model::NoModel;
 use crate::ports::{ChoiceLine, Confirm, DecisionLog, Host, Planner, Retry, User};
+use crate::reply::{self, Voice};
 use crate::session::{Entry, SessionState, Shell};
 use crate::setup::Setup;
 use state::{Effect, Event, Mode, Reply, State};
@@ -111,6 +112,7 @@ fn serve(
     log: &mut dyn DecisionLog,
     wires: Wires,
     header: &dyn Fn(&str) -> String,
+    voice: Option<Voice>,
 ) {
     let Wires {
         requests,
@@ -141,12 +143,20 @@ fn serve(
             confirm: &mut confirm,
             log,
         }
-        .handle_as(entry, &request)
-        .render();
+        .handle_as(entry, &request);
+        let rendered = outcome.render();
         // A `cd` changes where the session is, which the header says.
         let _ = events.send(Event::Header(header(&session.cwd_text(host))));
-        if events.send(Event::Outcome(outcome)).is_err() {
+        if events.send(Event::Outcome(rendered)).is_err() {
             return;
+        }
+        // The result is already on screen; the reply is only ever an addition.
+        if let Some(voice) = voice.as_ref().filter(|_| entry == Entry::Request) {
+            let _ = events.send(Event::Busy("saying"));
+            let said = reply::reply_to(voice, &request, &outcome, log);
+            if events.send(Event::Said(said)).is_err() {
+                return;
+            }
         }
     }
 }
@@ -158,6 +168,7 @@ fn worker(
     replies: Receiver<Reply>,
 ) {
     let header = setup.header_fn();
+    let speaker = setup.speaker();
     let Setup {
         authority,
         host,
@@ -177,6 +188,10 @@ fn worker(
         &mut log,
         wires,
         &header,
+        speaker.as_ref().map(|(speaker, profile)| Voice {
+            speaker,
+            profile: *profile,
+        }),
     );
 }
 
@@ -338,7 +353,7 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
     let waiting_for_model = matches!(
         state.mode,
         Mode::Busy {
-            label: "asking the model",
+            label: "asking the model" | "saying",
             ..
         }
     );
@@ -482,6 +497,7 @@ mod tests {
                 replies,
             },
             &|cwd| format!("header in {cwd}"),
+            None,
         );
         let seen: Vec<Event> = events.try_iter().collect();
         assert!(seen.iter().any(|e| matches!(e, Event::AskPlan { .. })));
@@ -523,6 +539,7 @@ mod tests {
                 replies,
             },
             &|cwd| format!("header in {cwd}"),
+            None,
         );
         let seen: Vec<Event> = events.try_iter().collect();
         assert!(
@@ -559,5 +576,79 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn serve_with(
+        speaker: Option<&dyn crate::ports::Speaker>,
+        entry_request: &str,
+        model: bool,
+    ) -> (Vec<Event>, crate::testing::MemoryLog) {
+        use crate::pipeline_tests::{LARGEST, files};
+        use crate::testing::{MemoryLog, ScriptedPlanner, user};
+
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        let (reply_tx, replies) = channel();
+        request_tx.send(entry_request.to_owned()).unwrap();
+        drop((request_tx, reply_tx));
+        let mut log = MemoryLog::default();
+        let planner = ScriptedPlanner::new(&[LARGEST]);
+        serve(
+            &Authority::full(user(false)),
+            &files(),
+            model.then_some(&planner as &dyn Planner),
+            &mut log,
+            Wires {
+                requests,
+                events: events_tx,
+                replies,
+            },
+            &|cwd| format!("header in {cwd}"),
+            speaker.map(|speaker| Voice {
+                speaker,
+                profile: crate::reply::Profile::WarmDidactic,
+            }),
+        );
+        (events.try_iter().collect(), log)
+    }
+
+    #[test]
+    fn the_result_is_sent_first_and_the_reply_after_it_with_saying_in_between() {
+        let speaker = crate::testing::ScriptedSpeaker::says("Found them.");
+        let (seen, log) = serve_with(Some(&speaker), "largest", true);
+        let at = |wanted: &dyn Fn(&Event) -> bool| seen.iter().position(wanted).unwrap();
+        let outcome = at(&|e| matches!(e, Event::Outcome(_)));
+        let saying = at(&|e| matches!(e, Event::Busy("saying")));
+        let said = at(&|e| matches!(e, Event::Said(Some(text)) if text == "Found them."));
+        assert!(outcome < saying && saying < said, "{seen:?}");
+        assert_eq!(seen.len() - 1, said, "the reply is the last thing said");
+        assert_eq!(log.events.last().unwrap()["event"], "reply");
+    }
+
+    #[test]
+    fn without_a_reply_the_events_are_those_of_today_and_a_failed_one_only_ends_the_wait() {
+        let (without, _) = serve_with(None, "largest", true);
+        assert!(without.iter().all(|e| !matches!(e, Event::Said(_))));
+        let failing = crate::testing::ScriptedSpeaker {
+            answer: Err("timed out".to_owned()),
+            asked: Default::default(),
+        };
+        let (failed, log) = serve_with(Some(&failing), "largest", true);
+        let kept: Vec<_> = failed
+            .iter()
+            .filter(|e| !matches!(e, Event::Busy("saying") | Event::Said(None)))
+            .collect();
+        assert_eq!(kept, without.iter().collect::<Vec<_>>());
+        assert!(failed.iter().any(|e| matches!(e, Event::Said(None))));
+        assert_eq!(log.events.last().unwrap()["event"], "reply_failed");
+    }
+
+    #[test]
+    fn with_no_model_there_is_no_reply_even_if_a_speaker_is_given() {
+        let speaker = crate::testing::ScriptedSpeaker::says("never");
+        let (seen, log) = serve_with(Some(&speaker), "fs list --in downloads", false);
+        assert!(seen.iter().all(|e| !matches!(e, Event::Said(_))));
+        assert!(speaker.asked.borrow().is_empty());
+        assert!(log.events.iter().all(|e| e["event"] != "reply"));
     }
 }

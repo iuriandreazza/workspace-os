@@ -5,14 +5,14 @@
 //! there is no TLS, and no dependency is worth a few dozen lines.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use crate::ports::{Planner, Retry};
+use crate::ports::{Planner, Retry, Speaker};
 
 const SCHEMA: &str = include_str!("../../docs/schemas/action-plan.schema.json");
 
@@ -34,6 +34,12 @@ A from_step reference only works after an fs.list or fs.find_largest step.
 Do not ask a question when the request is clear."#;
 
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(600);
+/// A reply is a few sentences and never worth a long wait (ADR 0021).
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Time to reach a server on this machine: it answers at once or not at all.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// About 400 characters of text, with room for the tokenizer.
+const REPLY_MAX_TOKENS: u32 = 200;
 
 pub struct LlamaPlanner {
     /// `host:port` of `llama-server`.
@@ -106,21 +112,65 @@ impl Planner for NoModel {
 impl Planner for LlamaPlanner {
     fn plan(&self, request: &str, cwd: &str, retry: Option<&Retry>) -> Result<String, String> {
         let body = self.request_body(request, cwd, retry);
-        let response = post(&self.address, "/v1/chat/completions", &body)?;
-        let value: Value = serde_json::from_str(&response)
-            .map_err(|e| format!("server reply is not JSON: {e}"))?;
-        value["choices"][0]["message"]["content"]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| format!("server reply has no message: {response}"))
+        completion(&self.address, &body, GENERATION_TIMEOUT)
     }
 }
 
-fn post(address: &str, path: &str, body: &str) -> Result<String, String> {
-    let mut stream =
-        TcpStream::connect(address).map_err(|e| format!("cannot connect to {address}: {e}"))?;
+/// The writer of replies: the same server as the planner, asked for free text
+/// with no schema, so it cannot produce a plan (ADR 0021).
+pub struct LlamaSpeaker {
+    /// `host:port` of `llama-server`.
+    pub address: String,
+    pub timeout: Duration,
+}
+
+impl LlamaSpeaker {
+    pub fn new(address: &str) -> Self {
+        Self {
+            address: address.to_owned(),
+            timeout: REPLY_TIMEOUT,
+        }
+    }
+
+    fn request_body(system: &str, facts: &str) -> String {
+        json!({
+            "temperature": 0.6,
+            "max_tokens": REPLY_MAX_TOKENS,
+            "cache_prompt": true,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": facts},
+            ],
+        })
+        .to_string()
+    }
+}
+
+impl Speaker for LlamaSpeaker {
+    fn reply(&self, system: &str, facts: &str) -> Result<String, String> {
+        completion(
+            &self.address,
+            &Self::request_body(system, facts),
+            self.timeout,
+        )
+    }
+}
+
+/// The text of the first message the server answers with.
+fn completion(address: &str, body: &str, timeout: Duration) -> Result<String, String> {
+    let response = post(address, "/v1/chat/completions", body, timeout)?;
+    let value: Value =
+        serde_json::from_str(&response).map_err(|e| format!("server reply is not JSON: {e}"))?;
+    value["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("server reply has no message: {response}"))
+}
+
+fn post(address: &str, path: &str, body: &str, timeout: Duration) -> Result<String, String> {
+    let mut stream = connect(address)?;
     stream
-        .set_read_timeout(Some(GENERATION_TIMEOUT))
+        .set_read_timeout(Some(timeout))
         .map_err(|e| e.to_string())?;
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -133,6 +183,20 @@ fn post(address: &str, path: &str, body: &str) -> Result<String, String> {
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).map_err(|e| e.to_string())?;
     parse_response(&raw)
+}
+
+/// Connects with a limit, so an address nothing answers on cannot hold the shell.
+fn connect(address: &str) -> Result<TcpStream, String> {
+    let cannot = |e: &dyn std::fmt::Display| format!("cannot connect to {address}: {e}");
+    let addresses = address.to_socket_addrs().map_err(|e| cannot(&e))?;
+    let mut last = "no address".to_owned();
+    for candidate in addresses {
+        match TcpStream::connect_timeout(&candidate, CONNECT_TIMEOUT) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(cannot(&last))
 }
 
 fn parse_response(raw: &[u8]) -> Result<String, String> {
@@ -286,5 +350,50 @@ mod tests {
                 .unwrap()
                 .contains("not JSON")
         );
+    }
+
+    #[test]
+    fn the_reply_request_has_no_schema_and_no_tools_and_a_small_limit() {
+        let body: Value =
+            serde_json::from_str(&LlamaSpeaker::request_body("the system", "the facts")).unwrap();
+        assert!(body.get("response_format").is_none());
+        assert!(body.get("tools").is_none() && body.get("grammar").is_none());
+        assert_eq!(body["max_tokens"], REPLY_MAX_TOKENS);
+        assert_eq!(body["messages"][0]["content"], "the system");
+        assert_eq!(body["messages"][1]["content"], "the facts");
+    }
+
+    #[test]
+    fn a_server_that_never_answers_ends_the_reply_at_the_timeout_not_never() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let silent = std::thread::spawn(move || {
+            // Accepts and says nothing until the test is over.
+            let held = listener.accept();
+            std::thread::sleep(Duration::from_secs(30));
+            drop(held);
+        });
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let speaker = LlamaSpeaker {
+                address,
+                timeout: Duration::from_millis(300),
+            };
+            let _ = done.send(speaker.reply("s", "f"));
+        });
+        let answer = result
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the reply gave up at its timeout");
+        assert!(answer.is_err(), "{answer:?}");
+        drop(silent);
+    }
+
+    #[test]
+    fn nothing_listening_is_an_error_at_once() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let error = LlamaSpeaker::new(&address).reply("s", "f").unwrap_err();
+        assert!(error.contains("cannot connect"), "{error}");
     }
 }

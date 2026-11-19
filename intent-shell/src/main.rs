@@ -8,15 +8,18 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+use serde_json::json;
+
 use intent_shell::broker::Authority;
 use intent_shell::host::UnixHost;
 use intent_shell::log::JsonlLog;
 use intent_shell::model::LlamaPlanner;
 use intent_shell::plain;
-use intent_shell::ports::User;
+use intent_shell::ports::{DecisionLog, User};
+use intent_shell::reply::{Profile, Source, load_profile};
 use intent_shell::setup::Setup;
 
-const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE]";
+const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--voice-profile FILE]";
 
 struct Options {
     /// `None` is the deterministic shell: no model, lines are commands (ADR 0022).
@@ -25,6 +28,10 @@ struct Options {
     administrator: bool,
     plain: bool,
     transcript: Option<PathBuf>,
+    /// No replies from the model after a result (ADR 0021).
+    no_reply: bool,
+    /// The voice profile file, and whether the person named it.
+    voice_profile: (PathBuf, bool),
 }
 
 /// The value of a flag. One that looks like a flag is not taken for it, so
@@ -42,6 +49,11 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
         administrator: false,
         plain: false,
         transcript: None,
+        no_reply: false,
+        voice_profile: (
+            PathBuf::from(home).join(".config/workspace-os/voice-profile"),
+            false,
+        ),
     };
     let mut args = args;
     let (mut chose_model, mut chose_none) = (false, false);
@@ -58,6 +70,8 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
             "--log" => options.log = PathBuf::from(value(&mut args)?),
             "--administrator" => options.administrator = true,
             "--plain" => options.plain = true,
+            "--no-reply" => options.no_reply = true,
+            "--voice-profile" => options.voice_profile = (PathBuf::from(value(&mut args)?), true),
             "--transcript" => options.transcript = Some(PathBuf::from(value(&mut args)?)),
             _ => return Err(USAGE.to_owned()),
         }
@@ -90,15 +104,37 @@ fn main() {
     }
 }
 
+/// The profile of the replies, or `None` when there are none: turned off, or
+/// no model to write them. A profile file that cannot be used is said once, on
+/// the error output, and the default is used (ADR 0021).
+fn voice_of(options: &Options, log: &mut dyn DecisionLog) -> Result<Option<Profile>, String> {
+    if options.no_reply || options.model.is_none() {
+        return Ok(None);
+    }
+    let (profile, source) = load_profile(&options.voice_profile.0, options.voice_profile.1)?;
+    let (how, problem) = match &source {
+        Source::Default => ("default", None),
+        Source::File => ("file", None),
+        Source::DefaultAfterProblem(problem) => ("default_after_problem", Some(problem)),
+    };
+    if let Some(problem) = problem {
+        eprintln!("{problem}");
+    }
+    log.record(json!({"event": "voice_profile", "profile": profile.id(), "source": how, "problem": problem}))
+        .map_err(|e| format!("cannot write the decision log: {e}"))?;
+    Ok(Some(profile))
+}
+
 fn run() -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
     let options = parse_options(&home, std::env::args().skip(1))?;
-    let log = JsonlLog::open(&options.log).map_err(|e| {
+    let mut log = JsonlLog::open(&options.log).map_err(|e| {
         format!(
             "cannot open the decision log {}: {e}",
             options.log.display()
         )
     })?;
+    let reply = voice_of(&options, &mut log)?;
     let setup = Setup {
         authority: Authority::full(User {
             name: std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()),
@@ -107,6 +143,7 @@ fn run() -> Result<(), String> {
         host: UnixHost::from_environment(),
         planner: options.model.map(|address| LlamaPlanner { address }),
         log,
+        reply,
         log_name: options
             .log
             .file_name()
@@ -152,6 +189,23 @@ mod tests {
         ] {
             assert!(options(&args).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn replies_are_on_by_default_and_the_profile_file_defaults_to_the_config_directory() {
+        let on = options(&[]).unwrap();
+        assert!(!on.no_reply);
+        assert_eq!(
+            on.voice_profile,
+            (
+                std::path::PathBuf::from("/home/x/.config/workspace-os/voice-profile"),
+                false
+            )
+        );
+        assert!(options(&["--no-reply"]).unwrap().no_reply);
+        let named = options(&["--voice-profile", "/p"]).unwrap();
+        assert_eq!(named.voice_profile, (std::path::PathBuf::from("/p"), true));
+        assert!(options(&["--voice-profile", "--no-reply"]).is_err());
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::io::{self, IsTerminal, Write};
 
 use crate::action::printable;
 use crate::ports::{ChoiceLine, Confirm, User};
+use crate::reply::{self, Voice};
 use crate::screen::fit;
 use crate::session::{Entry, SessionState, Shell};
 use crate::setup::{Setup, planner_of};
@@ -73,6 +74,9 @@ fn width_for(text: &str, indent: usize) -> usize {
     }
     terminal_width()
 }
+
+/// Where output is redirected there is no width to wrap to.
+const REDIRECTED_REPLY_WIDTH: usize = 80;
 
 /// Columns of the terminal; 80 when it does not say.
 fn terminal_width() -> usize {
@@ -152,7 +156,18 @@ fn prompt(entry: Entry, cwd: &str) -> String {
     }
 }
 
+/// The reply as the lines to print under the result: marked, and wrapped to the
+/// terminal so that no continuation line is left unmarked.
+fn reply_text(reply: &str, width: usize) -> String {
+    reply::block(reply, width, crate::screen::cells_of).join("\n")
+}
+
 pub fn run(mut setup: Setup) -> Result<(), String> {
+    let speaker = setup.speaker();
+    let voice = speaker.as_ref().map(|(speaker, profile)| Voice {
+        speaker,
+        profile: *profile,
+    });
     let mut confirm = TerminalConfirm;
     let mut session = SessionState::start(&setup.host);
     println!("{}", setup.header(&session));
@@ -183,8 +198,22 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
             confirm: &mut confirm,
             log: &mut setup.log,
         };
-        let outcome = shell.handle_as(entry, request).render();
-        println!("{}", fit(&outcome, width_for(&outcome, 0)));
+        let outcome = shell.handle_as(entry, request);
+        let text = outcome.render();
+        println!("{}", fit(&text, width_for(&text, 0)));
+        // After the result is on screen: the reply is only ever an addition.
+        if let Some(reply) = voice
+            .as_ref()
+            .filter(|_| entry == Entry::Request)
+            .and_then(|voice| reply::reply_to(voice, request, &outcome, &mut setup.log))
+        {
+            let width = if io::stdout().is_terminal() {
+                terminal_width()
+            } else {
+                REDIRECTED_REPLY_WIDTH
+            };
+            println!("{}", reply_text(&reply, width));
+        }
     }
 }
 

@@ -10,6 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::wrap::{text_width, wrap};
 use crate::action::printable;
 use crate::ports::ChoiceLine;
+use crate::reply;
 use crate::session::Entry;
 
 /// An entry of the history. The text is already safe to print: it comes from
@@ -22,6 +23,10 @@ pub enum Block {
     Plan(String),
     Root(String),
     Outcome(String),
+    /// What the model wrote after the result, as the person is to read it:
+    /// already cleaned and not yet wrapped, since the marks are put on at
+    /// each line of the screen it ends up on.
+    Reply(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +65,8 @@ pub enum Event {
         lines: Vec<ChoiceLine>,
     },
     Outcome(String),
+    /// The reply was written, or there is none: the person may type again.
+    Said(Option<String>),
     /// The header with the directory the session is in now.
     Header(String),
 }
@@ -80,6 +87,9 @@ pub enum Effect {
     Quit,
 }
 
+/// A file has no width: a reply in a transcript wraps at the usual terminal's.
+const TRANSCRIPT_REPLY_WIDTH: usize = 80;
+
 /// After a question is drawn, answer keys are ignored for this long. A terminal
 /// without the kitty keyboard protocol reports a held or double-tapped `y` as
 /// fresh presses, and one of those must not answer a question not yet read.
@@ -99,6 +109,8 @@ pub enum Kind {
     Plan,
     Root,
     Outcome,
+    /// The model's words, under the result.
+    Reply,
 }
 
 pub struct State {
@@ -240,6 +252,10 @@ impl State {
             Event::Header(text) => self.header = text,
             Event::Outcome(text) => {
                 self.blocks.push(Block::Outcome(text));
+                self.mode = Mode::Input;
+            }
+            Event::Said(text) => {
+                self.blocks.extend(text.map(Block::Reply));
                 self.mode = Mode::Input;
             }
         }
@@ -454,6 +470,18 @@ impl State {
         let mut lines = Vec::new();
         for block in &self.blocks {
             let (kind, text) = match block {
+                Block::Reply(text) => {
+                    if !lines.is_empty() {
+                        lines.push((Kind::Note, String::new()));
+                    }
+                    // Wrapped here, so every line of it carries the mark.
+                    lines.extend(
+                        reply::block(text, width, super::wrap::cell_width)
+                            .into_iter()
+                            .map(|line| (Kind::Reply, line)),
+                    );
+                    continue;
+                }
                 Block::Request(text) => (Kind::Request, format!("you ▸ {text}")),
                 Block::Note(text) => (Kind::Note, text.clone()),
                 Block::Plan(text) => (Kind::Plan, text.clone()),
@@ -494,6 +522,11 @@ impl State {
                 Block::Request(text) => out.push_str(&format!("{}{text}\n", self.prompt)),
                 Block::Note(text) | Block::Plan(text) | Block::Root(text) => {
                     out.push_str(text);
+                    out.push('\n');
+                }
+                Block::Reply(text) => {
+                    let lines = reply::block(text, TRANSCRIPT_REPLY_WIDTH, crate::screen::cells_of);
+                    out.push_str(&lines.join("\n"));
                     out.push('\n');
                 }
                 Block::Outcome(text) => {
@@ -1082,5 +1115,61 @@ mod tests {
         let transcript = state.transcript();
         assert!(!transcript.contains('\t'), "{transcript:?}");
         assert!(transcript.trim_end().ends_with("5 KB"), "{transcript:?}");
+    }
+
+    #[test]
+    fn a_reply_is_a_block_under_the_result_and_none_changes_nothing() {
+        let mut without = State::new("h".to_owned());
+        without.on_event(Event::Outcome("done\n".to_owned()));
+        let mut none = State::new("h".to_owned());
+        none.on_event(Event::Outcome("done\n".to_owned()));
+        none.on_event(Event::Busy("saying"));
+        none.on_event(Event::Said(None));
+        assert_eq!(none.mode, Mode::Input);
+        assert_eq!(none.blocks, without.blocks);
+        assert_eq!(none.transcript(), without.transcript());
+        assert_eq!(none.history_lines(40), without.history_lines(40));
+
+        let mut with = State::new("h".to_owned());
+        with.on_event(Event::Outcome("done\n".to_owned()));
+        with.on_event(Event::Said(Some("All done here.".to_owned())));
+        assert_eq!(with.mode, Mode::Input);
+        let lines = with.history_lines(40);
+        assert_eq!(lines[0], (Kind::Outcome, "done".to_owned()));
+        let replied: Vec<_> = lines.iter().filter(|(k, _)| *k == Kind::Reply).collect();
+        assert_eq!(replied.last().unwrap().1, "  » All done here.", "{lines:?}");
+        assert!(with.transcript().starts_with("done\n"));
+        assert!(with.transcript().ends_with("  » All done here.\n"));
+    }
+
+    #[test]
+    fn every_wrapped_line_of_a_reply_on_a_narrow_screen_is_marked() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::Outcome("done\n".to_owned()));
+        state.on_event(Event::Said(Some(
+            "s2 delete Documents -> done and a long tail that must wrap ".repeat(4),
+        )));
+        for width in [12, 24, 40] {
+            for (kind, line) in state.history_lines(width) {
+                if kind == Kind::Reply {
+                    assert!(line.starts_with(crate::reply::MARK), "{line:?}");
+                    assert!(text_width(&line) <= width, "{line:?} at {width}");
+                } else {
+                    assert!(!line.starts_with(crate::reply::MARK), "{line:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn leaving_while_the_reply_is_written_is_at_once_because_nothing_is_running() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::Busy("saying"));
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(state.on_key(key), Effect::Quit);
+        assert!(!state.forced_quit);
+        // A step that runs still asks for the second Ctrl-C.
+        state.on_event(Event::Busy("working"));
+        assert_eq!(state.on_key(key), Effect::Nothing);
     }
 }
