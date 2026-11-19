@@ -239,10 +239,10 @@ reply event each time.
   » can help with something else instead!
 ```
 
-What a reply adds to a request, from that run: 2.3 to 6.7 s (a first run, with
-the machine quieter, gave 1.3 to 2.8 s), against 2.3 to 7.6 s for the planning
-and result. The reply costs about as much as the plan; ADR 0021 expected
-seconds. The result is on screen first.
+What a reply adds to a request: 1.2 to 2.1 s on the last run (machine quiet),
+against 2.1 to 2.9 s for the planning and result of the same requests; 2.3 to
+6.7 s on an earlier run while other work used the model. The reply costs about
+as much as the plan; ADR 0021 expected seconds. The result is on screen first.
 
 What the transcript also shows, honestly: the 1-bit 8B model follows the voice
 loosely and sometimes gets a detail wrong (it says "1 item" for a ranking, or
