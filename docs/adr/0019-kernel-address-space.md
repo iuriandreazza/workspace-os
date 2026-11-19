@@ -318,8 +318,12 @@ image at the physical address the ELF names. Lifting it is a separate item.
   before make for `TTBR0_EL1`, identical translation for `TTBR1_EL1`, clean by
   address, `tlbi` after each register write the walker depends on) are read
   against the architecture, not demonstrated. Only hardware, or an accelerator
-  that runs on it, validates them. On Apple silicon `-accel hvf -cpu host` can be
-  tried by hand for the bootloader path; it is not part of the gate.
+  that runs on it, validates them. Tried by hand on Apple silicon with
+  `-accel hvf -cpu host` (not part of the gate, CI is x86_64): the direct load
+  and the UEFI disk image both boot to "write xor execute holds" and the
+  breakpoint resume, at EL1. That is evidence from a real processor's TLB and
+  caches that these sequences do not fault, not proof they are sufficient; HVF
+  cannot start EL2 on that machine, so EL2 has none.
 - **The guard page weakens an overflow, it does not stop it.** An overflow
   faults at the guard page, but the handler of a synchronous exception saves its
   context (288 bytes) on the same stack pointer (`exceptions.s`), so it faults
