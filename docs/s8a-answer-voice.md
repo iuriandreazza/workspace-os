@@ -53,7 +53,7 @@ and the log. It takes no `Shell`, `Confirm`, `Host`, `Planner` or `Authority`,
 so nothing it reads or writes can reach the broker, a question or an action:
 that is true by its signature, not by a test of behaviour. Both interfaces call
 it after the result is on screen (`plain.rs`; `tui::serve`, which sends the
-outcome, then `Busy("saying")`, then `Said(reply)`). A reply never delays or
+outcome, then `OutcomeAwaitingReply` (the result and `saying…` at once), then `Said(reply)`). A reply never delays or
 alters the result; it only delays the next prompt.
 
 `ports::Speaker` is the port. `model::LlamaSpeaker` is its adapter: the same
