@@ -2,34 +2,78 @@
 //! host can test it (ADR 0007, ADR 0008).
 //!
 //! The menu does not know what an entry means: it holds a list and answers
-//! with the index of the one chosen. Today the list is [`BUILT_IN`]; a list
-//! made by the boot model (ADR 0009) or by the loaders of other kernels takes
-//! the same place without changing this module.
+//! with the index of the one chosen. The list is [`BUILT_IN`] plus the entries
+//! of the configuration file ([`crate::config`], ADR 0025); a list made by the
+//! boot model (ADR 0009) takes the same place without changing this module.
 
 use core::num::NonZeroU32;
 
 use crate::{MODE_NORMAL, MODE_RECOVERY};
 
+/// Linux through its EFI entry (ADR 0025): the image, the command line the
+/// kernel receives and, if there is one, the initial ramdisk. Paths are on the
+/// EFI system partition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Linux<'a> {
+    pub image: &'a str,
+    pub command_line: &'a str,
+    pub initrd: Option<&'a str>,
+}
+
+/// What choosing an entry starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action<'a> {
+    /// Our own kernel, with the `boot_mode` it receives (ADR 0013).
+    Kernel {
+        boot_mode: u32,
+    },
+    Linux(Linux<'a>),
+    /// The EFI loader of another system, started as it is.
+    Chainload {
+        path: &'a str,
+    },
+}
+
 /// One line of the menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry<'a> {
     pub label: &'a str,
-    /// The `boot_mode` the kernel receives when this entry is chosen
-    /// (ADR 0013).
-    pub boot_mode: u32,
+    pub action: Action<'a>,
+}
+
+impl<'a> Entry<'a> {
+    pub const fn kernel(label: &'a str, boot_mode: u32) -> Self {
+        Self {
+            label,
+            action: Action::Kernel { boot_mode },
+        }
+    }
 }
 
 /// The entries every boot offers: the normal start, then recovery (ADR 0007).
+/// They need nothing but the kernel file, so no other entry can hide them.
 pub const BUILT_IN: [Entry<'static>; 2] = [
-    Entry {
-        label: "Normal",
-        boot_mode: MODE_NORMAL,
-    },
-    Entry {
-        label: "Recovery",
-        boot_mode: MODE_RECOVERY,
-    },
+    Entry::kernel("Normal", MODE_NORMAL),
+    Entry::kernel("Recovery", MODE_RECOVERY),
 ];
+
+/// A digit key reaches one to nine entries.
+pub const MAX_ENTRIES: usize = 9;
+
+/// The built-in entries followed by `others`, into `out`; returns the count.
+/// Entries that do not fit a digit key are left out: `others` is capped by the
+/// parser, so this only matters to a caller that did not use it.
+pub fn with_built_in<'a>(others: &[Entry<'a>], out: &mut [Entry<'a>; MAX_ENTRIES]) -> usize {
+    let mut count = 0;
+    for entry in BUILT_IN.iter().chain(others) {
+        if count == MAX_ENTRIES {
+            break;
+        }
+        out[count] = *entry;
+        count += 1;
+    }
+    count
+}
 
 /// The entry started when nobody chooses.
 pub const DEFAULT_ENTRY: usize = 0;
@@ -187,10 +231,14 @@ mod tests {
 
     #[test]
     fn built_in_entries_reach_different_boot_modes() {
-        assert_eq!(BUILT_IN[DEFAULT_ENTRY].boot_mode, MODE_NORMAL);
-        assert_eq!(BUILT_IN[1].boot_mode, MODE_RECOVERY);
-        assert_eq!(boot_mode_name(BUILT_IN[0].boot_mode), "normal");
-        assert_eq!(boot_mode_name(BUILT_IN[1].boot_mode), "recovery");
+        let mode = |entry: Entry| match entry.action {
+            Action::Kernel { boot_mode } => boot_mode,
+            other => panic!("not a kernel entry: {other:?}"),
+        };
+        assert_eq!(mode(BUILT_IN[DEFAULT_ENTRY]), MODE_NORMAL);
+        assert_eq!(mode(BUILT_IN[1]), MODE_RECOVERY);
+        assert_eq!(boot_mode_name(mode(BUILT_IN[0])), "normal");
+        assert_eq!(boot_mode_name(mode(BUILT_IN[1])), "recovery");
         assert_eq!(boot_mode_name(99), "unknown");
     }
 
@@ -272,10 +320,7 @@ mod tests {
         assert_eq!(Key::from_scan_code(0x03), Key::Other);
         assert_eq!(Key::from_scan_code(0x17), Key::Other);
         // With three entries the direction shows.
-        let entries = [Entry {
-            label: "a",
-            boot_mode: 0,
-        }; 3];
+        let entries = [Entry::kernel("a", 0); 3];
         let mut menu = Menu::new(&entries, 1, None).unwrap();
         menu.press(Key::from_scan_code(0x02));
         assert_eq!(menu.selected(), 2);
@@ -298,20 +343,24 @@ mod tests {
     }
 
     #[test]
+    fn built_in_entries_come_first_and_the_rest_follows() {
+        let other = Entry {
+            label: "x",
+            action: Action::Chainload { path: "\\A" },
+        };
+        let mut out = [BUILT_IN[0]; MAX_ENTRIES];
+        assert_eq!(with_built_in(&[], &mut out), 2);
+        assert_eq!(with_built_in(&[other], &mut out), 3);
+        assert_eq!(out[..3], [BUILT_IN[0], BUILT_IN[1], other]);
+        assert_eq!(with_built_in(&[other; 20], &mut out), MAX_ENTRIES);
+    }
+
+    #[test]
     fn a_list_of_any_length_and_default_works() {
         let entries = [
-            Entry {
-                label: "a",
-                boot_mode: 0,
-            },
-            Entry {
-                label: "b",
-                boot_mode: 0,
-            },
-            Entry {
-                label: "c",
-                boot_mode: 1,
-            },
+            Entry::kernel("a", 0),
+            Entry::kernel("b", 0),
+            Entry::kernel("c", 1),
         ];
         let mut menu = Menu::new(&entries, 2, NonZeroU32::new(1)).unwrap();
         assert_eq!(menu.tick(), Step::Boot(2));

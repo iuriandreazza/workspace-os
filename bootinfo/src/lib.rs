@@ -14,11 +14,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod config;
 pub mod elf;
 mod handoff;
+pub mod initrd;
 mod memmap;
 pub mod menu;
 mod paging;
+pub mod pe;
 
 pub use handoff::{Handoff, HandoffError, Rejected, check, select_rsdp, usable_console};
 pub use memmap::{BuildError, EfiDescriptor, build_memory_map, carve_kernel, kind_from_efi};

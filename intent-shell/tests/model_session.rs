@@ -75,7 +75,7 @@ fn with_a_model_a_request_goes_to_the_model_and_is_not_read_as_a_command() {
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(&home).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_intent-shell"))
-        .args(["--model", &address, "--plain", "--log"])
+        .args(["--model", &address, "--plain", "--no-reply", "--log"])
         .arg(home.join("d.jsonl"))
         .env("HOME", &home)
         .env("USER", "tester")

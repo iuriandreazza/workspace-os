@@ -2,10 +2,12 @@
 """Writes a bootable UEFI disk image: a GPT disk with one EFI system partition
 (FAT32) holding the bootloader at the removable-media path and the kernel.
 
-    make-disk-image.py OUTPUT BOOTLOADER.EFI [KERNEL.ELF]
+    make-disk-image.py OUTPUT BOOTLOADER.EFI [KERNEL.ELF] [--file \\ESP\\PATH=LOCAL]...
 
 Without a kernel the partition holds the bootloader only, which is what the
 boot smoke test needs to see the bootloader's refusal of a missing kernel.
+Each `--file` adds one more file at that path of the partition (directories are
+made as needed): the boot entries of other systems and the images they name.
 
 The image is written without root and without external tools, so it builds the
 same way on macOS and on Linux. Only what UEFI firmware reads is written:
@@ -75,7 +77,8 @@ class Volume:
 
 def short_name(name):
     base, _, ext = name.partition(".")
-    assert len(base) <= 8 and len(ext) <= 3 and name == name.upper(), name
+    if not (len(base) <= 8 and len(ext) <= 3 and name == name.upper()):
+        raise SystemExit("not an upper-case 8.3 file name (only those are written): " + name)
     return base.ljust(8).encode() + ext.ljust(3).encode()
 
 
@@ -98,23 +101,41 @@ def directory_data(own_cluster, parent_cluster, entries):
     return (content + b"".join(entries)).ljust(CLUSTER_SECTORS * SECTOR, b"\0")
 
 
-def build_volume(bootloader, kernel):
+def build_volume(files):
+    """files maps a path such as "EFI/BOOT/BOOTAA64.EFI" to its bytes."""
+    tree = {}
+    for path, payload in files.items():
+        *directories, name = path.split("/")
+        node = tree
+        for directory in directories:
+            node = node.setdefault(directory, {})
+        node[name] = payload
     volume = Volume()
-    # Directories first, so that their cluster numbers are known to each other.
     root = volume.allocate(b"")  # cluster 2, as the boot sector says
-    efi_dir = volume.allocate(b"")
-    boot_dir = volume.allocate(b"")
-    boot_file = volume.allocate(bootloader)
-    kernel_file = volume.allocate(kernel) if kernel is not None else None
-    volume.data[boot_dir] = directory_data(
-        boot_dir, efi_dir, [entry("BOOTAA64.EFI", 0x20, boot_file, len(bootloader))]
-    )
-    volume.data[efi_dir] = directory_data(efi_dir, 0, [entry("BOOT", 0x10, boot_dir, 0)])
-    # The root has no '.' or '..'.
-    root_entries = [entry("EFI", 0x10, efi_dir, 0)]
-    if kernel is not None:
-        root_entries.append(entry("KERNEL.ELF", 0x20, kernel_file, len(kernel)))
-    volume.data[root] = b"".join(root_entries).ljust(CLUSTER_SECTORS * SECTOR, b"\0")
+
+    def fill(node, own, parent):
+        # Every directory fits the one cluster it gets: 16 entries of 32 bytes,
+        # two of them taken by '.' and '..' below the root.
+        children = []
+        for name, content in node.items():
+            if isinstance(content, dict):
+                cluster = volume.allocate(b"")
+                children.append((name, 0x10, cluster, 0, content))
+            else:
+                children.append((name, 0x20, volume.allocate(content), len(content), None))
+        entries = [entry(name, attributes, cluster, size) for name, attributes, cluster, size, _ in children]
+        if own == root:
+            # The root has no '.' or '..'.
+            assert len(entries) <= CLUSTER_SECTORS * SECTOR // 32, "too many files in the root"
+            volume.data[own] = b"".join(entries).ljust(CLUSTER_SECTORS * SECTOR, b"\0")
+        else:
+            assert len(entries) <= CLUSTER_SECTORS * SECTOR // 32 - 2, "too many files in a directory"
+            volume.data[own] = directory_data(own, parent, entries)
+        for _, _, cluster, _, subtree in children:
+            if subtree is not None:
+                fill(subtree, cluster, 0 if own == root else own)
+
+    fill(tree, root, 0)
     return volume
 
 
@@ -192,16 +213,36 @@ def write_gpt(image):
 
 
 def main():
-    if len(sys.argv) not in (3, 4):
+    # Extra files go in with `--file \\ESP\\PATH=LOCAL`, e.g. a Linux image.
+    arguments = sys.argv[1:]
+    extras = {}
+    positional = []
+    while arguments:
+        argument = arguments.pop(0)
+        if argument == "--file":
+            if not arguments or "=" not in arguments[0]:
+                raise SystemExit(__doc__)
+            target, _, local = arguments.pop(0).partition("=")
+            if not target.startswith("\\"):
+                raise SystemExit("an ESP path starts with a backslash: " + target)
+            with open(local, "rb") as f:
+                extras[target[1:].replace("\\", "/")] = f.read()
+        else:
+            positional.append(argument)
+    if len(positional) not in (2, 3):
         raise SystemExit(__doc__)
-    output, bootloader_path = sys.argv[1:3]
+    output, bootloader_path = positional[:2]
+    files = {}
     with open(bootloader_path, "rb") as f:
-        bootloader = f.read()
-    kernel = None
-    if len(sys.argv) == 4:
-        with open(sys.argv[3], "rb") as f:
-            kernel = f.read()
-    volume = build_volume(bootloader, kernel)
+        files["EFI/BOOT/BOOTAA64.EFI"] = f.read()
+    if len(positional) == 3:
+        with open(positional[2], "rb") as f:
+            files["KERNEL.ELF"] = f.read()
+    for path in extras:
+        if path in files:
+            raise SystemExit("--file would replace the bootloader or the kernel: \\" + path.replace("/", "\\"))
+    files.update(extras)
+    volume = build_volume(files)
     with open(output, "wb") as image:
         image.truncate(DISK_SECTORS * SECTOR)
         write_gpt(image)

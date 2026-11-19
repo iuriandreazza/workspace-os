@@ -10,6 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::wrap::{text_width, wrap};
 use crate::action::printable;
 use crate::ports::ChoiceLine;
+use crate::reply;
 use crate::session::Entry;
 
 /// An entry of the history. The text is already safe to print: it comes from
@@ -22,6 +23,10 @@ pub enum Block {
     Plan(String),
     Root(String),
     Outcome(String),
+    /// What the model wrote after the result, as the person is to read it:
+    /// already cleaned and not yet wrapped, since the marks are put on at
+    /// each line of the screen it ends up on.
+    Reply(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +65,11 @@ pub enum Event {
         lines: Vec<ChoiceLine>,
     },
     Outcome(String),
+    /// A result after which the model is writing a reply: the person may not
+    /// type until it is `Said`, so no request can start in between.
+    OutcomeAwaitingReply(String),
+    /// The reply was written, or there is none: the person may type again.
+    Said(Option<String>),
     /// The header with the directory the session is in now.
     Header(String),
 }
@@ -99,6 +109,8 @@ pub enum Kind {
     Plan,
     Root,
     Outcome,
+    /// The model's words, under the result.
+    Reply,
 }
 
 pub struct State {
@@ -218,7 +230,11 @@ impl State {
     /// Apply what the worker said. Returns whether the person is now asked
     /// something, so the caller can discard keys typed before it was drawn.
     pub fn on_event(&mut self, event: Event) -> bool {
-        self.scroll = 0;
+        // A reply that arrives while the person reads back through the history
+        // must not throw them to the bottom.
+        if !matches!(event, Event::Said(_)) {
+            self.scroll = 0;
+        }
         self.asked_ms = self.clock_ms;
         if !matches!(event, Event::Busy(_)) {
             self.forced_quit = false;
@@ -241,6 +257,29 @@ impl State {
             Event::Outcome(text) => {
                 self.blocks.push(Block::Outcome(text));
                 self.mode = Mode::Input;
+            }
+            Event::OutcomeAwaitingReply(text) => {
+                self.blocks.push(Block::Outcome(text));
+                self.busy("saying");
+            }
+            Event::Said(text) => {
+                let width = usize::from(self.width);
+                let before = self.history_lines(width).len();
+                self.blocks.extend(text.map(Block::Reply));
+                // The scroll counts lines up from the end: what the reply adds
+                // must be added to it, or the text being read moves.
+                if self.scroll > 0 {
+                    self.scroll += self.history_lines(width).len() - before;
+                }
+                if matches!(
+                    self.mode,
+                    Mode::Busy {
+                        label: "saying",
+                        ..
+                    }
+                ) {
+                    self.mode = Mode::Input;
+                }
             }
         }
         self.is_asking()
@@ -454,6 +493,18 @@ impl State {
         let mut lines = Vec::new();
         for block in &self.blocks {
             let (kind, text) = match block {
+                Block::Reply(text) => {
+                    if !lines.is_empty() {
+                        lines.push((Kind::Note, String::new()));
+                    }
+                    // Wrapped here, so every line of it carries the mark.
+                    lines.extend(
+                        reply::block(text, width, super::wrap::cell_width)
+                            .into_iter()
+                            .map(|line| (Kind::Reply, line)),
+                    );
+                    continue;
+                }
                 Block::Request(text) => (Kind::Request, format!("you ▸ {text}")),
                 Block::Note(text) => (Kind::Note, text.clone()),
                 Block::Plan(text) => (Kind::Plan, text.clone()),
@@ -487,13 +538,21 @@ impl State {
 
     /// The history as plain text, for the terminal after the interface closes
     /// and for `--transcript`.
-    pub fn transcript(&self) -> String {
+    /// The history as plain text with a reply wrapped to `reply_width` cells:
+    /// the width of the terminal it is printed to, so that no wrapped line of
+    /// it loses its mark.
+    pub fn transcript_for(&self, reply_width: usize) -> String {
         let mut out = String::new();
         for block in &self.blocks {
             match block {
                 Block::Request(text) => out.push_str(&format!("{}{text}\n", self.prompt)),
                 Block::Note(text) | Block::Plan(text) | Block::Root(text) => {
                     out.push_str(text);
+                    out.push('\n');
+                }
+                Block::Reply(text) => {
+                    let lines = reply::block(text, reply_width, reply::cautious_cells);
+                    out.push_str(&lines.join("\n"));
                     out.push('\n');
                 }
                 Block::Outcome(text) => {
@@ -1067,20 +1126,142 @@ mod tests {
         type_text(&mut state, "list downloads");
         state.on_key(press(KeyCode::Enter));
         state.on_event(Event::Outcome("done\n".to_owned()));
-        assert_eq!(state.transcript(), "intent> list downloads\ndone\n");
+        assert_eq!(state.transcript_for(80), "intent> list downloads\ndone\n");
         let mut commands = State::for_entry(String::new(), Entry::Command);
         commands
             .blocks
             .push(Block::Request("fs list --in home".to_owned()));
-        assert_eq!(commands.transcript(), "command> fs list --in home\n");
+        assert_eq!(commands.transcript_for(80), "command> fs list --in home\n");
     }
 
     #[test]
     fn the_transcript_lays_the_columns_of_a_tree_out_instead_of_keeping_the_tab() {
         let mut state = State::new(String::new());
         state.on_event(Event::Outcome("a.txt\t5 KB\n".to_owned()));
-        let transcript = state.transcript();
+        let transcript = state.transcript_for(80);
         assert!(!transcript.contains('\t'), "{transcript:?}");
         assert!(transcript.trim_end().ends_with("5 KB"), "{transcript:?}");
+    }
+
+    #[test]
+    fn a_reply_is_a_block_under_the_result_and_none_changes_nothing() {
+        let mut without = State::new("h".to_owned());
+        without.on_event(Event::Outcome("done\n".to_owned()));
+        let mut none = State::new("h".to_owned());
+        none.on_event(Event::Outcome("done\n".to_owned()));
+        none.on_event(Event::Busy("saying"));
+        none.on_event(Event::Said(None));
+        assert_eq!(none.mode, Mode::Input);
+        assert_eq!(none.blocks, without.blocks);
+        assert_eq!(none.transcript_for(80), without.transcript_for(80));
+        assert_eq!(none.history_lines(40), without.history_lines(40));
+
+        let mut with = State::new("h".to_owned());
+        with.on_event(Event::Outcome("done\n".to_owned()));
+        with.on_event(Event::Said(Some("All done here.".to_owned())));
+        assert_eq!(with.mode, Mode::Input);
+        let lines = with.history_lines(40);
+        assert_eq!(lines[0], (Kind::Outcome, "done".to_owned()));
+        let replied: Vec<_> = lines.iter().filter(|(k, _)| *k == Kind::Reply).collect();
+        assert_eq!(replied.last().unwrap().1, "  » All done here.", "{lines:?}");
+        assert!(with.transcript_for(80).starts_with("done\n"));
+        assert!(with.transcript_for(80).ends_with("  » All done here.\n"));
+    }
+
+    #[test]
+    fn every_wrapped_line_of_a_reply_on_a_narrow_screen_is_marked() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::Outcome("done\n".to_owned()));
+        state.on_event(Event::Said(Some(
+            "s2 delete Documents -> done and a long tail that must wrap ".repeat(4),
+        )));
+        for width in [12, 24, 40] {
+            for (kind, line) in state.history_lines(width) {
+                if kind == Kind::Reply {
+                    assert!(line.starts_with(crate::reply::MARK), "{line:?}");
+                    assert!(text_width(&line) <= width, "{line:?} at {width}");
+                } else {
+                    assert!(!line.starts_with(crate::reply::MARK), "{line:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn leaving_while_the_reply_is_written_is_at_once_because_nothing_is_running() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::Busy("saying"));
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(state.on_key(key), Effect::Quit);
+        assert!(!state.forced_quit);
+        // A step that runs still asks for the second Ctrl-C.
+        state.on_event(Event::Busy("working"));
+        assert_eq!(state.on_key(key), Effect::Nothing);
+    }
+
+    #[test]
+    fn no_request_can_start_between_the_result_and_its_reply_and_a_late_reply_cannot_end_a_wait() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::OutcomeAwaitingReply("done\n".to_owned()));
+        assert!(matches!(
+            state.mode,
+            Mode::Busy {
+                label: "saying",
+                ..
+            }
+        ));
+        assert_eq!(state.on_key(press(KeyCode::Char('x'))), Effect::Nothing);
+        assert!(state.input.is_empty());
+        // A reply that arrives while the person is being asked something
+        // does not end that question.
+        state.on_event(Event::AskPlan {
+            screen: "s".to_owned(),
+            details: "d".to_owned(),
+        });
+        state.on_event(Event::Said(Some("late".to_owned())));
+        assert!(matches!(state.mode, Mode::Plan { .. }));
+    }
+
+    #[test]
+    fn text_from_a_file_cannot_contain_the_mark_so_no_wrapped_line_can_start_like_a_reply() {
+        // A line of file content that, wrapped at a width, would leave `  » ` at the start of a row.
+        let hostile = format!("{}  » {}", "A".repeat(80), crate::reply::TITLE);
+        let shown = printable(&hostile, true);
+        assert!(!shown.contains('\u{bb}'), "{shown}");
+        let outcome = format!("s1 Read \"x\" -> done\n    {shown}");
+        for width in [20, 40, 80, 100] {
+            let mut state = State::new(String::new());
+            state.on_event(Event::Outcome(outcome.clone()));
+            for (_, line) in state.history_lines(width) {
+                assert!(!line.starts_with(crate::reply::MARK), "{line:?} at {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_reply_does_not_move_the_person_who_is_reading_back() {
+        let mut state = State::new("h".to_owned());
+        let long: String = (1..=50).map(|n| format!("l{n}\n")).collect();
+        state.on_event(Event::OutcomeAwaitingReply(long));
+        state.height = 12;
+        state.on_key(press(KeyCode::PageUp));
+        let reading = state.visible_history(80, 5);
+        assert_ne!(reading.last().unwrap().1, "l50");
+        state.on_event(Event::Said(Some("hello".to_owned())));
+        assert_eq!(state.visible_history(80, 5), reading);
+        state.on_event(Event::Outcome("again\n".to_owned()));
+        assert_eq!(state.scroll, 0);
+    }
+
+    #[test]
+    fn a_reply_printed_when_the_interface_closes_is_wrapped_to_the_terminal() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::Said(Some("word ".repeat(30))));
+        for width in [30, 60, 100] {
+            for line in state.transcript_for(width).lines() {
+                assert!(line.starts_with(crate::reply::MARK), "{line:?}");
+                assert!(line.chars().count() <= width, "{line:?} at {width}");
+            }
+        }
     }
 }
