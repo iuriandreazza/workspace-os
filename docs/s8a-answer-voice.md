@@ -27,7 +27,7 @@ for anything.
 The profile file holds one word, one of the four presets of ADR 0006:
 `direct-technical`, `warm-didactic`, `formal-discreet`, `good-humoured` (case
 and surrounding blanks do not matter). The default path is
-`~/.config/workspace-os/voice-profile`. Nothing else is accepted: a SOUL in free
+`~/.config/workspace-os/voice-profile`. The file is read at most 256 bytes and never blocks (a named pipe is an empty file). Nothing else is accepted, not even a byte-order mark: a SOUL in free
 text is what ADR 0006 refuses, so a file with anything more than the preset's
 name is not a profile.
 
@@ -35,7 +35,7 @@ name is not a profile.
 |---|---|
 | Absent at the default path | "direct and technical", no message |
 | Named with `--voice-profile` and absent | the shell does not start, and says which file |
-| Unreadable, or not exactly a preset name | the default profile, and one message on the error output naming the file, what it holds (cut at 40 characters, escaped) and the four valid names |
+| Unreadable, or not exactly a preset name | the default profile, and one message naming the file (on the error output, and as the first note of the interface, where the error output is hidden), what it holds (cut at 40 characters, escaped) and the four valid names |
 
 Every start with a model and replies on records one `voice_profile` event
 (`profile`, `source`: `default`, `file` or `default_after_problem`, and the
@@ -103,7 +103,7 @@ that imitates a verdict table, a root panel, a command or a plan in JSON is
 therefore text after a mark and nothing else.
 
 Plain mode prints it after the result; with no reply it prints nothing at all,
-not even a blank line. The interface shows `saying…` while it waits and leaves
+not even a blank line. The interface shows the result and `saying…` in one step and accepts no typing until the reply or its failure arrives (no request can start in between) and leaves
 at once on Ctrl-C then, as it does while the model plans, because nothing is
 running. Colours and headers are S3d.
 

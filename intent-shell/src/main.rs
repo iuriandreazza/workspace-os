@@ -107,9 +107,12 @@ fn main() {
 /// The profile of the replies, or `None` when there are none: turned off, or
 /// no model to write them. A profile file that cannot be used is said once, on
 /// the error output, and the default is used (ADR 0021).
-fn voice_of(options: &Options, log: &mut dyn DecisionLog) -> Result<Option<Profile>, String> {
+fn voice_of(
+    options: &Options,
+    log: &mut dyn DecisionLog,
+) -> Result<(Option<Profile>, Option<String>), String> {
     if options.no_reply || options.model.is_none() {
-        return Ok(None);
+        return Ok((None, None));
     }
     let (profile, source) = load_profile(&options.voice_profile.0, options.voice_profile.1)?;
     let (how, problem) = match &source {
@@ -122,7 +125,7 @@ fn voice_of(options: &Options, log: &mut dyn DecisionLog) -> Result<Option<Profi
     }
     log.record(json!({"event": "voice_profile", "profile": profile.id(), "source": how, "problem": problem}))
         .map_err(|e| format!("cannot write the decision log: {e}"))?;
-    Ok(Some(profile))
+    Ok((Some(profile), problem.cloned()))
 }
 
 fn run() -> Result<(), String> {
@@ -134,7 +137,7 @@ fn run() -> Result<(), String> {
             options.log.display()
         )
     })?;
-    let reply = voice_of(&options, &mut log)?;
+    let (reply, notice) = voice_of(&options, &mut log)?;
     let setup = Setup {
         authority: Authority::full(User {
             name: std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()),
@@ -144,6 +147,7 @@ fn run() -> Result<(), String> {
         planner: options.model.map(|address| LlamaPlanner { address }),
         log,
         reply,
+        notice,
         log_name: options
             .log
             .file_name()

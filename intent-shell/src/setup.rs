@@ -23,6 +23,9 @@ pub struct Setup {
     /// The profile of the replies, or `None` for no replies (`--no-reply`). It
     /// only counts when there is a model to write them (ADR 0021).
     pub reply: Option<Profile>,
+    /// Said to the person when the session opens, because on a screen the
+    /// error output is hidden: a voice profile that could not be used.
+    pub notice: Option<String>,
     /// The decision log's file name, for the header (its directory is in the details).
     pub log_name: String,
 }
@@ -99,6 +102,7 @@ mod tests {
             planner: model,
             log: JsonlLog::open(&log).unwrap(),
             reply: Some(Profile::DirectTechnical),
+            notice: None,
             log_name: "d.jsonl".to_owned(),
         }
     }

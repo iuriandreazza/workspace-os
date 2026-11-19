@@ -65,6 +65,9 @@ pub enum Event {
         lines: Vec<ChoiceLine>,
     },
     Outcome(String),
+    /// A result after which the model is writing a reply: the person may not
+    /// type until it is `Said`, so no request can start in between.
+    OutcomeAwaitingReply(String),
     /// The reply was written, or there is none: the person may type again.
     Said(Option<String>),
     /// The header with the directory the session is in now.
@@ -254,9 +257,21 @@ impl State {
                 self.blocks.push(Block::Outcome(text));
                 self.mode = Mode::Input;
             }
+            Event::OutcomeAwaitingReply(text) => {
+                self.blocks.push(Block::Outcome(text));
+                self.busy("saying");
+            }
             Event::Said(text) => {
                 self.blocks.extend(text.map(Block::Reply));
-                self.mode = Mode::Input;
+                if matches!(
+                    self.mode,
+                    Mode::Busy {
+                        label: "saying",
+                        ..
+                    }
+                ) {
+                    self.mode = Mode::Input;
+                }
             }
         }
         self.is_asking()
@@ -1171,5 +1186,28 @@ mod tests {
         // A step that runs still asks for the second Ctrl-C.
         state.on_event(Event::Busy("working"));
         assert_eq!(state.on_key(key), Effect::Nothing);
+    }
+
+    #[test]
+    fn no_request_can_start_between_the_result_and_its_reply_and_a_late_reply_cannot_end_a_wait() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::OutcomeAwaitingReply("done\n".to_owned()));
+        assert!(matches!(
+            state.mode,
+            Mode::Busy {
+                label: "saying",
+                ..
+            }
+        ));
+        assert_eq!(state.on_key(press(KeyCode::Char('x'))), Effect::Nothing);
+        assert!(state.input.is_empty());
+        // A reply that arrives while the person is being asked something
+        // does not end that question.
+        state.on_event(Event::AskPlan {
+            screen: "s".to_owned(),
+            details: "d".to_owned(),
+        });
+        state.on_event(Event::Said(Some("late".to_owned())));
+        assert!(matches!(state.mode, Mode::Plan { .. }));
     }
 }

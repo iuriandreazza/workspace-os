@@ -170,8 +170,9 @@ fn completion(address: &str, body: &str, timeout: Duration) -> Result<String, St
 }
 
 fn post(address: &str, path: &str, body: &str, timeout: Duration) -> Result<String, String> {
-    let mut stream = connect(address)?;
+    // The timeout covers the connection and the answer together.
     let deadline = Instant::now() + timeout;
+    let mut stream = connect(address, deadline)?;
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -208,12 +209,16 @@ fn post(address: &str, path: &str, body: &str, timeout: Duration) -> Result<Stri
 }
 
 /// Connects with a limit, so an address nothing answers on cannot hold the shell.
-fn connect(address: &str) -> Result<TcpStream, String> {
+fn connect(address: &str, deadline: Instant) -> Result<TcpStream, String> {
     let cannot = |e: &dyn std::fmt::Display| format!("cannot connect to {address}: {e}");
     let addresses = address.to_socket_addrs().map_err(|e| cannot(&e))?;
     let mut last = "no address".to_owned();
     for candidate in addresses {
-        match TcpStream::connect_timeout(&candidate, CONNECT_TIMEOUT) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match TcpStream::connect_timeout(
+            &candidate,
+            CONNECT_TIMEOUT.min(left).max(Duration::from_millis(1)),
+        ) {
             Ok(stream) => return Ok(stream),
             Err(e) => last = e.to_string(),
         }

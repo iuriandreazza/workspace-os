@@ -147,12 +147,16 @@ fn serve(
         let rendered = outcome.render();
         // A `cd` changes where the session is, which the header says.
         let _ = events.send(Event::Header(header(&session.cwd_text(host))));
-        if events.send(Event::Outcome(rendered)).is_err() {
+        let speaking = voice.as_ref().filter(|_| entry == Entry::Request);
+        let shown = match speaking {
+            Some(_) => Event::OutcomeAwaitingReply(rendered),
+            None => Event::Outcome(rendered),
+        };
+        // The result is on screen before the reply is asked for; the reply is only ever an addition.
+        if events.send(shown).is_err() {
             return;
         }
-        // The result is already on screen; the reply is only ever an addition.
-        if let Some(voice) = voice.as_ref().filter(|_| entry == Entry::Request) {
-            let _ = events.send(Event::Busy("saying"));
+        if let Some(voice) = speaking {
             let said = reply::reply_to(voice, &request, &outcome, log);
             if events.send(Event::Said(said)).is_err() {
                 return;
@@ -336,6 +340,9 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
         setup.header(&SessionState::start(&setup.host)),
         setup.entry(),
     );
+    state
+        .blocks
+        .extend(setup.notice.clone().map(state::Block::Note));
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
@@ -623,10 +630,10 @@ mod tests {
         let speaker = crate::testing::ScriptedSpeaker::says("Found them.");
         let (seen, log) = serve_with(Some(&speaker), "largest", true);
         let at = |wanted: &dyn Fn(&Event) -> bool| seen.iter().position(wanted).unwrap();
-        let outcome = at(&|e| matches!(e, Event::Outcome(_)));
-        let saying = at(&|e| matches!(e, Event::Busy("saying")));
+        let outcome = at(&|e| matches!(e, Event::OutcomeAwaitingReply(_)));
         let said = at(&|e| matches!(e, Event::Said(Some(text)) if text == "Found them."));
-        assert!(outcome < saying && saying < said, "{seen:?}");
+        assert!(outcome < said, "{seen:?}");
+        assert!(seen.iter().all(|e| !matches!(e, Event::Outcome(_))));
         assert_eq!(seen.len() - 1, said, "the reply is the last thing said");
         assert_eq!(log.events.last().unwrap()["event"], "reply");
     }
@@ -640,11 +647,15 @@ mod tests {
             asked: Default::default(),
         };
         let (failed, log) = serve_with(Some(&failing), "largest", true);
-        let kept: Vec<_> = failed
+        let kept: Vec<Event> = failed
             .iter()
-            .filter(|e| !matches!(e, Event::Busy("saying") | Event::Said(None)))
+            .filter(|e| !matches!(e, Event::Said(None)))
+            .map(|e| match e {
+                Event::OutcomeAwaitingReply(text) => Event::Outcome(text.clone()),
+                other => other.clone(),
+            })
             .collect();
-        assert_eq!(kept, without.iter().collect::<Vec<_>>());
+        assert_eq!(kept, without);
         assert!(failed.iter().any(|e| matches!(e, Event::Said(None))));
         assert_eq!(log.events.last().unwrap()["event"], "reply_failed");
     }

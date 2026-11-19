@@ -649,3 +649,47 @@ fn an_unreadable_profile_gives_the_default_and_a_message_that_says_why() {
     };
     assert!(message.contains("cannot read"), "{message}");
 }
+
+#[test]
+fn a_refusal_that_carries_machine_text_reaches_the_model_as_a_fixed_sentence() {
+    use crate::broker::Refusal;
+    use crate::resolve::ResolveError;
+    let labels = Default::default();
+    for (why, expected) in [
+        (
+            Refusal::PreRunFailed("Permission denied (os error 13)".to_owned()),
+            "the read this step needed failed",
+        ),
+        (
+            Refusal::CannotExpand("os error 2 at /secret/place".to_owned()),
+            "the reference could not be expanded",
+        ),
+        (
+            Refusal::Unresolved(ResolveError::SearchFailed(
+                "disk /dev/disk3 broke".to_owned(),
+            )),
+            "the search could not run",
+        ),
+    ] {
+        assert_eq!(reply::reason(&why, &labels), expected);
+    }
+}
+
+#[test]
+fn a_named_pipe_with_no_writer_is_an_empty_profile_not_a_hang() {
+    let path = profile_file("fifo", None);
+    let made = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let (done, result) = std::sync::mpsc::channel();
+    let target = path.clone();
+    std::thread::spawn(move || {
+        let _ = done.send(load_profile(&target, false));
+    });
+    let loaded = result
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("opening the pipe did not block");
+    assert!(matches!(loaded, Ok((_, Source::DefaultAfterProblem(_)))));
+}

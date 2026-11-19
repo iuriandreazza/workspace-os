@@ -8,14 +8,17 @@
 //! the deterministic result and is never parsed for anything.
 
 use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::Instant;
 
 use serde_json::{Value, json};
 
 use crate::action::printable;
-use crate::broker::{Review, Verdict};
+use crate::broker::{Refusal, Review, Verdict};
+use crate::label::Labels;
 use crate::ports::{DecisionLog, Speaker};
+use crate::resolve::ResolveError;
 use crate::screen;
 use crate::session::{ItemResult, Outcome};
 
@@ -101,10 +104,15 @@ pub enum Source {
 /// that does not exist is an error: the person asked for it.
 pub fn load_profile(path: &Path, named_by_person: bool) -> Result<(Profile, Source), String> {
     // Only the start is read: a device or a huge file must not be read to its end.
-    let read = std::fs::File::open(path).and_then(|file| {
-        let mut bytes = Vec::new();
-        file.take(256).read_to_end(&mut bytes).map(|_| bytes)
-    });
+    // Non-blocking, so a named pipe with no writer is an empty file, not a hang.
+    let read = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .and_then(|file| {
+            let mut bytes = Vec::new();
+            file.take(256).read_to_end(&mut bytes).map(|_| bytes)
+        });
     let text = match read {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -174,11 +182,23 @@ fn quote(text: &str) -> String {
     json!(capped(text, FACT_LIMIT)).to_string()
 }
 
-fn verdict_words(verdict: &Verdict, labels: &crate::label::Labels) -> String {
+/// Why a step was refused, in words the code owns. Three reasons carry text
+/// that came from the machine (an I/O error, a search failure), which the model
+/// is not given.
+pub(crate) fn reason(why: &Refusal, labels: &Labels) -> String {
+    match why {
+        Refusal::PreRunFailed(_) => "the read this step needed failed".to_owned(),
+        Refusal::CannotExpand(_) => "the reference could not be expanded".to_owned(),
+        Refusal::Unresolved(ResolveError::SearchFailed(_)) => "the search could not run".to_owned(),
+        other => other.friendly(labels),
+    }
+}
+
+fn verdict_words(verdict: &Verdict, labels: &Labels) -> String {
     match verdict {
         Verdict::Allowed => "allowed".to_owned(),
         Verdict::NeedsRoot => "needs the administrator's confirmation".to_owned(),
-        Verdict::Refused(why) => format!("refused: {}", quote(&why.friendly(labels))),
+        Verdict::Refused(why) => format!("refused: {}", quote(&reason(why, labels))),
     }
 }
 
@@ -189,7 +209,7 @@ fn review_facts(review: &Review) -> Vec<String> {
             lines.push(format!(
                 "step {}: blocked: {}",
                 step.id,
-                quote(&why.friendly(&review.labels))
+                quote(&reason(why, &review.labels))
             ));
         }
         for item in &step.items {
