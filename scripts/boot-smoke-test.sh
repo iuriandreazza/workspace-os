@@ -89,7 +89,7 @@
 #   uefi-linux-initrd Linux with an initrd of a known size: the kernel frees
 #                     exactly that many KiB of it, and unpacks it without error
 #   uefi-others       every refusal in turn (a missing or invalid Linux image
-#                     or loader, an initrd that is not there), each ending in
+#                     or loader, a directory, an initrd that is not there), each ending in
 #                     its own message and back at the menu with no countdown;
 #                     then a chainloaded application that starts and returns,
 #                     and our kernel from the same menu afterwards
@@ -921,7 +921,7 @@ expect_refusal() {
 check_others() {
     start_other "$1" "$2"
     refusals=0
-    expect_refusal 3 "cannot start Missing Linux: Linux image \\NOPE.IMG is not on the EFI system partition"
+    expect_refusal 3 "cannot start Directory as Linux: cannot read Linux image \\EFI\\TEST: it is a directory"
     expect_refusal 4 "cannot start Not a PE: Linux image \\KERNEL.ELF is not a valid EFI image: not a PE image (no MZ header)"
     expect_refusal 5 "cannot start Linux for x86_64: Linux image \\WRONG.EFI is not a valid EFI image: a PE image for x86_64 (machine 0x8664), not aarch64"
     expect_refusal 6 "cannot start Missing initrd: initrd \\NOINITRD.IMG is not on the EFI system partition"
@@ -1001,8 +1001,8 @@ linux_initrd_image="$(make_image linux-initrd "$linux_config
 initrd \\INITRD.IMG" --file "\\VMLINUZ=$linux_kernel" --file "\\INITRD.IMG=$initrd_file")"
 check_linux uefi-linux-initrd "$linux_initrd_image" 3 "Alpine Linux" "$initrd_bytes"
 
-others_image="$(make_image others "entry Missing Linux
-linux \\NOPE.IMG
+others_image="$(make_image others "entry Directory as Linux
+linux \\EFI\\TEST
 entry Not a PE
 linux \\KERNEL.ELF
 entry Linux for x86_64

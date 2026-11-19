@@ -21,7 +21,7 @@ use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::load_file::LoadFile2;
 use uefi::{CStr16, Identify, guid};
 
-use crate::{FileError, pages_for, read_file};
+use crate::{FileError, read_file, release};
 
 /// `LINUX_EFI_INITRD_MEDIA_GUID`, `include/linux/efi.h` in the Linux source:
 /// the vendor media device path under which the stub looks for its initrd.
@@ -60,6 +60,11 @@ pub enum Refusal<'a> {
         what: &'static str,
         path: &'a str,
     },
+    Unreadable {
+        what: &'static str,
+        path: &'a str,
+        why: &'static str,
+    },
     Firmware {
         step: &'static str,
         status: Status,
@@ -82,6 +87,9 @@ impl core::fmt::Display for Refusal<'_> {
                 write!(f, "{what} {path} is not a valid EFI image: {error}")
             }
             Self::Empty { what, path } => write!(f, "{what} {path} is empty"),
+            Self::Unreadable { what, path, why } => {
+                write!(f, "cannot read {what} {path}: {why}")
+            }
             Self::Firmware { step, status } => {
                 write!(f, "the firmware refused to {step}: {status:?}")
             }
@@ -107,7 +115,10 @@ fn ucs2<'b>(path: &str, buffer: &'b mut [u16; PATH_UNITS]) -> Result<&'b CStr16,
 /// A file of the partition, checked to be an EFI application for aarch64.
 fn read_image<'a>(what: &'static str, path: &'a str) -> Result<&'static mut [u8], Refusal<'a>> {
     let bytes = read_file_at(what, path)?;
-    pe::check_efi_application(bytes).map_err(|error| Refusal::NotImage { what, path, error })?;
+    if let Err(error) = pe::check_efi_application(bytes) {
+        release(bytes);
+        return Err(Refusal::NotImage { what, path, error });
+    }
     Ok(bytes)
 }
 
@@ -122,12 +133,7 @@ fn read_file_at<'a>(what: &'static str, path: &'a str) -> Result<&'static mut [u
             step,
             status,
         },
-        FileError::Message(_) => Refusal::File {
-            what,
-            path,
-            step: "read",
-            status: Status::LOAD_ERROR,
-        },
+        FileError::Message(why) => Refusal::Unreadable { what, path, why },
         FileError::Firmware(error) => Refusal::File {
             what,
             path,
@@ -136,18 +142,10 @@ fn read_file_at<'a>(what: &'static str, path: &'a str) -> Result<&'static mut [u
         },
     })?;
     if bytes.is_empty() {
+        release(bytes);
         return Err(Refusal::Empty { what, path });
     }
     Ok(bytes)
-}
-
-/// Gives the pages `read_file` took back to the firmware.
-fn release(bytes: &'static mut [u8]) {
-    if let Some(base) = core::ptr::NonNull::new(bytes.as_mut_ptr()) {
-        // SAFETY: `read_file` allocated `pages_for(len)` whole pages at this
-        // address and the caller holds the only reference to them.
-        let _ = unsafe { boot::free_pages(base, pages_for(bytes.len())) };
-    }
 }
 
 /// Starts the entry. `Ok` is the status of an image that came back (a

@@ -147,20 +147,35 @@ fn read_file(path: &uefi::CStr16) -> Result<&'static mut [u8], FileError> {
 
     // `get_info` wants a buffer aligned for `FileInfo`.
     #[repr(align(8))]
-    struct InfoBuffer([u8; 256]);
-    let mut info_buffer = InfoBuffer([0u8; 256]);
+    // The info holds the file's own name, up to 255 characters of two bytes.
+    struct InfoBuffer([u8; 1024]);
+    let mut info_buffer = InfoBuffer([0u8; 1024]);
     let size = file
         .get_info::<FileInfo>(&mut info_buffer.0)
         .map_err(|e| FileError::Step("read the size of", e.status()))?
         .file_size() as usize;
     let buffer = allocate_pages(pages_for(size.max(1)))?;
-    let read = file
-        .read(&mut buffer[..size])
-        .map_err(|e| FileError::Step("read", e.status()))?;
-    if read != size {
-        return Err(FileError::Message("short read"));
+    match file.read(&mut buffer[..size]) {
+        Ok(read) if read == size => Ok(&mut buffer[..size]),
+        Ok(_) => {
+            release(&mut buffer[..size]);
+            Err(FileError::Message("short read"))
+        }
+        Err(error) => {
+            release(&mut buffer[..size]);
+            Err(FileError::Step("read", error.status()))
+        }
     }
-    Ok(&mut buffer[..size])
+}
+
+/// Gives the pages `read_file` took back to the firmware. The caller drops
+/// every reference to them.
+fn release(bytes: &mut [u8]) {
+    if let Some(base) = core::ptr::NonNull::new(bytes.as_mut_ptr()) {
+        // SAFETY: `read_file` allocated `pages_for(len.max(1))` whole pages at
+        // this address, and the caller holds the only reference to them.
+        let _ = unsafe { boot::free_pages(base, pages_for(bytes.len().max(1))) };
+    }
 }
 
 fn read_kernel_file() -> Outcome<&'static mut [u8]> {
@@ -178,10 +193,11 @@ fn read_kernel_file() -> Outcome<&'static mut [u8]> {
 fn read_config() -> Option<&'static str> {
     let bytes = match read_file(CONFIG_PATH) {
         Ok(bytes) if bytes.len() <= MAX_CONFIG_BYTES => bytes,
-        Ok(_) => {
+        Ok(bytes) => {
             ui::error(format_args!(
                 "{CONFIG_PATH} is over {MAX_CONFIG_BYTES} bytes: ignored"
             ));
+            release(bytes);
             return None;
         }
         Err(FileError::Missing) => return None,
@@ -198,13 +214,13 @@ fn read_config() -> Option<&'static str> {
             return None;
         }
     };
-    match core::str::from_utf8(bytes) {
-        Ok(text) => Some(text),
-        Err(_) => {
-            ui::error(format_args!("{CONFIG_PATH} is not text (UTF-8): ignored"));
-            None
-        }
+    if core::str::from_utf8(bytes).is_err() {
+        ui::error(format_args!("{CONFIG_PATH} is not text (UTF-8): ignored"));
+        release(bytes);
+        return None;
     }
+    let bytes: &'static [u8] = bytes;
+    core::str::from_utf8(bytes).ok()
 }
 
 /// Copies the kernel's loadable segments to the addresses the image asks for.

@@ -74,6 +74,8 @@ pub enum ErrorKind {
     /// Only printable ASCII goes into a command line (it is passed as UCS-2
     /// and read back as ASCII).
     CommandLineCharacter(char),
+    /// A control character in a label would rewrite the console line.
+    LabelCharacter(char),
     /// The entry has neither `linux` nor `chainload`.
     NoKind,
     /// The entry has both.
@@ -111,6 +113,9 @@ impl fmt::Display for ConfigError {
                     f,
                     "{c:?} cannot be in a command line (printable ASCII only)"
                 )
+            }
+            ErrorKind::LabelCharacter(c) => {
+                write!(f, "{c:?} cannot be in a label")
             }
             ErrorKind::NoKind => f.write_str("the entry has neither linux nor chainload"),
             ErrorKind::TwoKinds => f.write_str("the entry has both linux and chainload"),
@@ -200,6 +205,8 @@ pub fn parse<'a>(text: &'a str, out: &mut [Entry<'a>]) -> Result<usize, ConfigEr
         }
         Ok(())
     };
+    // An editor on another system may put a byte order mark first.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     for (index, raw) in text.split('\n').enumerate() {
         let line = index + 1;
         let trimmed = raw.trim();
@@ -215,6 +222,9 @@ pub fn parse<'a>(text: &'a str, out: &mut [Entry<'a>]) -> Result<usize, ConfigEr
             push(pending.take(), &mut count)?;
             if value.is_empty() {
                 return Err(fail(ErrorKind::MissingValue));
+            }
+            if let Some(bad) = value.chars().find(|c| c.is_control()) {
+                return Err(fail(ErrorKind::LabelCharacter(bad)));
             }
             pending = Some(Pending {
                 line,
@@ -290,6 +300,20 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn a_byte_order_mark_and_a_control_character() {
+        assert_eq!(parsed("\u{feff}entry A\nlinux \\X").unwrap().1, 1);
+        assert_eq!(
+            error("entry A\u{7}B\nlinux \\X"),
+            ConfigError {
+                line: 1,
+                kind: ErrorKind::LabelCharacter('\u{7}')
+            }
+        );
+        // A carriage return ends a line; it is not part of the label.
+        assert_eq!(parsed("entry A\r\nlinux \\X\r\n").unwrap().0[0].label, "A");
     }
 
     #[test]
