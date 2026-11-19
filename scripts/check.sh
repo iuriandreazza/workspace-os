@@ -24,6 +24,16 @@ echo "==> licences"
 python3 -I scripts/test_check_licences.py
 python3 -I scripts/check-licences.py
 
+echo "==> evaluation set"
+# The scoring and the prompts of the S4 evaluation (eval/score.py, eval/modes.py)
+# are plain Python with unit tests. That every accepted plan passes the shell's parser is a Rust test
+# (intent-shell/tests/eval_set.rs), run with the unit tests below.
+python3 -I eval/test_score.py
+python3 -I eval/test_modes.py
+# The runner needs the jsonschema package to run; its wiring is tested with a stand-in validator.
+python3 -I eval/test_run_eval.py
+bash -n eval/run-matrix.sh
+
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings
 cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap -- -D warnings
