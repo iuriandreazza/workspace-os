@@ -1,7 +1,7 @@
 ---
 title: "ADR 0025: Hand-written boot entries for other kernels live in a file on the ESP"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-19
 updated: 2026-11-19
 tags: [boot, bootloader, uefi, linux, chainload]

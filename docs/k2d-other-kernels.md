@@ -13,8 +13,7 @@ Roadmap item K2d: the bootloader starts Linux through its EFI entry (with a
 command line and an initial ramdisk) and the EFI loader of another system,
 from entries written by hand. Mechanism only: no detection and no model
 (ADR 0009, track B). Our own entries (Normal, Recovery) are untouched and need
-nothing new. The format of the entries is ADR 0025 (proposed: the user accepts
-or not when reviewing the pull request).
+nothing new. The format of the entries is ADR 0025 (accepted).
 
 ## What was checked in the sources
 
