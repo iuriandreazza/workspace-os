@@ -7,8 +7,7 @@
 //!
 //! Layout: 4 KiB granule, 39-bit address spaces in both halves
 //! (`T0SZ = T1SZ = 25`), so every root is a level 1 table. Leaves are 4 KiB
-//! pages and 2 MiB blocks; 1 GiB blocks are only recognised when walking, since
-//! the maps the bootloader leaves may use them.
+//! pages and 2 MiB and 1 GiB blocks.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -136,7 +135,7 @@ impl MemoryTypes {
     }
 }
 
-/// A leaf descriptor: a page at level 3, a block at level 2.
+/// A leaf descriptor: a page at level 3, a block at level 2 or 1.
 fn leaf(types: &MemoryTypes, output: u64, permissions: Permissions, level: u8) -> u64 {
     let shape = if level == 3 {
         VALID | TABLE_OR_PAGE
@@ -148,10 +147,10 @@ fn leaf(types: &MemoryTypes, output: u64, permissions: Permissions, level: u8) -
         Permissions::ReadOnly => (READ_ONLY, PRIVILEGED_EXECUTE_NEVER),
         Permissions::ReadWrite | Permissions::Device => (0, PRIVILEGED_EXECUTE_NEVER),
     };
-    let mask = if level == 3 {
-        ADDRESS_MASK
-    } else {
-        BLOCK_2M_MASK
+    let mask = match level {
+        1 => BLOCK_1G_MASK,
+        2 => BLOCK_2M_MASK,
+        _ => ADDRESS_MASK,
     };
     (output & mask)
         | shape
@@ -279,8 +278,8 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
         Ok(())
     }
 
-    /// Maps `length` bytes at `virtual_address` to `physical`, with 2 MiB
-    /// blocks wherever both addresses and the rest of the length allow it and
+    /// Maps `length` bytes at `virtual_address` to `physical`, with 1 GiB
+    /// and 2 MiB blocks wherever both addresses and the rest of the length allow it and
     /// pages elsewhere. Nothing already mapped may be touched: break before
     /// make is the caller's business.
     pub fn map_range(
@@ -305,7 +304,13 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
         let mut done = 0;
         while done < length {
             let (at, to) = (virtual_address + done, physical + done);
-            if at.is_multiple_of(BLOCK_SIZE)
+            if at.is_multiple_of(GIGABYTE)
+                && to.is_multiple_of(GIGABYTE)
+                && length - done >= GIGABYTE
+            {
+                self.set_leaf(at, to, permissions, 1)?;
+                done += GIGABYTE;
+            } else if at.is_multiple_of(BLOCK_SIZE)
                 && to.is_multiple_of(BLOCK_SIZE)
                 && length - done >= BLOCK_SIZE
             {

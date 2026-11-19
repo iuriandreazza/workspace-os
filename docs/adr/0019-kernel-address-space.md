@@ -43,8 +43,8 @@ Facts that shape the decision:
 ### Address spaces
 
 4 KiB granule. Each half translates 39 bits (`T0SZ = T1SZ = 25`), so every
-root is a level 1 table and a walk has three levels. Leaves are 4 KiB pages
-and 2 MiB blocks.
+root is a level 1 table and a walk has three levels. Leaves are 4 KiB pages,
+2 MiB blocks and 1 GiB blocks (whole gigabytes of RAM are one entry each).
 
 | Half | Range | Root | Holds |
 |---|---|---|---|
@@ -77,8 +77,10 @@ Every descriptor also has `UXN` set and `AP[1]` clear: nothing is reachable
 from EL0, and K8 will add what it needs. Entries are global (`nG` clear) and
 inner shareable (Device: outer). `SCTLR_EL1.WXN` is set: whatever is writable is
 never executable, whatever a descriptor says. Two mechanisms, so a wrong bit in
-one table does not silently open a hole, and so the self-test can tell them
-apart (below).
+one table does not silently open a hole. The fault boots cannot tell them
+apart (a page with `PXN` wrongly clear still faults on a fetch, because of
+`WXN`, with the same syndrome); the walk of the live descriptors in `verify`
+can, and it is what checks the bits.
 
 The memory types are not assumed: `MAIR_EL1` is read and the indexes of
 Normal write-back (`0xff`) and Device-nGnRnE (`0x00`) are looked up, as the
@@ -89,7 +91,7 @@ it). The direct path installs `0xff00` itself.
 
 `TTBR0_EL1` is **kept, as a kernel-owned window**: all RAM the memory map (or the
 device tree, on the direct path) describes, identity mapped read and write, never
-executed, with 2 MiB blocks where the addresses allow it, plus the page of the
+executed, with 1 GiB and 2 MiB blocks where the addresses allow it, plus the page of the
 UART as Device. It exists because the kernel still holds physical pointers (boot
 info, memory map, device tree, the frames it turns into tables) and K4 does not
 rewrite those readers. The image and its guard page are **not** in it: no alias
@@ -123,7 +125,8 @@ unchanged.
    text `RX`, `.rodata` `R`, `.data`/`.bss`/stack `RW` and never executed, the
    guard page empty. No page is writable and executable. Link it under a level 2
    and a level 1 table at the indexes of the image's virtual address.
-5. Clean and invalidate the tables by address (`dc civac`, never by set and way,
+5. Clean and invalidate the tables by address (`dc civac` over the line size
+   read from `CTR_EL0`, never by set and way,
    which the bootloader contract forbids), `dsb sy`.
 
 Direct path, MMU off: install `MAIR_EL1` and `TCR_EL1` (both halves, `IPS` from
@@ -175,7 +178,8 @@ them back, so it must not see the tables as free):
    `kernelvm`: the image by section, as above, in 4 KiB pages.
 3. Build the lower-half window: each RAM region (widened to whole pages) minus the
    image and its guard page, then the UART page.
-4. Clean the tables to the point of coherency by address and `dsb ish`.
+4. Clean and invalidate the tables to the point of coherency by address
+   (`dc civac`, line size from `CTR_EL0`) and `dsb ish`.
 5. Switch. **`TTBR0_EL1`:** set `TCR_EL1.EPD0` (walks through it off) and `isb`;
    write the register; `isb`; `tlbi vmalle1`; `dsb ish`; `isb`; write `TCR_EL1`
    with `EPD0` clear and the lower half of the kernel (`T0SZ = 25`, 4 KiB,
@@ -318,6 +322,9 @@ image at the physical address the ELF names. Lifting it is a separate item.
   a hang, not a message. A separate exception stack is an item of its own.
 - **The direct path assumes QEMU `virt`'s layout** in phase A (devices below
   1 GiB, RAM above), until phase B rebuilds the lower half from the device tree.
+- **The audit does not look at memory type or shareability** of a leaf, only at
+  permissions and aliasing: an image page with a wrong `AttrIndx` passes the
+  walk and every fault boot.
 - **Memory above 512 GiB** (RAM, not only the UART) is refused with an error at
   boot, as the bootloader's identity map already limits it.
 - **Executable memory outside the image** does not exist after phase B on either

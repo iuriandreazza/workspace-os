@@ -500,3 +500,35 @@ fn the_pieces_the_boot_code_assembles_equal_what_leaf_builds() {
     assert_eq!(table_descriptor(at), at | TABLE_BITS);
     assert_eq!(TCR_BOTH_HALVES, 0xb519_3519);
 }
+
+#[test]
+fn gigabyte_aligned_ram_uses_one_block_per_gigabyte() {
+    let mut arena = Arena::new(16);
+    // 4 GiB aligned to 1 GiB: four level 1 blocks and nothing below the root.
+    let root = ram_window(&mut arena, &[(0x4000_0000, 0x1_4000_0000)], 0..0);
+    assert_eq!(arena.tables.len(), 1);
+    let found = translate(&arena, root, 0x1_3fff_f123).unwrap();
+    assert_eq!(found.output, 0x1_3fff_f123);
+    assert!(found.writable && !found.executable);
+    let report = audit(&arena, root, 0, TYPES, &no_alias());
+    assert_eq!(report.read_write, 4 << 30);
+    assert!(report.is_clean());
+    // A machine with 400 GiB of RAM needs one table, not hundreds.
+    let mut arena = Arena::new(16);
+    ram_window(
+        &mut arena,
+        &[(0x4000_0000, 0x4000_0000 + (400 << 30))],
+        0..0,
+    );
+    assert_eq!(arena.tables.len(), 1);
+}
+
+#[test]
+fn a_gigabyte_block_is_not_split_around_the_hole() {
+    let mut arena = Arena::new(16);
+    let span = layout().span();
+    let root = ram_window(&mut arena, &[(0x4000_0000, 0x8000_0000)], span.clone());
+    assert!(translate(&arena, root, span.start).is_none());
+    assert!(translate(&arena, root, span.end).is_some());
+    assert!(audit(&arena, root, 0, TYPES, &span).is_clean());
+}

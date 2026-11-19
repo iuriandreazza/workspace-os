@@ -270,9 +270,13 @@ _start:
     // contract forbids), then order the stores.
     adrp x0, boot_tables_start
     adrp x1, boot_tables_end
+    mrs  x2, ctr_el0                // DminLine: log2 of the smallest line, in words
+    ubfx x2, x2, #16, #4
+    mov  x3, #4
+    lsl  x2, x3, x2
 21:
     dc   civac, x0
-    add  x0, x0, #64
+    add  x0, x0, x2
     cmp  x0, x1
     b.lo 21b
     dsb  sy

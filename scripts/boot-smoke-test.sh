@@ -396,8 +396,8 @@ check_fault() {
         qemu_is_running || fail "QEMU exited without the expected fault"
         sleep 0.1
     done
-    line="$(plain_log | grep -F "unhandled synchronous exception" | head -1)"
-    [[ -n "$line" ]] || fail "no unhandled synchronous exception in the log: $(plain_log | grep -F "$PANIC_MARKER" | head -1)"
+    line="$(plain_log | grep -F "unhandled synchronous exception" | head -1 || true)"
+    [[ -n "$line" ]] || fail "no unhandled synchronous exception in the log: $(plain_log | grep -F -A1 "$PANIC_MARKER" | head -2 | tr '\n' ' ' || true)"
     [[ "$line" =~ ^unhandled\ synchronous\ exception:\ ${class_name}\ \(class\ ${class},\ iss\ ${iss},\ esr\ 0x[0-9a-f]+\)\ at\ (0x[0-9a-f]+),\ fault\ address\ (0x[0-9a-f]+)$ ]] \
         || fail "the fault is not '$class_name (class $class, iss $iss) ... fault address $far': $line"
     pc="${BASH_REMATCH[1]}"
@@ -715,8 +715,13 @@ build_with_feature() {
 # llvm-nm and llvm-objcopy come with the `llvm-tools` rustup component.
 llvm_tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
 
+# symbol_of ELF NAME: the address of a symbol in an ELF, as 0x...
+symbol_of() {
+    "$llvm_tools/llvm-nm" "$1" | awk -v name="$2" '$3 == name { print "0x" $1 }'
+}
+
 symbol_address() {
-    "$llvm_tools/llvm-nm" "$KERNEL_ELF" | awk -v name="$1" '$3 == name { print "0x" $1 }'
+    symbol_of "$KERNEL_ELF" "$1"
 }
 
 # The kernel runs in the upper half (ADR 0019): the linker gives every symbol
@@ -897,19 +902,21 @@ build_with_feature selftest-write-text "$write_elf"
 build_with_feature selftest-execute-data "$data_elf"
 build_with_feature selftest-execute-rodata "$rodata_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
-text_range="$(symbol_address __image_start)..$(symbol_address __text_end)"
 for kind in write execute-data execute-rodata; do
     case "$kind" in
         write) elf="$write_elf" ;;
         execute-data) elf="$data_elf" ;;
         execute-rodata) elf="$rodata_elf" ;;
     esac
+    # The addresses come from the very ELF that boots: a build with another
+    # feature may lay the sections out differently.
+    text_range="$(symbol_of "$elf" __image_start)..$(symbol_of "$elf" __text_end)"
     image="$work_dir/$kind.img"
     python3 -I scripts/make-disk-image.py "$image" target/aarch64-unknown-uefi/debug/bootloader.efi "$elf" > /dev/null
     case "$kind" in
-        write) fault=(data\ abort 0x25 '0x[0-9a-f]{5}4f' "$text_range" "$(symbol_address __image_start)") ;;
-        execute-data) fault=(instruction\ abort 0x21 0x000000f "$(symbol_address __rodata_end)" "$(symbol_address __rodata_end)") ;;
-        execute-rodata) fault=(instruction\ abort 0x21 0x000000f "$(symbol_address __text_end)" "$(symbol_address __text_end)") ;;
+        write) fault=(data\ abort 0x25 '0x[0-9a-f]{5}4f' "$text_range" "$(symbol_of "$elf" __image_start)") ;;
+        execute-data) fault=(instruction\ abort 0x21 0x000000f "$(symbol_of "$elf" __rodata_end)" "$(symbol_of "$elf" __rodata_end)") ;;
+        execute-rodata) fault=(instruction\ abort 0x21 0x000000f "$(symbol_of "$elf" __text_end)" "$(symbol_of "$elf" __text_end)") ;;
     esac
     check_fault "$kind" "${fault[@]}" -kernel "$elf"
     check_fault "$kind-el2" "${fault[@]}" -machine virtualization=on -kernel "$elf"

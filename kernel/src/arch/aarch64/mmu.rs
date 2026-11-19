@@ -83,18 +83,21 @@ struct PhysicalTables;
 impl TableRead for PhysicalTables {
     fn table(&self, address: u64) -> &Table {
         // SAFETY: callers only pass the roots of live translation tables and
-        // the addresses found in them, which are tables the boot code or
-        // `init` built in RAM that every map the kernel runs on covers at its
-        // physical address, and nothing writes while they are read.
+        // the addresses found in them. Those are tables in RAM that the map
+        // the kernel runs on covers at the physical address: the boot tables
+        // (in the image, which only the boot map and the upper half reach, so
+        // they are read before `switch`) or the tables `init` built from
+        // frames (in the lower window). Nothing writes while they are read.
         unsafe { &*(address as usize as *const Table) }
     }
 }
 
 /// The most tables `init` builds: the two roots, a level 2 and a level 3 table
-/// for the image, and a level 2 table per gigabyte of RAM plus level 3 tables
-/// at the edges of each region. The boot map of a firmware has a few dozen
-/// regions, so this is generous; a bigger machine fails with `OutOfFrames`.
-const MAX_TABLES: usize = 256;
+/// for the image, and, per region of RAM, up to two level 2 and two level 3
+/// tables at its edges (whole gigabytes are blocks in the root). The boot map
+/// of a firmware has a few dozen regions, so this is generous; more regions
+/// fail with `OutOfFrames`.
+const MAX_TABLES: usize = 512;
 
 /// Tables taken from the frame allocator, which the kernel reaches at their
 /// physical address.
@@ -130,19 +133,32 @@ impl TableMemory for FrameTables<'_, '_> {
 }
 
 impl FrameTables<'_, '_> {
-    /// Makes the tables visible to the walker: clean to the point of coherency
-    /// by address, then wait for it.
+    /// Makes the tables visible to the walker: clean and invalidate to the point
+    /// of coherency by address, then wait for it.
     fn publish(&self) {
+        let line_size = data_cache_line_size();
         for &table in &self.owned[..self.count] {
-            for line in (table..table + kernelvm::PAGE_SIZE).step_by(64) {
-                // SAFETY: cleaning a line of RAM the kernel owns changes no
-                // data.
-                unsafe { asm!("dc cvac, {}", in(reg) line, options(nostack, preserves_flags)) };
+            for line in (table..table + kernelvm::PAGE_SIZE).step_by(line_size) {
+                // SAFETY: cleaning and invalidating a line of RAM the kernel
+                // owns changes no data. The invalidate matters when the
+                // walker's attributes are cacheable and the kernel's own
+                // writes were not (the direct path runs with `C` clear), so
+                // a stale line must not survive.
+                unsafe { asm!("dc civac, {}", in(reg) line, options(nostack, preserves_flags)) };
             }
         }
         // SAFETY: a barrier.
         unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
     }
+}
+
+/// The smallest data cache line, in bytes: `CTR_EL0.DminLine` is its log2 in
+/// words.
+fn data_cache_line_size() -> usize {
+    let ctr: u64;
+    // SAFETY: reading `CTR_EL0` has no side effects.
+    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack, preserves_flags)) };
+    4 << ((ctr >> 16) & 0xf)
 }
 
 fn register_ttbr(register: u64) -> u64 {
