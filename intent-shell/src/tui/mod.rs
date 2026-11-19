@@ -333,16 +333,22 @@ fn write_transcript(path: &Path, text: &str) -> std::io::Result<()> {
     file.write_all(text.as_bytes())
 }
 
+/// The state a session opens with: the header, and the notice the person must
+/// see first (a voice profile that could not be used) as the first note.
+fn opening_state(header: String, entry: Entry, notice: Option<String>) -> State {
+    let mut state = State::for_entry(header, entry);
+    state.blocks.extend(notice.map(state::Block::Note));
+    state
+}
+
 /// Open the interface and run until the person quits. The history is printed
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
-    let mut state = State::for_entry(
+    let mut state = opening_state(
         setup.header(&SessionState::start(&setup.host)),
         setup.entry(),
+        setup.notice.clone(),
     );
-    state
-        .blocks
-        .extend(setup.notice.clone().map(state::Block::Note));
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
@@ -676,5 +682,17 @@ mod tests {
         assert!(abandons_when_leaving(&busy("saying")));
         assert!(!abandons_when_leaving(&busy("working")));
         assert!(!abandons_when_leaving(&Mode::Input));
+    }
+
+    #[test]
+    fn a_notice_is_the_first_thing_in_the_history_and_none_adds_nothing() {
+        let with = opening_state(
+            "h".to_owned(),
+            Entry::Request,
+            Some("bad profile".to_owned()),
+        );
+        assert_eq!(with.transcript(), "bad profile\n");
+        let without = opening_state("h".to_owned(), Entry::Request, None);
+        assert!(without.blocks.is_empty());
     }
 }
