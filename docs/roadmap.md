@@ -66,7 +66,7 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K4c | Virtual pointers and a linear map: boot info, memory map, device tree and UART read through the upper half, the lower window dropped, BootloaderReclaimable memory handed to the allocator, 48-bit regime so RAM above 512 GiB boots. ADR first | A boot with the lower half empty after the switch; the reclaimed frames are allocated and used; a machine with more than 512 GiB boots | blocked: K4b |
 | K4d | Kernel placed anywhere in RAM: the bootloader (or the kernel) chooses the physical address, lifting the fixed `0x40200000` of ADR 0013 (a superseding ADR); VirtualBox boots with less than 2048 MiB | Boots with the image at two different physical addresses, direct and through the bootloader | blocked: K4c |
 | K4e | Hardware evidence for K4: the bootloader path at EL2 and with the caches in an unknown state on real Arm hardware or KVM; record what TLB and cache maintenance showed | A written report in `docs/`; any defect found is a fix item | later |
-| K5 | Kernel heap allocator | Boot-time allocation stress test | blocked: K4c |
+| K5 | Kernel heap allocator | Boot-time allocation stress test | next |
 | K6 | Interrupts: interrupt controller and generic timer | A boot that counts timer ticks | blocked: K5 |
 | K7 | Kernel threads, context switch, round-robin scheduler. Mechanism and policy kept apart (ADR 0002) | Two threads interleave output in a checked order | blocked: K6 |
 | K8 | Userspace: EL0, one address space per process, system call entry, first user program | A user program prints through a system call; an illegal access kills only that program | blocked: K7 |
