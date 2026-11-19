@@ -272,7 +272,11 @@ fn escape_unsafe(c: char) -> String {
             | '\u{E000}'..='\u{F8FF}'
             | '\u{F0000}'..='\u{10FFFF}'
     );
-    if c.is_control() || formatting || blank {
+    // The mark that starts every line of a model's reply (`reply::MARK`): no
+    // text from a file or the machine may contain it, so a line the screen or
+    // the terminal wraps out of such text can never start like a reply.
+    let reserved = c == '\u{BB}';
+    if c.is_control() || formatting || blank || reserved {
         // Beyond the BMP the digits vary in number, so they are delimited:
         // otherwise U+F0000 and U+F000 followed by "0" would print alike.
         if (c as u32) > 0xFFFF {

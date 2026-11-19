@@ -41,12 +41,20 @@ const TICK: Duration = Duration::from_millis(100);
 struct ChannelConfirm {
     events: Sender<Event>,
     replies: Receiver<Reply>,
+    /// Set once a question could not be put or answered: the interface has
+    /// been closed, and nothing more is worth asking the model for.
+    gone: bool,
 }
 
 impl ChannelConfirm {
-    fn ask(&self, event: Event) -> Option<Reply> {
-        self.events.send(event).ok()?;
-        self.replies.recv().ok()
+    fn ask(&mut self, event: Event) -> Option<Reply> {
+        let answer = self
+            .events
+            .send(event)
+            .ok()
+            .and_then(|()| self.replies.recv().ok());
+        self.gone |= answer.is_none();
+        answer
     }
 }
 
@@ -127,6 +135,7 @@ fn serve(
     let mut confirm = ChannelConfirm {
         events: events.clone(),
         replies,
+        gone: false,
     };
     let mut session = SessionState::start(host);
     for request in requests {
@@ -147,7 +156,11 @@ fn serve(
         let rendered = outcome.render();
         // A `cd` changes where the session is, which the header says.
         let _ = events.send(Event::Header(header(&session.cwd_text(host))));
-        let speaking = voice.as_ref().filter(|_| entry == Entry::Request);
+        // Leaving at a question ends the request as a refusal: no reply is
+        // worth a call to the model for an interface that is closing.
+        let speaking = voice
+            .as_ref()
+            .filter(|_| entry == Entry::Request && !confirm.gone);
         let shown = match speaking {
             Some(_) => Event::OutcomeAwaitingReply(rendered),
             None => Event::Outcome(rendered),
@@ -430,6 +443,7 @@ mod tests {
             ChannelConfirm {
                 events: events_tx,
                 replies,
+                gone: false,
             },
             events,
             replies_tx,
@@ -694,5 +708,43 @@ mod tests {
         assert_eq!(with.transcript(), "bad profile\n");
         let without = opening_state("h".to_owned(), Entry::Request, None);
         assert!(without.blocks.is_empty());
+    }
+
+    #[test]
+    fn leaving_at_a_question_does_not_wait_for_a_reply_to_the_refusal() {
+        use crate::pipeline_tests::{DELETE_LARGEST, files};
+        use crate::testing::{MemoryLog, ScriptedPlanner, ScriptedSpeaker, user};
+
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        let (reply_tx, replies) = channel();
+        request_tx.send("largest".to_owned()).unwrap();
+        drop((request_tx, reply_tx));
+        let speaker = ScriptedSpeaker::says("never asked");
+        let mut log = MemoryLog::default();
+        serve(
+            &Authority::full(user(false)),
+            &files(),
+            Some(&ScriptedPlanner::new(&[DELETE_LARGEST])),
+            &mut log,
+            Wires {
+                requests,
+                events: events_tx,
+                replies,
+            },
+            &|cwd| format!("header in {cwd}"),
+            Some(Voice {
+                speaker: &speaker,
+                profile: crate::reply::Profile::DirectTechnical,
+            }),
+        );
+        assert!(speaker.asked.borrow().is_empty());
+        let seen: Vec<Event> = events.try_iter().collect();
+        assert!(seen.iter().any(|e| matches!(e, Event::Outcome(_))));
+        assert!(
+            seen.iter()
+                .all(|e| !matches!(e, Event::OutcomeAwaitingReply(_) | Event::Said(_)))
+        );
+        assert!(log.events.iter().all(|e| e["event"] != "reply"));
     }
 }

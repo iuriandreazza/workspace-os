@@ -95,10 +95,13 @@ space, escaped like all model text (`printable`), then cut at 400 characters (no
 bytes), so escaping cannot grow it. It is then wrapped by `reply::block`, not by the screen, to the
 actual width, and **every** line, the title and each continuation, starts with
 `  » `. The line adapter counts every non-ASCII character as two cells, so a wide
-character its width table does not know cannot wrap a line into an unmarked one. No line of the deterministic screens starts with that: a test walks
-the result, the plan screens, the details view and the root panel, including
-a file whose name and content imitate the mark (file content is indented four
-cells, so `  » ` at the start of a line is never content). A hostile reply
+character its width table does not know cannot wrap a line into an unmarked one. No line of the deterministic screens starts with that. `»` (U+00BB) is now a
+reserved character: `printable`, which escapes all text from files, the machine
+and the model, writes it as `\u00bb`, so no text from a file can contain the mark,
+and a long line the screen or the terminal wraps cannot leave a row that starts
+like a reply. The cost: a file name with a `»` shows escaped, and a `»` cannot be
+typed in the interface. A test wraps hostile file content at four widths; another
+walks the result, the plan screens, the details view and the root panel. A hostile reply
 that imitates a verdict table, a root panel, a command or a plan in JSON is
 therefore text after a mark and nothing else.
 
@@ -175,6 +178,8 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 29. the result sent without the wait for the reply: fails `the_result_is_sent_first_and_the_reply_after_it_with_saying_in_between`
 30. a late reply ends any wait: fails `no_request_can_start_between_the_result_and_its_reply_and_a_late_reply_cannot_end_a_wait`
 31. the notice about a bad profile not shown in the interface: fails `a_notice_is_the_first_thing_in_the_history_and_none_adds_nothing`
+32. `»` not reserved: fails `text_from_a_file_cannot_contain_the_mark_so_no_wrapped_line_can_start_like_a_reply`
+33. a reply asked for after leaving at a question: fails `leaving_at_a_question_does_not_wait_for_a_reply_to_the_refusal`
 
 
 Two mutations the task names cannot be written: "reply before the confirm or

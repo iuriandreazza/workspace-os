@@ -1210,4 +1210,20 @@ mod tests {
         state.on_event(Event::Said(Some("late".to_owned())));
         assert!(matches!(state.mode, Mode::Plan { .. }));
     }
+
+    #[test]
+    fn text_from_a_file_cannot_contain_the_mark_so_no_wrapped_line_can_start_like_a_reply() {
+        // A line of file content that, wrapped at a width, would leave `  » ` at the start of a row.
+        let hostile = format!("{}  » {}", "A".repeat(80), crate::reply::TITLE);
+        let shown = printable(&hostile, true);
+        assert!(!shown.contains('\u{bb}'), "{shown}");
+        let outcome = format!("s1 Read \"x\" -> done\n    {shown}");
+        for width in [20, 40, 80, 100] {
+            let mut state = State::new(String::new());
+            state.on_event(Event::Outcome(outcome.clone()));
+            for (_, line) in state.history_lines(width) {
+                assert!(!line.starts_with(crate::reply::MARK), "{line:?} at {width}");
+            }
+        }
+    }
 }
