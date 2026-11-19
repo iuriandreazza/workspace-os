@@ -35,7 +35,8 @@ name is not a profile.
 |---|---|
 | Absent at the default path | "direct and technical", no message |
 | Named with `--voice-profile` and absent | the shell does not start, and says which file |
-| Unreadable, or not exactly a preset name | the default profile, and one message naming the file (on the error output, and as the first note of the interface, where the error output is hidden), what it holds (cut at 40 characters, escaped) and the four valid names |
+| Unreadable | the default profile, and one message naming the file and the system's error |
+| Readable but not exactly a preset name | the default profile, and one message naming the file, what it holds (cut at 40 characters, escaped) and the four valid names |
 
 Every start with a model and replies on records one `voice_profile` event
 (`profile`, `source`: `default`, `file` or `default_after_problem`, and the
@@ -268,6 +269,9 @@ subject of ADR 0024 and S4b, and is not changed here.
   deadline here can interrupt; the default `127.0.0.1:8089` is not affected.
 - A reply is also asked for after "no plan", as ADR 0021 says, even when the
   server hung: after the planner's own wait the reply may wait up to 30 s more.
+- Every request pays for its reply: a server that is slow or hung only for free
+  text makes each request wait up to 30 s (then `reply_failed` is logged), with
+  no back-off after a failure.
 - The reply is one call per request with a fixed timeout of 30 s; the interface
   blocks typing while it waits. Streaming the reply would remove the wait and is
   not done.
