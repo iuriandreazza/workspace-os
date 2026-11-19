@@ -148,9 +148,9 @@ bytes, from `dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/netboot-3.24.4
 ## Boots added to the gate
 
 All in `scripts/boot-smoke-test.sh`, on QEMU `virt` with EDK2, driving the menu
-through the serial console. Each assertion that matters was confirmed by
-mutation; see the pull request for the list of mutations and what each one made
-fail.
+through the serial console. The assertions were confirmed by mutation
+(the pull request lists each mutation and what it made fail), except the paths
+named under "Not in the gate" in the limits below.
 
 | Boot | What it proves |
 |---|---|
@@ -175,7 +175,12 @@ number of pages, which is why it is one.
   the supported way is the `initrd` key.
 - The gate's Linux boots end in a kernel panic for lack of a root filesystem,
   by design; what is checked is the start.
-- Not in the gate: a refusal for an empty file, a chainloaded loader that
+- Not in the gate: everything that runs after an image *returns* to the
+  bootloader with Linux (it always ends in a panic, so none does): removing the
+  initrd protocol, freeing the initrd, the unload after a refused start; the
+  freeing of the image's buffer on a refusal (nothing reads memory back); a
+  `linux` entry with no `cmdline` (no load options set); a refusal for an empty
+  file, a chainloaded loader that
   returns an error status (same code path as the success the gate runs), and
   that the padding file of the initrd arrived intact (the `/init` and the
   archive's headers did, as the kernel found them).
