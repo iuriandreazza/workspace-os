@@ -12,6 +12,9 @@ pub const MAX_FILE_ENTRIES: usize = MAX_ENTRIES - 2;
 /// Linux's own limit on arm64 is 2048; a shorter one leaves room for what the
 /// loader may add and keeps the UCS-2 copy on a small buffer.
 pub const MAX_COMMAND_LINE: usize = 1023;
+/// A label is one line of the menu: longer than this it wraps, and a 64 KiB
+/// file could hold a label that takes seconds to print at every redraw.
+pub const MAX_LABEL: usize = 48;
 /// The longest path the loader will put in a device path node.
 pub const MAX_PATH: usize = 255;
 
@@ -83,6 +86,7 @@ pub enum ErrorKind {
     /// output fails and the bootloader would panic), and a control character
     /// would rewrite the line.
     LabelCharacter(char),
+    LabelTooLong,
     /// The entry has neither `linux` nor `chainload`.
     NoKind,
     /// The entry has both.
@@ -129,6 +133,7 @@ impl fmt::Display for ConfigError {
                     c.escape_default()
                 )
             }
+            ErrorKind::LabelTooLong => write!(f, "a label is at most {MAX_LABEL} characters"),
             ErrorKind::NoKind => f.write_str("the entry has neither linux nor chainload"),
             ErrorKind::TwoKinds => f.write_str("the entry has both linux and chainload"),
             ErrorKind::LinuxKeyWithoutLinux => {
@@ -238,6 +243,9 @@ pub fn parse<'a>(text: &'a str, out: &mut [Entry<'a>]) -> Result<usize, ConfigEr
             if let Some(bad) = value.chars().find(|c| !(' '..='~').contains(c)) {
                 return Err(fail(ErrorKind::LabelCharacter(bad)));
             }
+            if value.len() > MAX_LABEL {
+                return Err(fail(ErrorKind::LabelTooLong));
+            }
             pending = Some(Pending {
                 line,
                 label: value,
@@ -330,6 +338,14 @@ mod tests {
         );
         // A carriage return ends a line; it is not part of the label.
         assert_eq!(parsed("entry A\r\nlinux \\X\r\n").unwrap().0[0].label, "A");
+    }
+
+    #[test]
+    fn a_label_has_a_length_limit() {
+        let exact = format!("entry {}\nlinux \\X", "L".repeat(MAX_LABEL));
+        assert_eq!(parsed(&exact).unwrap().1, 1);
+        let long = format!("entry {}\nlinux \\X", "L".repeat(MAX_LABEL + 1));
+        assert_eq!(error(&long).kind, ErrorKind::LabelTooLong);
     }
 
     #[test]

@@ -142,7 +142,7 @@ fn read_file_at<'a>(what: &'static str, path: &'a str) -> Result<&'static mut [u
         FileError::Firmware(error) => Refusal::File {
             what,
             path,
-            step: "open",
+            step: "read",
             status: error.status(),
         },
     })?;
@@ -440,6 +440,13 @@ fn run_image<'a>(
         Err(error) => error.status(),
     };
     drop(installed);
-    // No `unload_image`: the firmware unloads an application that returns.
+    // The firmware unloads an application that ran and returned. One that was
+    // refused before it ran (a security policy, a bad handle) is still loaded.
+    if matches!(
+        status,
+        Status::SECURITY_VIOLATION | Status::INVALID_PARAMETER
+    ) {
+        let _ = boot::unload_image(child);
+    }
     Ok(status)
 }

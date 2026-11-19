@@ -73,8 +73,9 @@ the end.
   files (a boot manager's configuration, for example) relative to where it
   was loaded from.
 - Here the device path given to `LoadImage` is the device path of the partition
-  the bootloader started from, followed by a file-path node; the firmware sets
-  the child's device handle from it. The loader gives `LoadImage` the bytes it
+  the bootloader started from, followed by a file-path node; EDK2 sets
+  the child's device handle from it (the probe in the gate shows it; another
+  firmware was not tried). The loader gives `LoadImage` the bytes it
   read and checked, so what was checked is what starts.
 - **Another partition** needs the partition to be named in the entry (its GPT
   partition GUID) and its `SimpleFileSystem` found among the handles by the
@@ -178,6 +179,9 @@ number of pages, which is why it is one.
   returns an error status (same code path as the success the gate runs), and
   the contents of the initrd (the kernel unpacks it, which checks its headers;
   only its size is read back).
+- `LoadImage` that answers `SECURITY_VIOLATION` loads the image without starting
+  it; the `uefi` crate drops that handle, so the loaded copy stays until the
+  machine resets. Only a start that fails that way is unloaded here.
 - If the firmware refused to uninstall the initrd protocol after Linux's stub
   returned, a second Linux entry could find the stale handle. The stub reads
   the protocol with `HandleProtocol`, which does not block an uninstall, and
