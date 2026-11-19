@@ -590,6 +590,9 @@ pub fn map_ram_region<M: TableMemory>(
     region: Range<u64>,
     hole: &Range<u64>,
 ) -> Result<(), MapError> {
+    if region.is_empty() {
+        return Ok(());
+    }
     let start = region.start & !(PAGE_SIZE - 1);
     let end = region
         .end

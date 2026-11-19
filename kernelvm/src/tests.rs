@@ -553,3 +553,11 @@ fn regions_that_share_a_page_map_it_once() {
         Err(MapError::Overlap)
     );
 }
+
+#[test]
+fn an_empty_region_maps_nothing() {
+    let mut arena = Arena::new(16);
+    let root = ram_window(&mut arena, &[(0x4000_0100, 0x4000_0100)], 0..0);
+    assert!(translate(&arena, root, 0x4000_0000).is_none());
+    assert_eq!(arena.tables.len(), 1);
+}

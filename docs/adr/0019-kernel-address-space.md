@@ -318,10 +318,15 @@ image at the physical address the ELF names. Lifting it is a separate item.
   against the architecture, not demonstrated. Only hardware, or an accelerator
   that runs on it, validates them. On Apple silicon `-accel hvf -cpu host` can be
   tried by hand for the bootloader path; it is not part of the gate.
-- **The guard page does not give a reported fault.** A stack overflow faults at the
-  guard page, but the handler of a synchronous exception saves its context on the
-  same stack pointer (`exceptions.s`), so the report itself faults. The result is
-  a hang, not a message. A separate exception stack is an item of its own.
+- **The guard page weakens an overflow, it does not stop it.** An overflow
+  faults at the guard page, but the handler of a synchronous exception saves its
+  context (288 bytes) on the same stack pointer (`exceptions.s`), so it faults
+  again, and each nested fault moves `SP` down by another 288 bytes. After about
+  fifteen rounds `SP` is below the guard page, in the top of `.bss`, the saves
+  succeed, a report is printed, and the register frames have overwritten what
+  was there (found in review by recursing until the guard page was hit). A frame
+  larger than the guard page's 4 KiB skips it altogether. A separate exception
+  stack, which fixes both, is an item of its own.
 - **The direct path assumes QEMU `virt`'s layout** in phase A (devices below
   1 GiB, RAM above), until phase B rebuilds the lower half from the device tree.
 - **The audit does not look at memory type or shareability** of a leaf, only at

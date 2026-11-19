@@ -12,7 +12,7 @@ EL1, EL2 or EL3, and prints a banner on the serial console. Secondary cores are
 parked. A synchronous exception taken in the kernel saves the processor
 context, is decoded from `ESR_EL1` and, for a breakpoint, returns to the
 interrupted code. Any other exception ends in a kernel panic that describes it, as long as
-the kernel stack is valid (a guard page below the stack faults, but is not reported).
+the kernel stack is valid (a guard page below the stack faults, but the report overwrites the top of `.bss`: ADR 0019).
 
 The kernel reads the whole memory map and the reserved regions from the device
 tree and manages physical memory in 4 KiB frames. A UEFI bootloader loads it from a
