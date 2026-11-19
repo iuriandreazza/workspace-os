@@ -90,9 +90,6 @@ pub enum Effect {
     Quit,
 }
 
-/// A file has no width: a reply in a transcript wraps at the usual terminal's.
-const TRANSCRIPT_REPLY_WIDTH: usize = 80;
-
 /// After a question is drawn, answer keys are ignored for this long. A terminal
 /// without the kitty keyboard protocol reports a held or double-tapped `y` as
 /// fresh presses, and one of those must not answer a question not yet read.
@@ -541,7 +538,10 @@ impl State {
 
     /// The history as plain text, for the terminal after the interface closes
     /// and for `--transcript`.
-    pub fn transcript(&self) -> String {
+    /// The history as plain text with a reply wrapped to `reply_width` cells:
+    /// the width of the terminal it is printed to, so that no wrapped line of
+    /// it loses its mark.
+    pub fn transcript_for(&self, reply_width: usize) -> String {
         let mut out = String::new();
         for block in &self.blocks {
             match block {
@@ -551,7 +551,7 @@ impl State {
                     out.push('\n');
                 }
                 Block::Reply(text) => {
-                    let lines = reply::block(text, TRANSCRIPT_REPLY_WIDTH, reply::cautious_cells);
+                    let lines = reply::block(text, reply_width, reply::cautious_cells);
                     out.push_str(&lines.join("\n"));
                     out.push('\n');
                 }
@@ -1126,19 +1126,19 @@ mod tests {
         type_text(&mut state, "list downloads");
         state.on_key(press(KeyCode::Enter));
         state.on_event(Event::Outcome("done\n".to_owned()));
-        assert_eq!(state.transcript(), "intent> list downloads\ndone\n");
+        assert_eq!(state.transcript_for(80), "intent> list downloads\ndone\n");
         let mut commands = State::for_entry(String::new(), Entry::Command);
         commands
             .blocks
             .push(Block::Request("fs list --in home".to_owned()));
-        assert_eq!(commands.transcript(), "command> fs list --in home\n");
+        assert_eq!(commands.transcript_for(80), "command> fs list --in home\n");
     }
 
     #[test]
     fn the_transcript_lays_the_columns_of_a_tree_out_instead_of_keeping_the_tab() {
         let mut state = State::new(String::new());
         state.on_event(Event::Outcome("a.txt\t5 KB\n".to_owned()));
-        let transcript = state.transcript();
+        let transcript = state.transcript_for(80);
         assert!(!transcript.contains('\t'), "{transcript:?}");
         assert!(transcript.trim_end().ends_with("5 KB"), "{transcript:?}");
     }
@@ -1153,7 +1153,7 @@ mod tests {
         none.on_event(Event::Said(None));
         assert_eq!(none.mode, Mode::Input);
         assert_eq!(none.blocks, without.blocks);
-        assert_eq!(none.transcript(), without.transcript());
+        assert_eq!(none.transcript_for(80), without.transcript_for(80));
         assert_eq!(none.history_lines(40), without.history_lines(40));
 
         let mut with = State::new("h".to_owned());
@@ -1164,8 +1164,8 @@ mod tests {
         assert_eq!(lines[0], (Kind::Outcome, "done".to_owned()));
         let replied: Vec<_> = lines.iter().filter(|(k, _)| *k == Kind::Reply).collect();
         assert_eq!(replied.last().unwrap().1, "  » All done here.", "{lines:?}");
-        assert!(with.transcript().starts_with("done\n"));
-        assert!(with.transcript().ends_with("  » All done here.\n"));
+        assert!(with.transcript_for(80).starts_with("done\n"));
+        assert!(with.transcript_for(80).ends_with("  » All done here.\n"));
     }
 
     #[test]
@@ -1251,5 +1251,17 @@ mod tests {
         assert_eq!(state.visible_history(80, 5), reading);
         state.on_event(Event::Outcome("again\n".to_owned()));
         assert_eq!(state.scroll, 0);
+    }
+
+    #[test]
+    fn a_reply_printed_when_the_interface_closes_is_wrapped_to_the_terminal() {
+        let mut state = State::new("h".to_owned());
+        state.on_event(Event::Said(Some("word ".repeat(30))));
+        for width in [30, 60, 100] {
+            for line in state.transcript_for(width).lines() {
+                assert!(line.starts_with(crate::reply::MARK), "{line:?}");
+                assert!(line.chars().count() <= width, "{line:?} at {width}");
+            }
+        }
     }
 }

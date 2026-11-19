@@ -420,7 +420,8 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
 
     // Saved before the terminal is touched: on a closed terminal restoring it
     // can fail, and that must not stop the transcript from being saved.
-    let text = state.transcript();
+    // To the terminal's own width: it wraps what is wider, and a wrapped row has no mark.
+    let text = state.transcript_for(usize::from(state.width));
     let written = transcript.map_or(Ok(()), |path| {
         write_transcript(path, &text)
             .map_err(|e| format!("cannot write the transcript {}: {e}", path.display()))
@@ -705,7 +706,7 @@ mod tests {
             Entry::Request,
             Some("bad profile".to_owned()),
         );
-        assert_eq!(with.transcript(), "bad profile\n");
+        assert_eq!(with.transcript_for(80), "bad profile\n");
         let without = opening_state("h".to_owned(), Entry::Request, None);
         assert!(without.blocks.is_empty());
     }

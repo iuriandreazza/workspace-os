@@ -102,6 +102,11 @@ pub enum Source {
 /// gives the default, with a message naming the file, because a typo must not
 /// be mistaken for the voice that was wanted. A file named on the command line
 /// that does not exist is an error: the person asked for it.
+/// The path as the messages write it: escaped, like every text the person did not type here.
+fn shown_path(path: &Path) -> String {
+    printable(&path.to_string_lossy(), false)
+}
+
 pub fn load_profile(path: &Path, named_by_person: bool) -> Result<(Profile, Source), String> {
     // Only the start is read: a device or a huge file must not be read to its end.
     // Non-blocking, so a named pipe with no writer is an empty file, not a hang.
@@ -119,7 +124,7 @@ pub fn load_profile(path: &Path, named_by_person: bool) -> Result<(Profile, Sour
             return if named_by_person {
                 Err(format!(
                     "the voice profile {} does not exist",
-                    path.display()
+                    shown_path(path)
                 ))
             } else {
                 Ok((Profile::DirectTechnical, Source::Default))
@@ -130,7 +135,7 @@ pub fn load_profile(path: &Path, named_by_person: bool) -> Result<(Profile, Sour
                 Profile::DirectTechnical,
                 Source::DefaultAfterProblem(format!(
                     "cannot read the voice profile {}: {e}; using direct-technical",
-                    path.display()
+                    shown_path(path)
                 )),
             ));
         }
@@ -141,7 +146,7 @@ pub fn load_profile(path: &Path, named_by_person: bool) -> Result<(Profile, Sour
             Profile::DirectTechnical,
             Source::DefaultAfterProblem(format!(
                 "the voice profile {} holds {:?}, which is not one of {}; using direct-technical",
-                path.display(),
+                shown_path(path),
                 printable(&capped(text.trim(), 40), false),
                 Profile::ALL.map(Profile::id).join(", ")
             )),

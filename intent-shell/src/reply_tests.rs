@@ -726,3 +726,15 @@ fn a_step_that_was_not_run_is_told_to_the_model_in_the_codes_words_not_the_hosts
         "{facts}"
     );
 }
+
+#[test]
+fn the_path_in_a_profile_message_is_escaped() {
+    let path = std::path::PathBuf::from("/nowhere/\u{1b}[2Jprofile");
+    let dir = profile_file("escape", None);
+    let bad = dir.parent().unwrap().join("\u{1b}[2Jprofile");
+    std::fs::write(&bad, "pirate").unwrap();
+    let Ok((_, Source::DefaultAfterProblem(message))) = load_profile(&bad, false) else {
+        panic!("{path:?}");
+    };
+    assert!(!message.contains('\u{1b}'), "{message:?}");
+}

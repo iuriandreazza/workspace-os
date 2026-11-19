@@ -101,7 +101,7 @@ reserved character: `printable`, which escapes all text from files, the machine
 and the model, writes it as `\u00bb`, so no text from a file can contain the mark,
 and a long line the screen or the terminal wraps cannot leave a row that starts
 like a reply. The cost: a file name with a `»` shows escaped, and a `»` cannot be
-typed in the interface. A test wraps hostile file content at four widths; another
+typed in the interface. The history printed when the interface closes wraps a reply to the terminal's own width, for the same reason (`--transcript` files use the same text). A test wraps hostile file content at four widths; another
 walks the result, the plan screens, the details view and the root panel. A hostile reply
 that imitates a verdict table, a root panel, a command or a plan in JSON is
 therefore text after a mark and nothing else.
@@ -187,6 +187,8 @@ Mutations, each applied to the code and shown to fail the gate (then undone):
 37. a reply that throws the reader back to the bottom of the history: fails `a_reply_does_not_move_the_person_who_is_reading_back`
 38. the end of the input remembered for the next request: fails `the_end_of_the_input_is_forgotten_for_the_next_request`
 39. a reply that shifts the text the reader is looking at: fails `a_reply_does_not_move_the_person_who_is_reading_back`
+40. the profile path unescaped in a message: fails `the_path_in_a_profile_message_is_escaped`
+41. a reply printed at exit wrapped to another width than the terminal's: fails `a_reply_printed_when_the_interface_closes_is_wrapped_to_the_terminal`
 
 
 Two mutations the task names cannot be written: "reply before the confirm or
