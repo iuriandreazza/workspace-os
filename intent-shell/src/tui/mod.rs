@@ -195,6 +195,18 @@ fn worker(
     );
 }
 
+/// Whether leaving may abandon what the worker is doing: only a wait for the
+/// model, to plan or to write a reply, because nothing has run then.
+fn abandons_when_leaving(mode: &Mode) -> bool {
+    matches!(
+        mode,
+        Mode::Busy {
+            label: "asking the model" | "saying",
+            ..
+        }
+    )
+}
+
 fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
@@ -350,13 +362,7 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
     // closing the channels lets the worker's wait fail and record it. A running
     // step is waited for rather than killed half way. Only a wait for the
     // model is abandoned, because nothing has run and the request is logged.
-    let waiting_for_model = matches!(
-        state.mode,
-        Mode::Busy {
-            label: "asking the model" | "saying",
-            ..
-        }
-    );
+    let waiting_for_model = abandons_when_leaving(&state.mode);
     drop((request_tx, reply_tx));
     // A second Ctrl-C or signal stops the wait for a stuck step, and a signal
     // alone (a closed terminal never sends a second) waits only a few seconds.
@@ -650,5 +656,14 @@ mod tests {
         assert!(seen.iter().all(|e| !matches!(e, Event::Said(_))));
         assert!(speaker.asked.borrow().is_empty());
         assert!(log.events.iter().all(|e| e["event"] != "reply"));
+    }
+
+    #[test]
+    fn leaving_abandons_a_wait_for_the_model_or_for_a_reply_but_never_a_running_step() {
+        let busy = |label| Mode::Busy { label, since_ms: 0 };
+        assert!(abandons_when_leaving(&busy("asking the model")));
+        assert!(abandons_when_leaving(&busy("saying")));
+        assert!(!abandons_when_leaving(&busy("working")));
+        assert!(!abandons_when_leaving(&Mode::Input));
     }
 }
