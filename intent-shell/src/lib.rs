@@ -16,6 +16,7 @@ pub mod plain;
 pub mod plan;
 pub mod ports;
 pub mod reference;
+pub mod reply;
 pub mod resolve;
 pub mod screen;
 pub mod session;
@@ -32,6 +33,9 @@ mod command_tests;
 
 #[cfg(test)]
 mod pipeline_tests;
+
+#[cfg(test)]
+mod reply_tests;
 
 #[cfg(test)]
 mod resolution_tests;

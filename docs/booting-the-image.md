@@ -3,8 +3,8 @@ title: "Booting the disk image"
 type: guide
 status: active
 created: 2026-11-16
-updated: 2026-11-16
-tags: [boot, bootloader, uefi, qemu, virtualbox, aarch64]
+updated: 2026-11-19
+tags: [boot, bootloader, uefi, qemu, virtualbox, aarch64, linux]
 ---
 
 # Booting the disk image
@@ -63,7 +63,7 @@ as well as the screen:
 - The menu only appends lines to the console. The graphical menu (K2e) draws
   next to it and does not replace it, because the gate reads this one.
 
-The list of entries is data (`bootinfo::menu::BUILT_IN`), and the menu logic
+The list of entries is data (`bootinfo::menu::BUILT_IN` and `\WSOS.CFG`, below), and the menu logic
 (`bootinfo/src/menu.rs`) does not know what an entry means, so a list made by
 the boot model (ADR 0009) takes its place without changing the menu.
 
@@ -71,6 +71,75 @@ To type on the console of a QEMU run, use `-nographic` as below: the terminal
 you start QEMU in is the serial console. `./scripts/check.sh` types on the
 serial line through a socket instead, once the menu has been drawn, and starts
 each entry in turn.
+
+## Other systems: Linux and chainloading
+
+Besides our kernel the menu can start Linux and the EFI loader of another
+system (K2d, ADR 0008, ADR 0025). Their entries are written by hand in
+`\WSOS.CFG`, a text file in the root of the EFI system partition. Without it
+the menu holds Normal and Recovery only; with it the entries follow them,
+numbered from 3 (seven at most, so each has a digit).
+
+```
+# a line that starts with a hash is a comment
+entry Alpine Linux
+linux \VMLINUZ
+cmdline console=ttyAMA0 earlycon
+initrd \INITRD.IMG
+
+entry Another system
+chainload \EFI\OTHER\BOOTAA64.EFI
+```
+
+- `entry <label>` opens an entry; `linux`, `cmdline`, `initrd` and `chainload`
+  belong to it. An entry has `linux` or `chainload`, not both; `cmdline` and
+  `initrd` only go with `linux`. A path is on the EFI system partition, starts
+  with a backslash and has no `.` or `..` part. The command line is printable
+  ASCII, at most 1023 characters.
+- A file with an error does not stop the boot: the bootloader prints the line
+  (`\WSOS.CFG, line 3: unknown key: the built-in entries only`) and shows
+  Normal and Recovery only.
+- Before it starts an entry the bootloader reads the image and checks that it
+  is a PE image for aarch64 with the EFI application subsystem, and that the
+  initrd it names exists. Any failure prints one line
+  (`cannot start Alpine Linux: Linux image \VMLINUZ is not on the EFI system
+  partition`, `... is not a valid EFI image: a PE image for x86_64 (machine
+  0x8664), not aarch64`, `initrd \INITRD.IMG is not on ...`) and the menu
+  comes back **with no countdown**, so a failing default is never retried by
+  itself.
+- A chainloaded loader that returns (a declined boot, an error) also brings the
+  menu back, with the status it returned.
+
+### Try Linux by hand under QEMU
+
+`make-disk-image.py` takes `--file \ESP\PATH=LOCAL` for every extra file;
+names must be upper-case 8.3 (`VMLINUZ`, `INITRD.IMG`), the only ones it writes. The
+Linux kernel the gate uses is a pinned Alpine release; the script fetches and
+checks it, and prints where the cached file is:
+
+```bash
+linux="$(./scripts/fetch-test-kernel.sh)"
+printf 'entry Alpine Linux\nlinux \\VMLINUZ\ncmdline console=ttyAMA0 earlycon\n' > /tmp/WSOS.CFG
+cargo build -p kernel && cargo build -p bootloader --target aarch64-unknown-uefi
+python3 -I scripts/make-disk-image.py target/linux.img \
+  target/aarch64-unknown-uefi/debug/bootloader.efi \
+  target/aarch64-unknown-none-softfloat/debug/kernel \
+  --file '\WSOS.CFG=/tmp/WSOS.CFG' --file "\\VMLINUZ=$linux"
+qemu-system-aarch64 -machine virt,acpi=off -cpu cortex-a72 -m 512M -nographic \
+  -bios "$(brew --prefix)/share/qemu/edk2-aarch64-code.fd" \
+  -drive file=target/linux.img,format=raw,if=virtio
+```
+
+Press `3` on the menu. Linux prints its first lines and, with no root
+filesystem, ends in `Kernel panic ... Unable to mount root fs`: that is the
+expected end of this test. Add `initrd \INITRD.IMG` to the entry and an image
+(`--file '\INITRD.IMG=...'`) to give it an initial ramdisk; the kernel then
+prints `Freeing initrd memory`. To chainload, add
+`chainload \EFI\TEST\PROBE.EFI` and put `chainprobe.efi` from
+`target/aarch64-unknown-uefi/debug/` there: it says where it was loaded from
+and returns to the menu.
+
+Sources and the reasons for each choice are in `docs/k2d-other-kernels.md`.
 
 ## QEMU on a Mac with Apple silicon
 
@@ -191,6 +260,8 @@ needs a reset. The messages the gate provokes:
 | `the kernel needs 0xA..0xB and the firmware refused it` | The firmware holds the kernel's load address (VirtualBox with 1024 MiB). The firmware's memory map is printed just before. |
 | `the kernel is linked at address 0` | The kernel image asks to be loaded at page zero. |
 | `the firmware offers ACPI only (rsdp 0x...)` | ACPI is on and no device tree is published: turn ACPI off. |
+
+The entries of other systems do not end the boot: their refusals are in "Other systems" above and bring the menu back.
 
 ## What was not verified
 

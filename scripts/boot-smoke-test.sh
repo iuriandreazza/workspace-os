@@ -78,6 +78,26 @@
 #   uefi-768, uefi-el2-high  Enter starts Normal (boot mode 0)
 #   uefi-el2              the key `1` starts Normal (boot mode 0)
 #
+# Other kernels (K2d, ADR 0025): the bootloader starts Linux and the EFI loader
+# of another system from the entries of `\WSOS.CFG` on the partition. The
+# Linux kernel is a pinned Alpine release fetched and checked by
+# scripts/fetch-test-kernel.sh; the gate fails if it cannot be had.
+#
+#   uefi-linux        Linux with a command line and no initrd: the kernel
+#                     prints its first lines, the command line it received,
+#                     and nothing about an initrd
+#   uefi-linux-initrd Linux with an initrd of a known size: the kernel frees
+#                     exactly that many KiB of it, and unpacks it without error
+#   uefi-others       every refusal in turn (a missing or invalid Linux image
+#                     or loader, a directory, an initrd that is not there), each ending in
+#                     its own message and back at the menu with no countdown;
+#                     then a chainloaded application that starts and returns,
+#                     and our kernel from the same menu afterwards
+#   uefi-bad-config   a configuration file with an error: said, the built-in
+#                     entries only, and the default entry still boots
+#   uefi-with-config  a valid file: the built-in entries stay first, and the
+#                     default entry still boots by the timeout
+#
 # Three more boots use kernels built to raise an exception nothing resumes
 # from, and must end in a kernel panic that names it:
 #
@@ -483,7 +503,9 @@ log_has() {
     grep -qF -- "$1" <<< "$log"
 }
 
-# now_ms: milliseconds on a monotonic clock, for the countdown's length.
+# now_ms: milliseconds, for the countdown's length. The wall clock and not
+# `time.monotonic_ns`: Apple's Python 3.9 on macOS 27 returns a value that
+# restarts with every process, which made every reading differ by a few ms.
 now_ms() {
     python3 -I -c 'import time; print(time.time_ns() // 1000000)'
 }
@@ -850,6 +872,9 @@ echo "PASS (reserved-below-image): page tables built in the image's own 2 MiB"
 extra_reserved_frames=0
 extra_reserved_ranges=0
 uefi_firmware="$(find_uefi_firmware)"
+# The cache or the network failing stops the gate before any boot that needs it, loudly: a green gate
+# must have started Linux.
+linux_kernel="$("$PWD/scripts/fetch-test-kernel.sh")"
 # A bootloader built to hand over a boot info of an unknown version, kept before
 # the plain one is built again.
 cargo build --quiet --target-dir "$TARGET_DIR" -p bootloader --target aarch64-unknown-uefi \
@@ -912,6 +937,249 @@ relocated_image "$firmware_region"
 check_uefi_refusal uefi-load-busy "$work_dir/relocated.img" \
     "the kernel needs $firmware_region..$(printf '%#x' $((firmware_region + span))) and the firmware refused it" \
     -machine virt,acpi=off
+
+# --- Other kernels (K2d) ---------------------------------------------------
+LINUX_RELEASE="$(sed -n 's/^readonly KERNEL_RELEASE="\(.*\)"$/\1/p' scripts/fetch-test-kernel.sh)"
+[[ -n "$LINUX_RELEASE" ]] || fail "KERNEL_RELEASE not found in scripts/fetch-test-kernel.sh"
+readonly LINUX_CMDLINE="console=ttyAMA0 earlycon wsos_token=k2d-ok"
+# Linux ends its boot with a panic (no root filesystem, or an /init that does
+# not run): the end of what the gate reads.
+readonly LINUX_END="Kernel panic - not syncing"
+bootloader_efi="target/aarch64-unknown-uefi/debug/bootloader.efi"
+chainprobe_efi="target/aarch64-unknown-uefi/debug/chainprobe.efi"
+
+# plain_count TEXT: how many lines of the plain log hold TEXT.
+plain_count() {
+    local log
+    log="$(plain_log)"
+    grep -cF -- "$1" <<< "$log" || true
+}
+
+# wait_for_plain_count TEXT COUNT: TEXT is in the plain log COUNT times.
+wait_for_plain_count() {
+    for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
+        [[ "$(plain_count "$1")" -ge "$2" ]] && return 0
+        qemu_is_running || fail "QEMU exited before '$1' was seen $2 times"
+        sleep 0.1
+    done
+    fail "'$1' not seen $2 times within ${BOOT_TIMEOUT_SECONDS}s"
+}
+
+# expect_plain_once TEXT WHAT: the plain log holds TEXT in exactly one line.
+expect_plain_once() {
+    local count
+    count="$(plain_count "$1")"
+    [[ "$count" -eq 1 ]] || fail "$2: '$1' seen $count times, expected once"
+}
+
+# expect_plain_absent TEXT WHAT
+expect_plain_absent() {
+    log_has "$1" && fail "$2: '$1' is in the log"
+    return 0
+}
+
+# start_other NAME IMAGE: boots IMAGE on the console that takes keys, and waits
+# for the menu to be drawn with its countdown.
+start_other() {
+    # Linux is decompressed and booted under emulation, on a runner that may be
+    # slower than a laptop: the wait is longer than for our own kernel.
+    BOOT_TIMEOUT_SECONDS=$((UEFI_BOOT_TIMEOUT_SECONDS * 2))
+    start_qemu "$1" --keys -machine virt,acpi=off -m 512M -bios "$uefi_firmware" \
+        -drive "file=$2,format=raw,if=virtio"
+    wait_for_line "$MENU_READY"
+}
+
+# make_image NAME CONFIG [make-disk-image.py arguments]: an image with our kernel
+# and CONFIG as `\WSOS.CFG`; prints its path.
+make_image() {
+    local name="$1" config="$2"
+    shift 2
+    printf '%s\n' "$config" > "$work_dir/$name.cfg"
+    python3 -I scripts/make-disk-image.py "$work_dir/$name.img" "$bootloader_efi" "$KERNEL_ELF" \
+        --file "\\WSOS.CFG=$work_dir/$name.cfg" "$@"
+    echo "$work_dir/$name.img"
+}
+
+# check_linux NAME IMAGE KEY LABEL [INITRD_BYTES]: the entry KEY, a Linux entry
+# called LABEL, starts Linux; what the kernel prints shows the command line it
+# was given and whether it got an initrd, and our own kernel never starts.
+check_linux() {
+    local key="$3" label="$4" initrd_bytes="${5:-}" cmdline
+    start_other "$1" "$2"
+    send_key "$1" "$key"
+    wait_for_line "$LINUX_END"
+    sleep "$SETTLE_SECONDS"
+    expect_once "starting $label (Linux), chosen on the keyboard" "the bootloader's choice of $label"
+    expect_plain_once "Linux version $LINUX_RELEASE" "Linux's first line"
+    expect_plain_once "Machine model:" "Linux's machine line"
+    # The command line is the load options the bootloader set: the whole line,
+    # not a part of it.
+    cmdline="$(plain_log | sed -n 's/^\[[ 0-9.]*\] Kernel command line: //p')"
+    [[ "$cmdline" == "$LINUX_CMDLINE" ]] \
+        || fail "Linux received the command line '$cmdline', expected '$LINUX_CMDLINE'"
+    if [[ -n "$initrd_bytes" ]]; then
+        # The kernel frees the whole pages of the initrd it was given, so the
+        # figure follows the size of the file and of nothing else.
+        expect_plain_once "Freeing initrd memory: $((initrd_bytes / 4096 * 4))K" "the initrd Linux received"
+        expect_plain_absent "Initramfs unpacking failed" "the initrd Linux received"
+        # The kernel found /init in what it unpacked, and tried to run it.
+        expect_plain_absent "check access for rdinit=/init failed" "the initrd Linux received"
+        expect_plain_once "Failed to execute /init" "the /init of the initrd"
+    else
+        expect_plain_once "check access for rdinit=/init failed" "a boot with no initrd"
+        expect_plain_absent "Freeing initrd memory" "a boot with no initrd"
+    fi
+    expect_plain_absent "booted on aarch64" "a Linux boot"
+    expect_plain_absent "leaving boot services, entering the kernel" "a Linux boot"
+    BOOT_TIMEOUT_SECONDS=10
+    stop_qemu
+    echo "PASS ($boot_name): Linux started by the bootloader${initrd_bytes:+ with a ${initrd_bytes}-byte initrd}"
+}
+
+refusals=0
+# expect_refusal KEY MESSAGE: choosing the entry KEY ends in MESSAGE and a menu
+# that waits for a person (no countdown); nothing else started.
+expect_refusal() {
+    send_key "$boot_name" "$1"
+    wait_for_line "$2"
+    refusals=$((refusals + 1))
+    wait_for_plain_count "back to the menu" "$refusals"
+    wait_for_plain_count "autoboot stopped" "$refusals"
+    expect_plain_once "$2" "the refusal of entry $1"
+    expect_plain_absent "Linux version" "a refused Linux entry"
+    expect_plain_absent "booted on aarch64" "a refused entry"
+    expect_plain_absent "chainprobe: started" "a refused entry"
+}
+
+# check_others NAME IMAGE: the refusals one after the other on one boot, then
+# the chainloaded application, then our own kernel from the same menu.
+check_others() {
+    start_other "$1" "$2"
+    refusals=0
+    expect_refusal 3 "cannot start Directory as Linux: cannot read Linux image \\EFI\\TEST: it is a directory"
+    expect_refusal 4 "cannot start Not a PE: Linux image \\KERNEL.ELF is not a valid EFI image: not a PE image (no MZ header)"
+    expect_refusal 5 "cannot start Linux for x86_64: Linux image \\WRONG.EFI is not a valid EFI image: a PE image for x86_64 (machine 0x8664), not aarch64"
+    expect_refusal 6 "cannot start Missing initrd: initrd \\NOINITRD.IMG is not on the EFI system partition"
+    expect_refusal 7 "cannot start Missing loader: EFI loader \\NOPE.EFI is not on the EFI system partition"
+    expect_refusal 8 "cannot start Cut loader: EFI loader \\EFI\\TEST\\CUT.EFI is not a valid EFI image: a section of the PE image is cut off"
+    expect_plain_absent "chainprobe: started" "the refusals"
+
+    # A loader that starts, says where it was loaded from and returns: the
+    # menu comes back, with no countdown.
+    send_key "$boot_name" 9
+    wait_for_line "chainprobe: started"
+    wait_for_line "chainprobe: device handle set"
+    wait_for_line 'chainprobe: file path \EFI\TEST\PROBE.EFI'
+    wait_for_line "Chain probe returned SUCCESS: back to the menu"
+    wait_for_plain_count "autoboot stopped" $((refusals + 1))
+    expect_plain_once "starting Chain probe (chainload), chosen on the keyboard" "the chainload entry"
+    expect_plain_once "chainprobe: started" "the chainloaded application"
+    expect_plain_absent "Linux version" "the refusals and the chainload"
+    expect_plain_absent "booted on aarch64" "the chainload"
+
+    # And our own kernel is still there after all of that.
+    send_key "$boot_name" 1
+    wait_for_banner
+    wait_for_line "$RESUME_MARKER"
+    expect_plain_once "starting Normal (boot mode 0, normal), chosen on the keyboard" "Normal after the other entries"
+    expect_once "$EXPECTED_BANNER" "boot banner"
+    BOOT_TIMEOUT_SECONDS=10
+    stop_qemu
+    echo "PASS ($boot_name): $refusals refusals back to the menu, a chainloaded application, and our kernel after them"
+}
+
+# An initrd of a known size: a `newc` cpio archive with an /init that is not a
+# program and a file of padding. The kernel unpacks it without complaint and
+# then fails to run /init, which a missing or damaged copy could not show.
+initrd_file="$work_dir/INITRD.IMG"
+python3 -I - "$initrd_file" <<'PY'
+import sys
+
+def newc(name, data, inode, mode=0o100644):
+    name = name.encode() + b"\0"
+    header = "070701" + "".join(
+        "%08x" % value for value in (inode, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name), 0)
+    )
+    entry = header.encode() + name
+    entry += b"\0" * (-len(entry) % 4) + data
+    return entry + b"\0" * (-len(entry) % 4)
+
+def archive(padding):
+    # An /init that is not a program: when the kernel unpacked the archive it
+    # tries to run it and says that it could not, and when the initrd did not
+    # arrive intact it says there is no /init at all.
+    return (
+        newc("init", b"not a program\n", 1, 0o100755)
+        + newc("wsos-padding", b"k" * padding, 2)
+        + newc("TRAILER!!!", b"", 0)
+    )
+
+# A whole number of pages: the kernel frees whole pages, so an initrd cut short
+# by even a byte shows in the figure it prints.
+padding = 1000000
+padding += -len(archive(padding)) % 4096
+open(sys.argv[1], "wb").write(archive(padding))
+PY
+initrd_bytes="$(wc -c < "$initrd_file" | tr -d ' ')"
+# The application the bootloader chainloads, a copy that claims another
+# machine, and one cut short.
+python3 -I - "$chainprobe_efi" "$work_dir/WRONG.EFI" "$work_dir/CUT.EFI" <<'PY'
+import struct, sys
+source, wrong, cut = sys.argv[1:4]
+image = bytearray(open(source, "rb").read())
+pe = struct.unpack_from("<I", image, 0x3C)[0]
+struct.pack_into("<H", image, pe + 4, 0x8664)
+open(wrong, "wb").write(image)
+open(cut, "wb").write(open(source, "rb").read()[: len(image) // 2])
+PY
+probe_files=(--file "\\EFI\\TEST\\PROBE.EFI=$chainprobe_efi" --file "\\EFI\\TEST\\CUT.EFI=$work_dir/CUT.EFI")
+
+linux_config="entry Alpine Linux
+linux \\VMLINUZ
+cmdline $LINUX_CMDLINE"
+linux_image="$(make_image linux "$linux_config" --file "\\VMLINUZ=$linux_kernel")"
+check_linux uefi-linux "$linux_image" 3 "Alpine Linux"
+linux_initrd_image="$(make_image linux-initrd "$linux_config
+initrd \\INITRD.IMG" --file "\\VMLINUZ=$linux_kernel" --file "\\INITRD.IMG=$initrd_file")"
+check_linux uefi-linux-initrd "$linux_initrd_image" 3 "Alpine Linux" "$initrd_bytes"
+
+others_image="$(make_image others "entry Directory as Linux
+linux \\EFI\\TEST
+entry Not a PE
+linux \\KERNEL.ELF
+entry Linux for x86_64
+linux \\WRONG.EFI
+entry Missing initrd
+linux \\VMLINUZ
+cmdline console=ttyAMA0
+initrd \\NOINITRD.IMG
+entry Missing loader
+chainload \\NOPE.EFI
+entry Cut loader
+chainload \\EFI\\TEST\\CUT.EFI
+entry Chain probe
+chainload \\EFI\\TEST\\PROBE.EFI" --file "\\VMLINUZ=$linux_kernel" --file "\\WRONG.EFI=$work_dir/WRONG.EFI" "${probe_files[@]}")"
+check_others uefi-others "$others_image"
+
+# A file with an error never hides our kernel: the line is named, the built-in
+# entries are all there is, and the countdown still starts Normal.
+# The label has a character the console cannot print (outside the Basic
+# Multilingual Plane): printing it would panic the bootloader, so the file must
+# be refused for it, at its line.
+bad_config_image="$(make_image bad-config "entry Fine
+chainload \\EFI\\TEST\\PROBE.EFI
+entry Penguin $(printf '\360\237\220\247')
+linux \\VMLINUZ" "${probe_files[@]}")"
+disk_image="$bad_config_image"
+check_uefi_boot uefi-bad-config 256 1 normal ""
+expect_once "\\WSOS.CFG, line 3: '\\u{1f427}' cannot be in a label (printable ASCII only): the built-in entries only" "the configuration error"
+expect_plain_absent "3  Fine" "a menu built from a bad file"
+config_image="$(make_image with-config "entry Chain probe
+chainload \\EFI\\TEST\\PROBE.EFI" "${probe_files[@]}")"
+disk_image="$config_image"
+check_uefi_boot uefi-with-config 256 1 normal ""
+expect_once '\WSOS.CFG: 1 entries' "the configuration file"
+expect_plain_once "3  Chain probe" "the entry of the file in the menu"
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"

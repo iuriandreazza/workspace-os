@@ -27,3 +27,10 @@ path = "src/main.rs"
 # The std test harness cannot link into a UEFI application.
 test = false
 bench = false
+
+# Stands in for another system's EFI loader in the boot smoke test.
+[[bin]]
+name = "chainprobe"
+path = "probe/chainprobe.rs"
+test = false
+bench = false

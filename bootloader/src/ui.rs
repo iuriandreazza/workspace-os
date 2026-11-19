@@ -168,6 +168,13 @@ pub fn failure(reason: core::fmt::Arguments) {
     );
 }
 
+/// An entry of another system that could not be started. The menu comes back.
+pub fn refused(label: &str, reason: core::fmt::Arguments) {
+    println!();
+    log(Level::Error, format_args!("cannot start {label}: {reason}"));
+    log(Level::Info, format_args!("back to the menu"));
+}
+
 /// The kind of event a log line reports.
 #[derive(Clone, Copy)]
 pub enum Level {

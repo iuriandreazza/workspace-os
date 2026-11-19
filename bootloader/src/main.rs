@@ -12,14 +12,16 @@
 
 mod cpu;
 mod menu;
+mod other;
 mod ui;
 
 use core::slice;
 use core::time::Duration;
 
+use bootinfo::menu::Action;
 use bootinfo::{
-    ARCH_AARCH64, BootInfo, CONSOLE_PL011, ENTRY_MAGIC, EfiDescriptor, MemoryEntry, MemoryMap,
-    PAGE_SIZE, PageError, Table, TableAttributes, elf,
+    ARCH_AARCH64, BootInfo, CONSOLE_PL011, ENTRY_MAGIC, EfiDescriptor, MODE_NORMAL, MemoryEntry,
+    MemoryMap, PAGE_SIZE, PageError, Table, TableAttributes, elf,
 };
 use uefi::boot::{self, AllocateType, MemoryType};
 use uefi::mem::memory_map::MemoryMap as _;
@@ -32,6 +34,10 @@ use uefi::{cstr16, guid};
 
 /// Where the kernel is on the EFI system partition.
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\KERNEL.ELF");
+/// The entries of other systems (ADR 0025).
+const CONFIG_PATH: &uefi::CStr16 = cstr16!("\\WSOS.CFG");
+/// A configuration file is some lines; a bigger one is not one.
+const MAX_CONFIG_BYTES: usize = 64 * 1024;
 const DEVICE_TREE_GUID: uefi::Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 const PL011_COMPATIBLE: &str = "arm,pl011";
 /// Room for the memory map the kernel receives. The firmware's has some
@@ -51,6 +57,8 @@ enum Failure {
     KernelMissing,
     /// A step on the kernel file failed: what was being done, and why.
     KernelFile(&'static str, Status),
+    /// Something else about the kernel file, in a few words.
+    KernelNote(&'static str),
     Elf(elf::ElfError),
     Map(bootinfo::BuildError),
     Table(PageError),
@@ -74,6 +82,7 @@ impl core::fmt::Display for Failure {
             Self::KernelMissing => {
                 write!(f, "{KERNEL_PATH} is not on the EFI system partition")
             }
+            Self::KernelNote(text) => write!(f, "{KERNEL_PATH}: {text}"),
             Self::KernelFile(action, status) => {
                 write!(f, "cannot {action} {KERNEL_PATH}: {status:?}")
             }
@@ -93,6 +102,10 @@ fn pages_for(bytes: usize) -> usize {
 /// Memory the kernel receives, so it is of the type the map turns into
 /// "bootloader reclaimable". Zeroed.
 fn allocate(pages: usize) -> Outcome<&'static mut [u8]> {
+    Ok(allocate_pages(pages)?)
+}
+
+fn allocate_pages(pages: usize) -> Result<&'static mut [u8], uefi::Error> {
     let pointer = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages)?;
     // SAFETY: the firmware gave `pages` whole pages that nothing else uses and
     // that stay allocated for the rest of the boot.
@@ -101,39 +114,121 @@ fn allocate(pages: usize) -> Outcome<&'static mut [u8]> {
     Ok(bytes)
 }
 
-fn read_kernel_file() -> Outcome<&'static mut [u8]> {
+/// Why a file on the EFI system partition could not be read.
+enum FileError {
+    Missing,
+    /// A step on the file failed: what was being done, and why.
+    Step(&'static str, Status),
+    Message(&'static str),
+    /// The file is bigger than the caller allows; nothing was read.
+    TooBig,
+    Firmware(uefi::Error),
+}
+
+impl From<uefi::Error> for FileError {
+    fn from(error: uefi::Error) -> Self {
+        Self::Firmware(error)
+    }
+}
+
+/// Reads a whole file of the partition the bootloader started from into
+/// memory of the type the kernel receives. The buffer is page aligned.
+fn read_file(path: &uefi::CStr16, limit: usize) -> Result<&'static mut [u8], FileError> {
     let image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle())?;
-    let device = image.device().ok_or(Failure::Message(
+    let device = image.device().ok_or(FileError::Message(
         "the bootloader was not started from a device",
     ))?;
     let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(device)?;
     let mut root = fs.open_volume()?;
     let handle = root
-        .open(KERNEL_PATH, FileMode::Read, FileAttribute::empty())
+        .open(path, FileMode::Read, FileAttribute::empty())
         .map_err(|e| match e.status() {
-            Status::NOT_FOUND => Failure::KernelMissing,
-            status => Failure::KernelFile("open", status),
+            Status::NOT_FOUND => FileError::Missing,
+            status => FileError::Step("open", status),
         })?;
     let mut file: RegularFile = handle
         .into_regular_file()
-        .ok_or(Failure::Message("kernel path is a directory"))?;
+        .ok_or(FileError::Message("it is a directory"))?;
 
     // `get_info` wants a buffer aligned for `FileInfo`.
     #[repr(align(8))]
-    struct InfoBuffer([u8; 256]);
-    let mut info_buffer = InfoBuffer([0u8; 256]);
+    // The info holds the file's own name, up to 255 characters of two bytes.
+    struct InfoBuffer([u8; 1024]);
+    let mut info_buffer = InfoBuffer([0u8; 1024]);
     let size = file
         .get_info::<FileInfo>(&mut info_buffer.0)
-        .map_err(|e| Failure::KernelFile("read the size of", e.status()))?
+        .map_err(|e| FileError::Step("read the size of", e.status()))?
         .file_size() as usize;
-    let buffer = allocate(pages_for(size.max(1)))?;
-    let read = file
-        .read(&mut buffer[..size])
-        .map_err(|e| Failure::KernelFile("read", e.status()))?;
-    if read != size {
-        return Err(Failure::Message("short read of the kernel file"));
+    if size > limit {
+        return Err(FileError::TooBig);
     }
-    Ok(&mut buffer[..size])
+    let buffer = allocate_pages(pages_for(size.max(1)))?;
+    match file.read(&mut buffer[..size]) {
+        Ok(read) if read == size => Ok(&mut buffer[..size]),
+        Ok(_) => {
+            release(&mut buffer[..size]);
+            Err(FileError::Message("short read"))
+        }
+        Err(error) => {
+            release(&mut buffer[..size]);
+            Err(FileError::Step("read", error.status()))
+        }
+    }
+}
+
+/// Gives the pages `read_file` took back to the firmware. The caller drops
+/// every reference to them.
+fn release(bytes: &mut [u8]) {
+    if let Some(base) = core::ptr::NonNull::new(bytes.as_mut_ptr()) {
+        // SAFETY: `read_file` allocated `pages_for(len.max(1))` whole pages at
+        // this address, and the caller holds the only reference to them.
+        let _ = unsafe { boot::free_pages(base, pages_for(bytes.len().max(1))) };
+    }
+}
+
+fn read_kernel_file() -> Outcome<&'static mut [u8]> {
+    read_file(KERNEL_PATH, usize::MAX).map_err(|error| match error {
+        FileError::Missing => Failure::KernelMissing,
+        FileError::Step(action, status) => Failure::KernelFile(action, status),
+        FileError::Message(text) => Failure::KernelNote(text),
+        FileError::TooBig => Failure::Message("the kernel file is too big"),
+        FileError::Firmware(error) => Failure::Firmware(error),
+    })
+}
+
+/// The entries of `\WSOS.CFG`, as text that lives for the rest of the boot.
+/// No file is no entries; a file that cannot be read is said, and is no
+/// entries either, so that it can never keep our own kernel from starting.
+fn read_config() -> Option<&'static str> {
+    let bytes = match read_file(CONFIG_PATH, MAX_CONFIG_BYTES) {
+        Ok(bytes) => bytes,
+        Err(FileError::Missing) => return None,
+        Err(FileError::TooBig) => {
+            ui::error(format_args!(
+                "{CONFIG_PATH} is over {MAX_CONFIG_BYTES} bytes: ignored"
+            ));
+            return None;
+        }
+        Err(FileError::Step(step, status)) => {
+            ui::error(format_args!("cannot {step} {CONFIG_PATH}: {status:?}"));
+            return None;
+        }
+        Err(FileError::Message(text)) => {
+            ui::error(format_args!("{CONFIG_PATH}: {text}"));
+            return None;
+        }
+        Err(FileError::Firmware(error)) => {
+            ui::error(format_args!("{CONFIG_PATH}: firmware: {error}"));
+            return None;
+        }
+    };
+    if core::str::from_utf8(bytes).is_err() {
+        ui::error(format_args!("{CONFIG_PATH} is not text (UTF-8): ignored"));
+        release(bytes);
+        return None;
+    }
+    let bytes: &'static [u8] = bytes;
+    core::str::from_utf8(bytes).ok()
 }
 
 /// Copies the kernel's loadable segments to the addresses the image asks for.
@@ -273,21 +368,63 @@ fn run() -> Outcome<core::convert::Infallible> {
         return Err(Failure::Message("started at an unexpected exception level"));
     }
 
-    // The list is the one place a later source of entries plugs in.
-    let menu = bootinfo::menu::Menu::new(
-        &bootinfo::menu::BUILT_IN,
-        bootinfo::menu::DEFAULT_ENTRY,
-        core::num::NonZeroU32::new(bootinfo::menu::AUTOBOOT_SECONDS),
-    )
-    .ok_or(Failure::Message("the boot menu has no entry to start"))?;
-    let (entry, reason) = menu::choose(menu);
-    ui::ok(format_args!(
-        "starting {} (boot mode {}, {}), {reason}",
-        entry.label,
-        entry.boot_mode,
-        bootinfo::boot_mode_name(entry.boot_mode)
-    ));
-    boot_kernel(entry.boot_mode)
+    // The entries of other systems come from the file on the partition; the
+    // built-in two are first and never depend on it (ADR 0025).
+    let mut others =
+        [bootinfo::menu::Entry::kernel("", MODE_NORMAL); bootinfo::config::MAX_FILE_ENTRIES];
+    let other_count = match read_config() {
+        None => 0,
+        Some(text) => match bootinfo::config::parse(text, &mut others) {
+            Ok(count) => {
+                ui::ok(format_args!("{CONFIG_PATH}: {count} entries"));
+                count
+            }
+            Err(error) => {
+                ui::error(format_args!(
+                    "{CONFIG_PATH}, {error}: the built-in entries only"
+                ));
+                0
+            }
+        },
+    };
+    let mut entries = [bootinfo::menu::BUILT_IN[0]; bootinfo::menu::MAX_ENTRIES];
+    let count = bootinfo::menu::with_built_in(&others[..other_count], &mut entries);
+
+    let mut autoboot = core::num::NonZeroU32::new(bootinfo::menu::AUTOBOOT_SECONDS);
+    loop {
+        let menu =
+            bootinfo::menu::Menu::new(&entries[..count], bootinfo::menu::DEFAULT_ENTRY, autoboot)
+                .ok_or(Failure::Message("the boot menu has no entry to start"))?;
+        let (entry, reason) = menu::choose(menu);
+        match entry.action {
+            Action::Kernel { boot_mode } => {
+                ui::ok(format_args!(
+                    "starting {} (boot mode {boot_mode}, {}), {reason}",
+                    entry.label,
+                    bootinfo::boot_mode_name(boot_mode)
+                ));
+                return boot_kernel(boot_mode);
+            }
+            other_system => {
+                ui::ok(format_args!(
+                    "starting {} ({}), {reason}",
+                    entry.label,
+                    other::kind_name(&other_system)
+                ));
+                match other::start(&other_system) {
+                    Ok(status) => ui::info(format_args!(
+                        "{} returned {status:?}: back to the menu",
+                        entry.label
+                    )),
+                    Err(refusal) => ui::refused(entry.label, format_args!("{refusal}")),
+                }
+                // Somebody read this: no countdown starts a default entry
+                // over what they are reading (and a failing default entry
+                // would loop forever).
+                autoboot = None;
+            }
+        }
+    }
 }
 
 /// Loads the kernel and enters it with `boot_mode` in the boot info.

@@ -3,7 +3,7 @@ title: "Roadmap"
 type: roadmap
 status: active
 created: 2026-11-15
-updated: 2026-11-16
+updated: 2026-11-19
 tags: [roadmap, planning, kernel, slm, drivers]
 ---
 
@@ -28,7 +28,7 @@ are in `CLAUDE.md`.
    boot (`CLAUDE.md`, "Showing that it runs"). The user merges.
 7. Mark the item done here and update the notes that describe the files touched.
 
-Status values: `done`, `next` (ready to start), `blocked` (waiting on the items
+Status values: `done`, `in progress` (a session has taken it), `next` (ready to start), `blocked` (waiting on the items
 listed), `later` (not designed yet).
 
 ## Tracks and order
@@ -58,7 +58,7 @@ kernel files, so they can run in separate sessions at the same time as K.
 | K2b-2 | Own UEFI bootloader, part 1b: a Rust UEFI application that loads the kernel from the EFI system partition, leaves boot services and jumps to it with the structure of ADR 0013, plus a bootable disk image. First, find out which tables (device tree, ACPI) each firmware publishes and whether VirtualBox's Arm serial port works (ADR 0013, "What is not yet known"). Edits `boot.s` and `board.rs`, which K3 also touches | The banner under QEMU with UEFI firmware, in the gate; the banner under VirtualBox on the ARM Mac, recorded by hand. Result: `bootloader/`, `bootinfo/`, `scripts/build-disk-image.sh`, `docs/booting-the-image.md` | done |
 | K2b-3 | What K2b-2 left open: the bootloader's missing-file and busy-load-address refusals, the kernel's rejection of an invalid boot info, `rsdp`, and a directed reading of the cache, TLB and break-before-make code against ARMv8-A. Finishes the review that stopped at round 5 of PR 15 | Boots that end in the bootloader's error messages; host tests of the handoff checks; every new test confirmed by mutation | done |
 | K2c | Own UEFI bootloader, part 2: the boot menu, with the normal entry and the recovery entry (ADR 0007) | Each menu entry reaches the kernel with a different boot mode, checked in the gate. Result: `bootinfo/src/menu.rs`, `bootloader/src/menu.rs`, the menu section of `docs/booting-the-image.md` | done |
-| K2d | Loading other kernels, mechanism only (ADR 0008): Linux through its EFI entry with a command line and an initial ramdisk, and other systems by starting their own EFI loader. Entries written by hand for now | A Linux kernel started by our bootloader under QEMU prints its first lines | blocked: K2c |
+| K2d | Loading other kernels, mechanism only (ADR 0008): Linux through its EFI entry with a command line and an initial ramdisk, and other systems by starting their own EFI loader. Entries written by hand for now | A Linux kernel started by our bootloader under QEMU prints its first lines. Result: `bootinfo/src/{config,pe,initrd}.rs`, `bootloader/src/other.rs`, ADR 0025, `docs/k2d-other-kernels.md` | done |
 | K2e | Graphical boot menu: draw on the firmware framebuffer, with a background image, a font and a theme the installer can set. The text menu over the serial console stays, because the gate reads it | To be designed | later |
 | K3 | Physical frame allocator fed by the device tree memory map | Allocate, free and reuse frames at boot; exhausting memory is reported, not a hang | done |
 | K4 | MMU: kernel page tables, higher-half mapping, write-xor-execute | A write to kernel code and a jump into data each end in a reported fault. Result: `kernelvm/`, `kernel/src/arch/aarch64/{boot.s,link.ld,mmu.rs}`, `docs/adr/0019-kernel-address-space.md` | done |
@@ -93,9 +93,9 @@ them (ADR 0009). It builds on the bootloader items of track K.
 | Item | Session | Done when | Status |
 |---|---|---|---|
 | B1-1 | Research, documentation only: language model or purpose-trained classifier and its size; the inputs it can read from a disk and the typed decision it returns; how inference can run in the UEFI environment (memory, floating point, no operating system); licences of candidate models and runtimes (ADR 0005, ADR 0017). Touches no code, so it runs in parallel with track K | Every claim has a source that was actually read; what could not be verified is listed. Result: `docs/b1-boot-model-research.md` | done |
-| B1-2 | ADR from the research of B1-1, with inference time measured in the UEFI environment under QEMU | ADR accepted, with the measured estimate and the exact commands | blocked: K2c |
+| B1-2 | ADR from the research of B1-1, with inference time measured in the UEFI environment under QEMU | ADR accepted, with the measured estimate and the exact commands | next |
 | B2 | Corpus and training, offline: disk layouts and kernel images from several systems, the training run, and an evaluation harness on the host | Accuracy on a held-out part of the corpus, recorded in `docs/` | blocked: B1-2 |
-| B3 | Inference in the bootloader: the model decides, decisions are stored with a fingerprint of the disk, the last successful decisions are the fallback, and the loader checks the format before jumping | With the model: Linux and our kernel are found on a disk with no hand-written entries. Without the model: our kernel still boots. A deliberately wrong decision ends in an error on the menu | blocked: B2, K2d |
+| B3 | Inference in the bootloader: the model decides, decisions are stored with a fingerprint of the disk, the last successful decisions are the fallback, and the loader checks the format before jumping | With the model: Linux and our kernel are found on a disk with no hand-written entries. Without the model: our kernel still boots. A deliberately wrong decision ends in an error on the menu | blocked: B2 |
 | B4 | Integrity of the model's weights at boot | Replaced weights are refused | blocked: B3 |
 
 ## Track S: intent shell with a local SLM
@@ -120,7 +120,7 @@ runtime before it has userspace, memory management and a filesystem.
 | S6 | Bridge into the OS: the shell runs on the host and talks to the kernel over a virtual serial channel | A plan produced on the host is executed by a user program in the OS | blocked: S5, K10 |
 | S7 | Run inference inside the OS | To be designed | later |
 | S8 | SOUL format, presets and per-user personality (ADR 0006): what the single SOUL file holds, the four ready-made profiles, how a user's personality (tone, voice, language, level of detail, name) layers on the SOUL without contradicting it, and the shell loading both. The broker reads neither | The same evaluation intents produce the same validated actions under every preset and personality; a personality that contradicts the SOUL is rejected | blocked: S4 |
-| S8a | Voice of the answers (ADR 0021): after each outcome the model writes a short reply in the tone of the SOUL, which in this item is one of the four presets read from a file; the table, verdicts, tree and root panel stay deterministic text | A scripted pipeline gives identical actions, verdicts and decision log under all four presets, with the reply on and off; no model, an error or a timeout shows the output as it is today; a live test with a real reply | next |
+| S8a | Voice of the answers (ADR 0021): after each outcome the model writes a short reply in the tone of the SOUL, which in this item is one of the four presets read from a file; the table, verdicts, tree and root panel stay deterministic text | A scripted pipeline gives identical actions, verdicts and decision log under all four presets, with the reply on and off; no model, an error or a timeout shows the output as it is today; a live test with a real reply | done |
 | S9 | Guided interview that builds a SOUL from the user's answers; preset path with no model loaded | A SOUL produced by the interview loads in the shell; the preset path works with the model off | blocked: S8 |
 | S10 | SOUL evolution: the AI proposes a change as an action in the plan format; it applies only after a user with root authority approves the full diff; history and undo | A proposed change is refused without approval and when approved by a user without root authority, applied with a root approval, and undone from the history | blocked: S8 |
 | S11 | Speech on the host: local speech synthesis and recognition. The spoken voice belongs to each user's personality (ADR 0006), so two users can hear different voices. Research the models and their licences first | A spoken request becomes a validated plan and the answer is spoken back, with no network; two users get two different voices | blocked: S3, S8 |
