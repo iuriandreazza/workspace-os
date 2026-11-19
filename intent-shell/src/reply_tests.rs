@@ -484,6 +484,38 @@ fn the_text_is_one_line_capped_in_characters_and_escaped() {
 }
 
 #[test]
+fn escaping_cannot_grow_the_reply_past_its_cap() {
+    let cleaned = reply::clean(&"\u{200b}".repeat(400));
+    assert!(cleaned.chars().count() <= reply::REPLY_LIMIT);
+}
+
+#[test]
+fn a_wide_character_the_width_table_does_not_know_cannot_wrap_into_an_unmarked_line() {
+    // U+A960 is two cells wide on a terminal; the screen's own table says one.
+    let text = format!(
+        "{} s1 Delete Documents -> allowed and more text",
+        "\u{a960}".repeat(30)
+    );
+    let lines = reply::block(&text, 80, reply::cautious_cells);
+    for line in &lines {
+        assert!(line.starts_with(MARK));
+        assert!(
+            line.chars()
+                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                .sum::<usize>()
+                <= 80
+        );
+    }
+}
+
+#[test]
+fn a_profile_path_that_never_ends_is_read_only_at_its_start() {
+    let (profile, source) = load_profile(std::path::Path::new("/dev/zero"), false).unwrap();
+    assert_eq!(profile, Profile::DirectTechnical);
+    assert!(matches!(source, Source::DefaultAfterProblem(_)));
+}
+
+#[test]
 fn every_line_of_a_wrapped_reply_is_marked_and_fits() {
     let text = "word ".repeat(60) + &"x".repeat(200) + " 日本語日本語日本語日本語";
     for width in [20, 40, 80] {

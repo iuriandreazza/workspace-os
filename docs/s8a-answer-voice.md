@@ -77,7 +77,9 @@ It has the request, the kind of outcome, one line per step with the friendly
 name the screen shows and done / failed / not run / the verdict, and the number
 of items a listing found. It has no file content, no output text, no host error
 text (a failure is only `failed`), no summary written by the model, and no real
-location beyond what the friendly screen already shows. Every piece of text
+location beyond what the friendly screen already shows (the screen writes
+the arguments of `process.run`, a setting's value and a SOUL rationale as given,
+and so do the facts). Every piece of text
 that came from the person, a file or the model is JSON-quoted and capped at 200
 characters, so a name with a newline cannot start a new fact line. Tests
 check the sentinel content of a read and the real home are absent from what the
@@ -89,10 +91,11 @@ log that could not be written, and none with no model (the deterministic shell).
 ## What is shown, and what cannot be forged
 
 The model's text is cleaned (`reply::clean`): all whitespace collapsed to one
-space, cut at 400 characters (not bytes), escaped like all model text
-(`printable`). It is then wrapped by `reply::block`, not by the screen, to the
+space, escaped like all model text (`printable`), then cut at 400 characters (not
+bytes), so escaping cannot grow it. It is then wrapped by `reply::block`, not by the screen, to the
 actual width, and **every** line, the title and each continuation, starts with
-`  » `. No line of the deterministic screens starts with that: a test walks
+`  » `. The line adapter counts every non-ASCII character as two cells, so a wide
+character its width table does not know cannot wrap a line into an unmarked one. No line of the deterministic screens starts with that: a test walks
 the result, the plan screens, the details view and the root panel, including
 a file whose name and content imitate the mark (file content is indented four
 cells, so `  » ` at the start of a line is never content). A hostile reply

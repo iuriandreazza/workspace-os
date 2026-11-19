@@ -7,6 +7,7 @@
 //! broker, a confirmation or an action. The reply is shown as marked text under
 //! the deterministic result and is never parsed for anything.
 
+use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
@@ -99,8 +100,13 @@ pub enum Source {
 /// be mistaken for the voice that was wanted. A file named on the command line
 /// that does not exist is an error: the person asked for it.
 pub fn load_profile(path: &Path, named_by_person: bool) -> Result<(Profile, Source), String> {
-    let text = match std::fs::read(path) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes[..bytes.len().min(256)]).into_owned(),
+    // Only the start is read: a device or a huge file must not be read to its end.
+    let read = std::fs::File::open(path).and_then(|file| {
+        let mut bytes = Vec::new();
+        file.take(256).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let text = match read {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return if named_by_person {
                 Err(format!(
@@ -259,7 +265,16 @@ pub fn facts(request: &str, outcome: &Outcome) -> Option<String> {
 /// says it is (a verdict, a panel, a command, a plan) changes nothing here.
 pub fn clean(raw: &str) -> String {
     let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    printable(&capped(&one_line, REPLY_LIMIT), false)
+    // Capped after escaping, which can make a character six: the cap is on what is shown.
+    capped(&printable(&one_line, false), REPLY_LIMIT)
+}
+
+/// The width of a character where the terminal's table is not at hand (the
+/// line adapter has no dependency for it). Anything but ASCII counts as two
+/// cells, so a wide character the screen's own table does not know can never
+/// make a line longer than the terminal and wrap into an unmarked one.
+pub fn cautious_cells(c: char) -> usize {
+    if c.is_ascii() { 1 } else { 2 }
 }
 
 /// The reply as lines no wider than `width` cells, each starting with the

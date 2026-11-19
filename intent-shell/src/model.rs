@@ -4,9 +4,9 @@
 //! HTTP is spoken by hand over `std::net`: the server is on this machine, so
 //! there is no TLS, and no dependency is worth a few dozen lines.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -33,6 +33,8 @@ Rules: ids are s1, s2, ...; depends_on lists the step ids a step needs; elevate 
 A from_step reference only works after an fs.list or fs.find_largest step.
 Do not ask a question when the request is clear."#;
 
+/// A plan or a reply is a few kilobytes; this only stops a runaway server.
+const MAX_ANSWER_BYTES: usize = 8 * 1024 * 1024;
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(600);
 /// A reply is a few sentences and never worth a long wait (ADR 0021).
 pub const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -169,9 +171,7 @@ fn completion(address: &str, body: &str, timeout: Duration) -> Result<String, St
 
 fn post(address: &str, path: &str, body: &str, timeout: Duration) -> Result<String, String> {
     let mut stream = connect(address)?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + timeout;
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -180,8 +180,30 @@ fn post(address: &str, path: &str, body: &str, timeout: Duration) -> Result<Stri
         .write_all(head.as_bytes())
         .and_then(|()| stream.write_all(body.as_bytes()))
         .map_err(|e| e.to_string())?;
+    // The timeout bounds the whole answer, not each read: a server that drips
+    // a byte every few seconds must not hold the shell.
     let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).map_err(|e| e.to_string())?;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or("the server took too long to answer")?;
+        stream
+            .set_read_timeout(Some(left))
+            .map_err(|e| e.to_string())?;
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&chunk[..n]),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err("the server took too long to answer".to_owned());
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+        if raw.len() > MAX_ANSWER_BYTES {
+            return Err("the server's answer is too large".to_owned());
+        }
+    }
     parse_response(&raw)
 }
 
@@ -395,5 +417,32 @@ mod tests {
         drop(listener);
         let error = LlamaSpeaker::new(&address).reply("s", "f").unwrap_err();
         assert!(error.contains("cannot connect"), "{error}");
+    }
+
+    #[test]
+    fn a_server_that_drips_bytes_is_cut_at_the_total_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            for _ in 0..200 {
+                if stream.write_all(b" ").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let speaker = LlamaSpeaker {
+                address,
+                timeout: Duration::from_millis(400),
+            };
+            let _ = done.send(speaker.reply("s", "f"));
+        });
+        let answer = result
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the reply gave up at the total timeout");
+        assert!(answer.unwrap_err().contains("too long"));
     }
 }

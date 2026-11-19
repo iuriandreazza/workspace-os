@@ -525,7 +525,7 @@ impl State {
                     out.push('\n');
                 }
                 Block::Reply(text) => {
-                    let lines = reply::block(text, TRANSCRIPT_REPLY_WIDTH, crate::screen::cells_of);
+                    let lines = reply::block(text, TRANSCRIPT_REPLY_WIDTH, reply::cautious_cells);
                     out.push_str(&lines.join("\n"));
                     out.push('\n');
                 }

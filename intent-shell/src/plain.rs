@@ -159,7 +159,7 @@ fn prompt(entry: Entry, cwd: &str) -> String {
 /// The reply as the lines to print under the result: marked, and wrapped to the
 /// terminal so that no continuation line is left unmarked.
 fn reply_text(reply: &str, width: usize) -> String {
-    reply::block(reply, width, crate::screen::cells_of).join("\n")
+    reply::block(reply, width, reply::cautious_cells).join("\n")
 }
 
 pub fn run(mut setup: Setup) -> Result<(), String> {
