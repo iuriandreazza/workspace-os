@@ -203,7 +203,10 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
     // and EL1 may only write them if HCRX_EL2.TCR2En and SCTLR2En allow it. The
     // register itself exists only with FEAT_HCX, and its other bits have unknown
     // reset values: write it, with those two enables set for the registers the
-    // processor has and the rest clear, only where it exists.
+    // processor has and the rest clear, only where it exists and there is an
+    // enable to set. TCR2_EL1 and SCTLR2_EL1 of EL1 are also unknown at reset
+    // and the firmware only used EL2's: they are cleared here, before EL1 runs
+    // with the MMU on, where the processor has them.
     let (mmfr1, mmfr3): (u64, u64);
     // SAFETY: reading ID registers has no side effects; ID_AA64MMFR3_EL1 is
     // reserved and reads as zero where it does not exist.
@@ -211,8 +214,11 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
         asm!("mrs {}, S3_0_C0_C7_1", out(reg) mmfr1, options(nomem, nostack, preserves_flags));
         asm!("mrs {}, S3_0_C0_C7_3", out(reg) mmfr3, options(nomem, nostack, preserves_flags));
     }
-    let has_hcrx = u64::from((mmfr1 >> 40) & 0xf != 0);
-    let hcrx = (u64::from(mmfr3 & 0xf != 0) << 14) | (u64::from((mmfr3 >> 4) & 0xf != 0) << 15);
+    let has_tcr2 = u64::from(mmfr3 & 0xf != 0);
+    let has_sctlr2 = u64::from((mmfr3 >> 4) & 0xf != 0);
+    let hcrx = (has_tcr2 << 14) | (has_sctlr2 << 15);
+    // Nothing to enable means no write: HCRX_EL2 traps to EL3 unless allowed.
+    let write_hcrx = u64::from((mmfr1 >> 40) & 0xf != 0 && hcrx != 0);
     // SAFETY: the caller guarantees the map and the entry. EL1's translation
     // registers are written while EL1 runs nothing, so no switch is visible;
     // the `eret` takes the kernel to EL1 with the MMU on, in the identity map.
@@ -228,6 +234,12 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
             "tlbi alle1",
             "dsb ish",
             "isb",
+            "cbz x12, 3f",
+            "msr S3_0_C2_C0_3, xzr",
+            "3:",
+            "cbz x13, 4f",
+            "msr S3_0_C1_C0_3, xzr",
+            "4:",
             "msr sctlr_el1, x8",
             "isb",
             // EL1 is AArch64 (HCR_EL2.RW), and nothing it does traps to EL2:
@@ -262,8 +274,10 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
             in("x6") mair,
             in("x7") tcr_el1,
             in("x8") sctlr_el1,
-            in("x10") has_hcrx,
+            in("x10") write_hcrx,
             in("x11") hcrx,
+            in("x12") has_tcr2,
+            in("x13") has_sctlr2,
             options(noreturn)
         )
     }

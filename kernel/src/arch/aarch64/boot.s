@@ -55,14 +55,8 @@ _start:
     // TCR2En and SCTLR2En (bits 43 and 44): without them a write to TCR2_EL1
     // or SCTLR2_EL1 from a lower level traps to EL3 (ADR 0026), and only where
     // the registers exist (ID_AA64MMFR3_EL1) are the bits defined.
-    // HXEn (bit 38) lets EL2 write HCRX_EL2, which the EL2 path below does.
-    mrs  x4, S3_0_C0_C7_1
-    ubfx x4, x4, #40, #4
-    mov  x5, #0
-    cbz  x4, 55f
-    orr  x5, x5, #(1 << 38)
-55:
     mrs  x4, S3_0_C0_C7_3
+    mov  x5, #0
     ubfx x6, x4, #0, #4
     cbz  x6, 50f
     orr  x5, x5, #(1 << 43)
@@ -71,6 +65,14 @@ _start:
     cbz  x6, 51f
     orr  x5, x5, #(1 << 44)
 51:
+    // HXEn (bit 38) lets EL2 write HCRX_EL2, which the EL2 path below does only
+    // when it has an enable to set.
+    cbz  x5, 55f
+    mrs  x4, S3_0_C0_C7_1
+    ubfx x4, x4, #40, #4
+    cbz  x4, 55f
+    orr  x5, x5, #(1 << 38)
+55:
     mov  x0, #((1 << 10) | (1 << 8) | (3 << 4) | (1 << 0))
     orr  x0, x0, x5
     msr  scr_el3, x0
@@ -115,6 +117,9 @@ _start:
     cbz  x6, 54f
     orr  x5, x5, #(1 << 15)
 54:
+    // Nothing to enable: leave HCRX_EL2 alone, since writing it traps to EL3
+    // unless that level allows it.
+    cbz  x5, 52f
     msr  S3_4_C1_C2_2, x5
 52:
     // Reset values are unknown: FP, SIMD, debug and trace accesses must not trap

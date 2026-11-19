@@ -91,7 +91,11 @@ exists) with `TCR2En` and `SCTLR2En` (bits 14 and 15) set for the same cases and
 the rest clear.
 
 The same holds for the bootloader's own drop from EL2 to EL1
-(`enter_kernel_from_el2`, which writes `HCRX_EL2` under the same conditions;
+(`enter_kernel_from_el2`, which writes `HCRX_EL2` under the same conditions, and
+only when there is an enable to set, since the write itself traps to EL3 unless
+`SCR_EL3.HXEn` allows it; it also clears EL1's `TCR2_EL1` and `SCTLR2_EL1`
+before the MMU comes on, because they are unknown at reset and the firmware only
+used EL2's, so the kernel's first fetches must not be read under a stale `PIE`;
 found in round 2: the UEFI boot at EL2 on `-cpu max` ended in the firmware's
 exception handler at the first `TCR2_EL1` write).
 
@@ -220,6 +224,9 @@ only reports the register's value, would pass the removal of the write.
 - **The `SCTLR2_EL1` clear is not demonstrated.** QEMU resets it to zero and the
   gate has no build that dirties it, so deleting that one write passes. Only the
   `TCR2_EL1` write has a dirty-register boot.
+- **The edges of the nested range are not exercised.** The nested boot raises a
+  second exception deep in the exception stack; moving either end of the range
+  by a page (the guard page above the boot stack, or the top) passes the gate.
 - **A nested exception is reported, not recovered.** The exception stack is
   reset to its top by the fatal path, which overwrites the frame the first
   exception saved; nothing returns from it.
