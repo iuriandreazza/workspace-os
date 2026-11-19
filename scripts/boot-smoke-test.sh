@@ -78,7 +78,7 @@
 #   uefi-768, uefi-el2-high  Enter starts Normal (boot mode 0)
 #   uefi-el2              the key `1` starts Normal (boot mode 0)
 #
-# Every normal boot also checks what ADR 0025 adds: the audit of the live
+# Every normal boot also checks what ADR 0026 adds: the audit of the live
 # tables finds each leaf mapping its own frame with its own memory type, the
 # kernel reads the boot info, the memory map and the device tree again after
 # the switch, through the lower window, and gets the same digest, and the
@@ -336,7 +336,7 @@ check_mmu() {
         && $((read_write)) -eq $((data_bytes + stack_bytes + exception_stack_bytes)) ]] \
         || fail "upper half maps text $text, read only $read_only, read write $read_write; the linker placed $text_bytes, $rodata_bytes and $((data_bytes + stack_bytes + exception_stack_bytes)) bytes"
     # The audit also checked every leaf's output address, memory type and
-    # section (ADR 0025), and the registers the boot code clears.
+    # section (ADR 0026), and the registers the boot code clears.
     expect_once "mmu: every leaf maps its own frame with its own memory type" "audit of addresses and memory types"
     expect_once "$expected_extensions" "permission indirection registers"
     check_handoff_read_again
@@ -352,7 +352,7 @@ check_mmu() {
 }
 
 # check_handoff_read_again: the kernel read the boot info, the memory map and the
-# device tree again after the switch, through the lower window (ADR 0025), and
+# device tree again after the switch, through the lower window (ADR 0026), and
 # got what it had read before. The digest must cover at least the device tree
 # blob the kernel reserved, or it would not show a window that lost it.
 check_handoff_read_again() {
@@ -981,7 +981,7 @@ check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"
 # An exception taken by the handler itself, on the exception stack, is reported
-# as nested (ADR 0025) and not handled on the same stack again.
+# as nested (ADR 0026) and not handled on the same stack again.
 nested_elf="$work_dir/nested-exception.elf"
 build_with_feature selftest-nested-exception "$nested_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
@@ -999,7 +999,7 @@ rodata_elf="$work_dir/execute-rodata.elf"
 build_with_feature selftest-write-text "$write_elf"
 build_with_feature selftest-execute-data "$data_elf"
 build_with_feature selftest-execute-rodata "$rodata_elf"
-# A stack overflow (ADR 0025): the recursion's first store below the boot stack
+# A stack overflow (ADR 0026): the recursion's first store below the boot stack
 # hits the guard page, which is a level 3 translation fault on a store (DFSC
 # 0b000111, WnR set: the syndrome ends in 0x47), at an address in the guard
 # page, from kernel code. The report must be made on the exception stack: the
@@ -1045,13 +1045,18 @@ done
 FAULT_ALSO=""
 FAULT_ABSENT=""
 
-# Permission indirection (ADR 0025): `-cpu max` has FEAT_S1PIE, so the kernel
+# Permission indirection (ADR 0026): `-cpu max` has FEAT_S1PIE, so the kernel
 # writes and then reads back TCR2_EL1 and SCTLR2_EL1. QEMU resets them to zero,
 # so a kernel that never wrote them would pass; the build with
 # `selftest-dirty-tcr2` sets TCR2_EL1.PIE first, as firmware might have left it,
 # and only a kernel that clears it passes.
 expected_extensions="$EXTENSIONS_CLEARED"
 check_boot cpu-max -cpu max -kernel "$KERNEL_ELF"
+# The same cores entered at EL2 and EL3: the writes trap there unless the drop
+# enabled them (SCR_EL3.TCR2En, HCRX_EL2.TCR2En), and nothing would be printed.
+check_boot cpu-max-el2 -cpu max -machine virtualization=on -kernel "$KERNEL_ELF"
+check_boot cpu-max-el3 -cpu max -machine secure=on -kernel "$KERNEL_ELF"
+check_boot cpu-max-el3-el2 -cpu max -machine secure=on,virtualization=on -kernel "$KERNEL_ELF"
 dirty_elf="$work_dir/dirty-tcr2.elf"
 build_with_feature selftest-dirty-tcr2 "$dirty_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
@@ -1068,6 +1073,8 @@ check_extensions() {
     echo "PASS ($boot_name): TCR2_EL1 cleared although it was set before"
 }
 check_extensions dirty-tcr2 -cpu max -kernel "$dirty_elf"
+check_extensions dirty-tcr2-el2 -cpu max -machine virtualization=on -kernel "$dirty_elf"
+check_extensions dirty-tcr2-el3-el2 -cpu max -machine secure=on,virtualization=on -kernel "$dirty_elf"
 BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
 check_extensions uefi-dirty-tcr2 -cpu max -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
     -drive "file=$dirty_image,format=raw,if=virtio"

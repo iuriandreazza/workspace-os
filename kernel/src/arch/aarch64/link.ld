@@ -39,7 +39,7 @@ SECTIONS
     }
 
     /* 8-byte alignment at both ends: the boot code clears .bss one word at a time.
-       The last 8 KiB are reserved as a probe (ADR 0025): the part of .bss right
+       The last 8 KiB are reserved as a probe (ADR 0026): the part of .bss right
        below the guard page, which a stack that ran past the guard page would
        overwrite. The boot code zeroes it with the rest, and the stack-overflow
        self-test checks it. */
@@ -57,7 +57,7 @@ SECTIONS
     __data_end = .;
 
     /* One unmapped page below the stack: an overflow faults. Exceptions run on
-       their own stack (ADR 0025), so the fault is reported where the handler
+       their own stack (ADR 0026), so the fault is reported where the handler
        does not touch what lies below. */
     . += PAGE;
 
@@ -70,7 +70,7 @@ SECTIONS
         __stack_top = .;
     }
 
-    /* The stack synchronous exceptions run on (ADR 0025), with its own guard
+    /* The stack synchronous exceptions run on (ADR 0026), with its own guard
        page below it. */
     . += PAGE;
     .exception_stack (NOLOAD) : ALIGN(PAGE) {

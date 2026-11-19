@@ -621,7 +621,7 @@ pub struct ImageLayout {
     pub data: Range<u64>,
     /// The boot stack.
     pub stack: Range<u64>,
-    /// The stack synchronous exceptions run on (ADR 0025), above the boot
+    /// The stack synchronous exceptions run on (ADR 0026), above the boot
     /// stack with a guard page between them.
     pub exception_stack: Range<u64>,
 }

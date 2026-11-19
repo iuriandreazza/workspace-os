@@ -132,7 +132,7 @@ pub extern "C" fn kernel_main(
     arch::mmu::verify(&mut console, &board);
 
     // The hand-over is read again from its address, now through the window the
-    // kernel built (ADR 0025): a window that lost a region faults here, one
+    // kernel built (ADR 0026): a window that lost a region faults here, one
     // that maps another frame reads other bytes.
     let after = match board.read_again(handoff_address) {
         Ok(again) => again.handoff_digest(),

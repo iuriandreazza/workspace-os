@@ -1,5 +1,5 @@
 ---
-title: "ADR 0025: Hardening the kernel address space: exception stack, permission indirection, audited addresses"
+title: "ADR 0026: Hardening the kernel address space: exception stack, permission indirection, audited addresses"
 type: adr
 status: accepted
 created: 2026-11-19
@@ -7,7 +7,7 @@ updated: 2026-11-19
 tags: [kernel, memory, mmu, aarch64, security, exceptions]
 ---
 
-# ADR 0025: Hardening the kernel address space
+# ADR 0026: Hardening the kernel address space
 
 ## Context
 
@@ -81,6 +81,14 @@ permission overlays) off. If `SCTLRX` (bits 7:4) is non-zero, `SCTLR2_EL1` is
 written with zero for the same reason. Where a register does not exist nothing
 is written: the write would be UNDEFINED, and the behaviour is the one ADR 0019
 describes.
+
+When the kernel is entered at EL3 or EL2 the drop must also let EL1 write
+them, or the write traps to a level with no handler and the boot hangs without
+output (found in review, reproduced on `-cpu max` at EL2 and EL3): the EL3
+path sets `SCR_EL3.TCR2En` and `SCTLR2En` (bits 43 and 44) where the registers
+exist and `HXEn` (bit 38) where `HCRX_EL2` does, so that EL2 may write it, and the EL2 path writes `HCRX_EL2` (where `ID_AA64MMFR1_EL1.HCX` says it
+exists) with `TCR2En` and `SCTLR2En` (bits 14 and 15) set for the same cases and
+the rest clear.
 
 The condition is the register's own existence (`TCRX`, `SCTLRX`), not S1PIE
 alone: S1PIE implies `TCR2_EL1`, and a core with `TCR2_EL1` but no S1PIE also
@@ -198,6 +206,9 @@ only reports the register's value, would pass the removal of the write.
   compiler's stack probes would close it; not done.
 - **`TPIDR_EL1` is a scratch register** of the vector entry until per-core data
   needs it (K11).
+- **The `SCTLR2_EL1` clear is not demonstrated.** QEMU resets it to zero and the
+  gate has no build that dirties it, so deleting that one write passes. Only the
+  `TCR2_EL1` write has a dirty-register boot.
 - **A nested exception is reported, not recovered.** The exception stack is
   reset to its top by the fatal path, which overwrites the frame the first
   exception saved; nothing returns from it.

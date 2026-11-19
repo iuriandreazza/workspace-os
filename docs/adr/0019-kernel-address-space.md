@@ -324,7 +324,7 @@ image at the physical address the ELF names. Lifting it is a separate item.
   breakpoint resume, at EL1. That is evidence from a real processor's TLB and
   caches that these sequences do not fault, not proof they are sufficient; HVF
   cannot start EL2 on that machine, so EL2 has none.
-- **Closed by ADR 0025 (a separate exception stack).** *The guard page weakens
+- **Closed by ADR 0026 (a separate exception stack).** *The guard page weakens
   an overflow, it does not stop it.* An overflow
   faults at the guard page, but the handler of a synchronous exception saves its
   context (288 bytes) on the same stack pointer (`exceptions.s`), so it faults
@@ -333,15 +333,15 @@ image at the physical address the ELF names. Lifting it is a separate item.
   succeed, a report is printed, and the register frames have overwritten what
   was there (found in review by recursing until the guard page was hit). A frame
   larger than the guard page's 4 KiB skips it altogether. A separate exception
-  stack, which fixes the first of both, is ADR 0025. A frame larger than the
+  stack, which fixes the first of both, is ADR 0026. A frame larger than the
   guard page still steps over it.
 - **The direct path assumes QEMU `virt`'s layout** in phase A (devices below
   1 GiB, RAM above), until phase B rebuilds the lower half from the device tree.
-- **Closed by ADR 0025 for the memory type (shareability is still not
+- **Closed by ADR 0026 for the memory type (shareability is still not
   audited).** *The audit does not look at memory type or shareability* of a
   leaf, only at permissions and aliasing: an image page with a wrong `AttrIndx` passes the
   walk and every fault boot.
-- **Closed by ADR 0025.** *Cores with permission indirection (FEAT_S1PIE)* reset `TCR2_EL1.PIE`
+- **Closed by ADR 0026.** *Cores with permission indirection (FEAT_S1PIE)* reset `TCR2_EL1.PIE`
   to an unknown value; if it is set, the descriptors' `AP` and `PXN` bits mean
   something else. The boot code does not initialise `TCR2_EL1` or `SCTLR2_EL1`
   (writing them on a core without the feature is undefined). No machine here
@@ -350,7 +350,7 @@ image at the physical address the ELF names. Lifting it is a separate item.
   (`dc ivac`) table memory before writing it and clean and invalidate it after;
   the TCG cannot show whether that is enough on a core with caches in an unknown
   state.
-- **Closed by ADR 0025.** *The walk checks totals, not addresses*: it does not compare a leaf's
+- **Closed by ADR 0026.** *The walk checks totals, not addresses*: it does not compare a leaf's
   output address with the page it should map, and after the switch only the
   UART and the page tables themselves are read through the lower window, so a
   window that dropped the boot info, the memory map or the device tree copy would

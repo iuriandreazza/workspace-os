@@ -275,7 +275,7 @@ const TCR2_PIE: u64 = 1 << 1;
 const TCR2_D128: u64 = 1 << 5;
 
 /// Reports the registers `boot.s` cleared where they exist, and panics if one
-/// holds a feature the kernel's tables do not use (ADR 0025). Nothing is read
+/// holds a feature the kernel's tables do not use (ADR 0026). Nothing is read
 /// that the processor lacks: the read would be UNDEFINED.
 fn verify_translation_extensions(mut out: impl Write) {
     let mmfr3 = read_mmfr3();

@@ -5,7 +5,7 @@
 // handler and returns to the interrupted code. Every other entry is not
 // handled yet and ends in a kernel panic that names the entry.
 //
-// Synchronous exceptions run on their own stack (ADR 0025), never on the one
+// Synchronous exceptions run on their own stack (ADR 0026), never on the one
 // they interrupted, so an overflow of the boot stack is reported and writes
 // nothing below the guard page. The interrupted SP is saved in the frame.
 
@@ -65,9 +65,10 @@ sync_exception_entry:
     sub  sp, sp, x0
     // An exception taken on the exception stack itself (the handler or the
     // report faulted) must not reuse it: the interrupted SP is within one
-    // stack size below the top.
+    // stack size below the top, or in the guard page below that (the handler
+    // overflowed it).
     sub  x0, sp, x0
-    cmp  x0, #EXCEPTION_STACK_SIZE
+    cmp  x0, #(EXCEPTION_STACK_SIZE + 0x1000)
     b.ls nested_exception_entry
     sub  x0, sp, x0
     sub  sp, sp, #FRAME_SIZE

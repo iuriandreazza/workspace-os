@@ -56,7 +56,7 @@ pub fn boot_stack() -> Range<usize> {
 }
 
 /// Physical addresses of the guard page above the boot stack and the exception
-/// stack above it (ADR 0025), both reserved with the image.
+/// stack above it (ADR 0026), both reserved with the image.
 pub fn exception_stack() -> Range<usize> {
     physical(address_of!(__stack_top))..physical(address_of!(__exception_stack_top))
 }

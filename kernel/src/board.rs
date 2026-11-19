@@ -142,7 +142,7 @@ impl Board {
     /// the boot info, every entry of the memory map, every region the memory
     /// and reservation walks give, and all the bytes of the device tree blob.
     /// It is taken before the kernel switches to its own tables and again,
-    /// from a fresh read, after (ADR 0025): the second read goes through the
+    /// from a fresh read, after (ADR 0026): the second read goes through the
     /// lower window, so a window that lost or misplaced a region differs.
     pub fn handoff_digest(&self) -> HandoffDigest {
         let mut digest = HandoffDigest::new();

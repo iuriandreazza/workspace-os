@@ -17,7 +17,7 @@ pub struct TrapFrame {
     esr: u64,
     far: u64,
     /// The stack pointer of the interrupted code: the handler runs on the
-    /// exception stack (ADR 0025).
+    /// exception stack (ADR 0026).
     sp: u64,
     _reserved: u64,
 }
@@ -237,7 +237,7 @@ pub fn current_el() -> u64 {
 
 /// Overflows the boot stack by recursing. The first store below the stack hits
 /// the guard page; the report must be made on the exception stack and leave the
-/// `.bss` probe whole (ADR 0025).
+/// `.bss` probe whole (ADR 0026).
 #[cfg(feature = "selftest-stack-overflow")]
 pub fn overflow_stack() {
     super::fill_stack_probe();
