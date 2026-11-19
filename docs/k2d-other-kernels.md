@@ -155,7 +155,7 @@ fail.
 | Boot | What it proves |
 |---|---|
 | `uefi-linux` | Entry 3 starts Linux: `Linux version 6.18.60-0-virt`, a machine line, a `Kernel command line:` equal to the entry's text (so `LoadOptions` arrive whole), no `Freeing initrd memory`, and none of our own kernel's lines |
-| `uefi-linux-initrd` | The same with an initrd of 1,003,520 bytes (a cpio archive, 245 whole pages): the kernel prints `Freeing initrd memory` with exactly that many KiB and no unpacking failure |
+| `uefi-linux-initrd` | The same with an initrd of 1,003,520 bytes (a cpio archive, 245 whole pages, with an `/init` that is not a program): the kernel prints `Freeing initrd memory` with exactly that many KiB, no unpacking failure, and `Failed to execute /init`, which only an initrd that arrived intact can show; with no initrd it says there is no `/init` |
 | `uefi-others` | Six refusals in a row on one boot, each with its own message and a menu that comes back with no countdown (`back to the menu`, `autoboot stopped`), none starting anything; then the chainload of `chainprobe` (started, device handle set, the right file path, `returned SUCCESS`) and the menu again; then `1` starts our kernel |
 | `uefi-bad-config` | A `\WSOS.CFG` with a label the console cannot print (a character outside the Basic Multilingual Plane, which panicked the bootloader before it was refused) on line 3: the line is named, only Normal and Recovery are listed, and the countdown still starts Normal |
 | `uefi-with-config` | A good file: the entry is listed third and Normal still starts by the timeout |
@@ -177,11 +177,14 @@ number of pages, which is why it is one.
   by design; what is checked is the start.
 - Not in the gate: a refusal for an empty file, a chainloaded loader that
   returns an error status (same code path as the success the gate runs), and
-  the contents of the initrd (the kernel unpacks it, which checks its headers;
-  only its size is read back).
+  that the padding file of the initrd arrived intact (the `/init` and the
+  archive's headers did, as the kernel found them).
 - `LoadImage` that answers `SECURITY_VIOLATION` loads the image without starting
   it; the `uefi` crate drops that handle, so the loaded copy stays until the
-  machine resets. Only a start that fails that way is unloaded here.
+  machine resets. Only a start that fails that way is unloaded here; the status alone cannot tell
+  that from an image that ran and returned the same status, and a firmware that
+  does not validate handles would then see a second unload of a finished image
+  (EDK2 answers `INVALID_PARAMETER`).
 - If the firmware refused to uninstall the initrd protocol after Linux's stub
   returned, a second Linux entry could find the stale handle. The stub reads
   the protocol with `HandleProtocol`, which does not block an uninstall, and

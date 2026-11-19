@@ -237,6 +237,9 @@ def main():
     if len(positional) == 3:
         with open(positional[2], "rb") as f:
             files["KERNEL.ELF"] = f.read()
+    for path in extras:
+        if path in files:
+            raise SystemExit("--file would replace the bootloader or the kernel: \\" + path.replace("/", "\\"))
     files.update(extras)
     volume = build_volume(files)
     with open(output, "wb") as image:

@@ -815,7 +815,9 @@ check_uefi_refusal uefi-load-busy "$work_dir/relocated.img" \
 LINUX_RELEASE="$(sed -n 's/^readonly KERNEL_RELEASE="\(.*\)"$/\1/p' scripts/fetch-test-kernel.sh)"
 [[ -n "$LINUX_RELEASE" ]] || fail "KERNEL_RELEASE not found in scripts/fetch-test-kernel.sh"
 readonly LINUX_CMDLINE="console=ttyAMA0 earlycon wsos_token=k2d-ok"
-readonly LINUX_ROOT_FAILURE="Unable to mount root fs"
+# Linux ends its boot with a panic (no root filesystem, or an /init that does
+# not run): the end of what the gate reads.
+readonly LINUX_END="Kernel panic - not syncing"
 bootloader_efi="target/aarch64-unknown-uefi/debug/bootloader.efi"
 chainprobe_efi="target/aarch64-unknown-uefi/debug/chainprobe.efi"
 
@@ -878,7 +880,7 @@ check_linux() {
     local key="$3" label="$4" initrd_bytes="${5:-}" cmdline
     start_other "$1" "$2"
     send_key "$1" "$key"
-    wait_for_line "$LINUX_ROOT_FAILURE"
+    wait_for_line "$LINUX_END"
     sleep "$SETTLE_SECONDS"
     expect_once "starting $label (Linux), chosen on the keyboard" "the bootloader's choice of $label"
     expect_plain_once "Linux version $LINUX_RELEASE" "Linux's first line"
@@ -893,7 +895,11 @@ check_linux() {
         # figure follows the size of the file and of nothing else.
         expect_plain_once "Freeing initrd memory: $((initrd_bytes / 4096 * 4))K" "the initrd Linux received"
         expect_plain_absent "Initramfs unpacking failed" "the initrd Linux received"
+        # The kernel found /init in what it unpacked, and tried to run it.
+        expect_plain_absent "check access for rdinit=/init failed" "the initrd Linux received"
+        expect_plain_once "Failed to execute /init" "the /init of the initrd"
     else
+        expect_plain_once "check access for rdinit=/init failed" "a boot with no initrd"
         expect_plain_absent "Freeing initrd memory" "a boot with no initrd"
     fi
     expect_plain_absent "booted on aarch64" "a Linux boot"
@@ -955,24 +961,31 @@ check_others() {
     echo "PASS ($boot_name): $refusals refusals back to the menu, a chainloaded application, and our kernel after them"
 }
 
-# An initrd of a known size: a `newc` cpio archive with one file of padding,
-# which the kernel unpacks without complaint (it holds no /init, so the boot
-# ends as the other Linux boots do).
+# An initrd of a known size: a `newc` cpio archive with an /init that is not a
+# program and a file of padding. The kernel unpacks it without complaint and
+# then fails to run /init, which a missing or damaged copy could not show.
 initrd_file="$work_dir/INITRD.IMG"
 python3 -I - "$initrd_file" <<'PY'
 import sys
 
-def newc(name, data, inode):
+def newc(name, data, inode, mode=0o100644):
     name = name.encode() + b"\0"
     header = "070701" + "".join(
-        "%08x" % value for value in (inode, 0o100644, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name), 0)
+        "%08x" % value for value in (inode, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name), 0)
     )
     entry = header.encode() + name
     entry += b"\0" * (-len(entry) % 4) + data
     return entry + b"\0" * (-len(entry) % 4)
 
 def archive(padding):
-    return newc("wsos-padding", b"k" * padding, 1) + newc("TRAILER!!!", b"", 0)
+    # An /init that is not a program: when the kernel unpacked the archive it
+    # tries to run it and says that it could not, and when the initrd did not
+    # arrive intact it says there is no /init at all.
+    return (
+        newc("init", b"not a program\n", 1, 0o100755)
+        + newc("wsos-padding", b"k" * padding, 2)
+        + newc("TRAILER!!!", b"", 0)
+    )
 
 # A whole number of pages: the kernel frees whole pages, so an initrd cut short
 # by even a byte shows in the figure it prints.
