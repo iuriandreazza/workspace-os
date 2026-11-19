@@ -77,7 +77,8 @@ class Volume:
 
 def short_name(name):
     base, _, ext = name.partition(".")
-    assert len(base) <= 8 and len(ext) <= 3 and name == name.upper(), name
+    if not (len(base) <= 8 and len(ext) <= 3 and name == name.upper()):
+        raise SystemExit("not an upper-case 8.3 file name (only those are written): " + name)
     return base.ljust(8).encode() + ext.ljust(3).encode()
 
 

@@ -41,8 +41,8 @@ the end.
   [`efi-stub-helper.c`](https://github.com/torvalds/linux/blob/master/drivers/firmware/efi/libstub/efi-stub-helper.c)).
   The loader therefore sets `LoadOptions` and `LoadOptionsSize` on the child's
   `LoadedImage` before `StartImage`. The conversion is bounded by
-  `COMMAND_LINE_SIZE`, hence the 1023-character limit of the entry parser, and
-  it reads ASCII, hence "printable ASCII only".
+  `COMMAND_LINE_SIZE` (2048 on arm64; the entry parser stops at 1023 to leave
+  room), and it reads ASCII, hence "printable ASCII only".
 - **Initrd.** The stub first looks for the vendor media device path
   `LINUX_EFI_INITRD_MEDIA_GUID` (`5568e427-68fc-4f3d-ac74-ca555231cc68`, from
   [`include/linux/efi.h`](https://github.com/torvalds/linux/blob/master/include/linux/efi.h);

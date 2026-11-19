@@ -112,7 +112,8 @@ chainload \EFI\OTHER\BOOTAA64.EFI
 
 ### Try Linux by hand under QEMU
 
-`make-disk-image.py` takes `--file \ESP\PATH=LOCAL` for every extra file. The
+`make-disk-image.py` takes `--file \ESP\PATH=LOCAL` for every extra file;
+names must be upper-case 8.3 (`VMLINUZ`, `INITRD.IMG`), the only ones it writes. The
 Linux kernel the gate uses is a pinned Alpine release; the script fetches and
 checks it, and prints where the cached file is:
 
