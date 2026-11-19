@@ -134,6 +134,14 @@ pub trait Planner {
     fn plan(&self, request: &str, cwd: &str, retry: Option<&Retry>) -> Result<String, String>;
 }
 
+/// The model as a writer of words only (ADR 0021). It is given a fixed prompt
+/// and the facts of a request that has already ended, has no tools and no plan
+/// grammar, and what it writes is never read for anything.
+pub trait Speaker {
+    /// The raw text of a short reply. Nothing here is trusted.
+    fn reply(&self, system: &str, facts: &str) -> Result<String, String>;
+}
+
 /// One line of the question for an ambiguous reference: a candidate the
 /// person may pick, or the context it sits in.
 #[derive(Debug, Clone, PartialEq, Eq)]

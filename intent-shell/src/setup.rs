@@ -5,8 +5,9 @@
 use crate::broker::Authority;
 use crate::host::UnixHost;
 use crate::log::JsonlLog;
-use crate::model::{LlamaPlanner, NoModel};
+use crate::model::{LlamaPlanner, LlamaSpeaker, NoModel};
 use crate::ports::Planner;
+use crate::reply::Profile;
 use crate::screen::{self, Header};
 use crate::session::{Entry, SessionState};
 
@@ -19,6 +20,12 @@ pub struct Setup {
     /// `None` is the deterministic shell: no model, lines are commands (ADR 0022).
     pub planner: Option<LlamaPlanner>,
     pub log: JsonlLog,
+    /// The profile of the replies, or `None` for no replies (`--no-reply`). It
+    /// only counts when there is a model to write them (ADR 0021).
+    pub reply: Option<Profile>,
+    /// Said to the person when the session opens, because on a screen the
+    /// error output is hidden: a voice profile that could not be used.
+    pub notice: Option<String>,
     /// The decision log's file name, for the header (its directory is in the details).
     pub log_name: String,
 }
@@ -26,6 +33,13 @@ pub struct Setup {
 impl Setup {
     pub fn entry(&self) -> Entry {
         Entry::for_model(self.planner.is_some())
+    }
+
+    /// Who writes the replies and in which profile, when replies are on and
+    /// there is a model.
+    pub fn speaker(&self) -> Option<(LlamaSpeaker, Profile)> {
+        let model = self.planner.as_ref()?;
+        Some((LlamaSpeaker::new(&model.address), self.reply?))
     }
 
     /// The header for the directory the session is in now.
@@ -87,6 +101,8 @@ mod tests {
             host: UnixHost::from_environment(),
             planner: model,
             log: JsonlLog::open(&log).unwrap(),
+            reply: Some(Profile::DirectTechnical),
+            notice: None,
             log_name: "d.jsonl".to_owned(),
         }
     }
@@ -111,6 +127,20 @@ mod tests {
         let start = SessionState::start(&with.host);
         assert!(with.header(&start).contains("127.0.0.1:1"));
         assert!(without.header(&start).contains("none (commands only)"));
+    }
+
+    #[test]
+    fn replies_need_a_model_and_are_on_unless_turned_off() {
+        let model = || {
+            Some(LlamaPlanner {
+                address: "127.0.0.1:1".to_owned(),
+            })
+        };
+        assert!(setup(model()).speaker().is_some());
+        assert!(setup(None).speaker().is_none());
+        let mut off = setup(model());
+        off.reply = None;
+        assert!(off.speaker().is_none());
     }
 
     #[test]

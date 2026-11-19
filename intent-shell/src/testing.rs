@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::action::{Access, Action};
 use crate::ports::{
     ChoiceLine, Confirm, DecisionLog, Entry, EntryKind, Found, Host, Output, Planner, Retry,
-    Search, TREE_DEPTH, TreeEntry, User,
+    Search, Speaker, TREE_DEPTH, TreeEntry, User,
 };
 use crate::reference::Place;
 
@@ -369,6 +369,31 @@ impl Planner for ScriptedPlanner {
             .borrow_mut()
             .pop()
             .ok_or_else(|| "script exhausted".to_owned())
+    }
+}
+
+/// Answers every reply request with the same result and keeps what it was asked.
+pub struct ScriptedSpeaker {
+    pub answer: Result<String, String>,
+    /// The system prompt and the facts of each call.
+    pub asked: RefCell<Vec<(String, String)>>,
+}
+
+impl ScriptedSpeaker {
+    pub fn says(text: &str) -> Self {
+        Self {
+            answer: Ok(text.to_owned()),
+            asked: RefCell::default(),
+        }
+    }
+}
+
+impl Speaker for ScriptedSpeaker {
+    fn reply(&self, system: &str, facts: &str) -> Result<String, String> {
+        self.asked
+            .borrow_mut()
+            .push((system.to_owned(), facts.to_owned()));
+        self.answer.clone()
     }
 }
 

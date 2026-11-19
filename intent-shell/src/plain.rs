@@ -7,20 +7,28 @@ use std::io::{self, IsTerminal, Write};
 
 use crate::action::printable;
 use crate::ports::{ChoiceLine, Confirm, User};
+use crate::reply::{self, Voice};
 use crate::screen::fit;
 use crate::session::{Entry, SessionState, Shell};
 use crate::setup::{Setup, planner_of};
 
-struct TerminalConfirm;
+struct TerminalConfirm {
+    /// Set when the input ended at a question: the session is over, and there
+    /// is no one to read a reply.
+    input_ended: bool,
+}
 
-fn read_line() -> Option<String> {
+/// A line from the input, and whether the input has ended (as opposed to one
+/// bad line, which is only no answer).
+fn read_line() -> (Option<String>, bool) {
     let _ = io::stdout().flush();
     let mut line = String::new();
     match io::stdin().read_line(&mut line) {
-        Ok(0) | Err(_) => None,
+        Ok(0) => (None, true),
+        Err(_) => (None, false),
         Ok(_) => {
             echo_if_scripted(&line);
-            Some(line)
+            (Some(line), false)
         }
     }
 }
@@ -74,6 +82,9 @@ fn width_for(text: &str, indent: usize) -> usize {
     terminal_width()
 }
 
+/// Where output is redirected there is no width to wrap to.
+const REDIRECTED_REPLY_WIDTH: usize = 80;
+
 /// Columns of the terminal; 80 when it does not say.
 fn terminal_width() -> usize {
     let mut size = libc::winsize {
@@ -97,12 +108,26 @@ fn parse_choice(answer: &str, count: usize) -> Option<usize> {
     (1..=count).contains(&number).then(|| number - 1)
 }
 
+impl TerminalConfirm {
+    /// The end of the input only counts for the request it happened in: at a
+    /// terminal the person may press Ctrl-D at a question and carry on.
+    fn begin_request(&mut self) {
+        self.input_ended = false;
+    }
+
+    fn answer(&mut self) -> Option<String> {
+        let (line, ended) = read_line();
+        self.input_ended |= ended;
+        line
+    }
+}
+
 impl Confirm for TerminalConfirm {
     fn plan(&mut self, screen: &str, details: &str) -> bool {
         println!("{screen}");
         loop {
             print!("  [y] run the steps marked ok   [d] details   [n] cancel > ");
-            let Some(answer) = read_line() else {
+            let Some(answer) = self.answer() else {
                 return false;
             };
             if is_details(&answer) {
@@ -116,7 +141,7 @@ impl Confirm for TerminalConfirm {
     fn root_action(&mut self, panel: &str, _who: &User) -> bool {
         println!("{panel}");
         print!("  [y] confirm this exact action   [n] refuse > ");
-        read_line().is_some_and(|answer| is_yes(&answer))
+        self.answer().is_some_and(|answer| is_yes(&answer))
     }
 
     fn choose(&mut self, question: &str, lines: &[ChoiceLine]) -> Option<usize> {
@@ -132,7 +157,7 @@ impl Confirm for TerminalConfirm {
         let options = lines.iter().filter(|l| l.option.is_some()).count();
         loop {
             print!("  number, or Enter to cancel > ");
-            let answer = read_line()?;
+            let answer = self.answer()?;
             if answer.trim().is_empty() {
                 return None;
             }
@@ -152,8 +177,19 @@ fn prompt(entry: Entry, cwd: &str) -> String {
     }
 }
 
+/// The reply as the lines to print under the result: marked, and wrapped to the
+/// terminal so that no continuation line is left unmarked.
+fn reply_text(reply: &str, width: usize) -> String {
+    reply::block(reply, width, reply::cautious_cells).join("\n")
+}
+
 pub fn run(mut setup: Setup) -> Result<(), String> {
-    let mut confirm = TerminalConfirm;
+    let speaker = setup.speaker();
+    let voice = speaker.as_ref().map(|(speaker, profile)| Voice {
+        speaker,
+        profile: *profile,
+    });
+    let mut confirm = TerminalConfirm { input_ended: false };
     let mut session = SessionState::start(&setup.host);
     println!("{}", setup.header(&session));
     loop {
@@ -175,6 +211,7 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
             continue;
         }
         let entry = setup.entry();
+        confirm.begin_request();
         let mut shell = Shell {
             session: &mut session,
             authority: &setup.authority,
@@ -183,14 +220,28 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
             confirm: &mut confirm,
             log: &mut setup.log,
         };
-        let outcome = shell.handle_as(entry, request).render();
-        println!("{}", fit(&outcome, width_for(&outcome, 0)));
+        let outcome = shell.handle_as(entry, request);
+        let text = outcome.render();
+        println!("{}", fit(&text, width_for(&text, 0)));
+        // After the result is on screen: the reply is only ever an addition.
+        if let Some(reply) = voice
+            .as_ref()
+            .filter(|_| !confirm.input_ended)
+            .and_then(|voice| reply::reply_to(voice, request, &outcome, &mut setup.log))
+        {
+            let width = if io::stdout().is_terminal() {
+                terminal_width()
+            } else {
+                REDIRECTED_REPLY_WIDTH
+            };
+            println!("{}", reply_text(&reply, width));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Entry, is_details, is_yes, numbered, parse_choice, prompt};
+    use super::{Entry, TerminalConfirm, is_details, is_yes, numbered, parse_choice, prompt};
     use crate::ports::ChoiceLine;
 
     #[test]
@@ -254,5 +305,12 @@ mod tests {
         for no in ["", "\n", "n\n", "yep", "ye", " \n"] {
             assert!(!is_yes(no), "{no:?}");
         }
+    }
+
+    #[test]
+    fn the_end_of_the_input_is_forgotten_for_the_next_request() {
+        let mut confirm = TerminalConfirm { input_ended: true };
+        confirm.begin_request();
+        assert!(!confirm.input_ended);
     }
 }

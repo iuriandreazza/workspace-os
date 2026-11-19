@@ -20,6 +20,7 @@ fn style_of(kind: Kind) -> Style {
         Kind::Request => Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         Kind::Note => Style::new().fg(Color::DarkGray),
         Kind::Plan | Kind::Outcome => Style::new(),
+        Kind::Reply => Style::new().add_modifier(Modifier::ITALIC),
         Kind::Root => Style::new().fg(Color::Red),
     }
 }
