@@ -30,7 +30,7 @@ impl fmt::Display for PathError {
         match self {
             Self::NotAbsolute => f.write_str("a path starts with a backslash"),
             Self::TooLong => write!(f, "a path is at most {MAX_PATH} characters"),
-            Self::BadCharacter(c) => write!(f, "{c:?} cannot be in a path"),
+            Self::BadCharacter(c) => write!(f, "'{}' cannot be in a path", c.escape_default()),
             Self::EmptyComponent => f.write_str("a path has an empty part between backslashes"),
             Self::DotComponent => f.write_str("a path has no . or .. parts"),
         }
@@ -78,7 +78,10 @@ pub enum ErrorKind {
     /// Only printable ASCII goes into a command line (it is passed as UCS-2
     /// and read back as ASCII).
     CommandLineCharacter(char),
-    /// A control character in a label would rewrite the console line.
+    /// Only printable ASCII goes into a label: the console cannot print a
+    /// character outside the Basic Multilingual Plane (the firmware's text
+    /// output fails and the bootloader would panic), and a control character
+    /// would rewrite the line.
     LabelCharacter(char),
     /// The entry has neither `linux` nor `chainload`.
     NoKind,
@@ -115,11 +118,16 @@ impl fmt::Display for ConfigError {
             ErrorKind::CommandLineCharacter(c) => {
                 write!(
                     f,
-                    "{c:?} cannot be in a command line (printable ASCII only)"
+                    "'{}' cannot be in a command line (printable ASCII only)",
+                    c.escape_default()
                 )
             }
             ErrorKind::LabelCharacter(c) => {
-                write!(f, "{c:?} cannot be in a label")
+                write!(
+                    f,
+                    "'{}' cannot be in a label (printable ASCII only)",
+                    c.escape_default()
+                )
             }
             ErrorKind::NoKind => f.write_str("the entry has neither linux nor chainload"),
             ErrorKind::TwoKinds => f.write_str("the entry has both linux and chainload"),
@@ -227,7 +235,7 @@ pub fn parse<'a>(text: &'a str, out: &mut [Entry<'a>]) -> Result<usize, ConfigEr
             if value.is_empty() {
                 return Err(fail(ErrorKind::MissingValue));
             }
-            if let Some(bad) = value.chars().find(|c| c.is_control()) {
+            if let Some(bad) = value.chars().find(|c| !(' '..='~').contains(c)) {
                 return Err(fail(ErrorKind::LabelCharacter(bad)));
             }
             pending = Some(Pending {
@@ -309,6 +317,10 @@ mod tests {
     #[test]
     fn a_byte_order_mark_and_a_control_character() {
         assert_eq!(parsed("\u{feff}entry A\nlinux \\X").unwrap().1, 1);
+        for bad in ['\u{1f427}', '\u{e9}', '\u{65e5}'] {
+            let text = format!("entry Linux {bad}\nlinux \\X");
+            assert_eq!(error(&text).kind, ErrorKind::LabelCharacter(bad));
+        }
         assert_eq!(
             error("entry A\u{7}B\nlinux \\X"),
             ConfigError {
@@ -457,6 +469,21 @@ mod tests {
             parse(text, &mut out).unwrap_err().kind,
             ErrorKind::TooManyEntries
         );
+    }
+
+    #[test]
+    fn a_message_never_holds_a_character_the_console_cannot_print() {
+        // The message is printed on the firmware console, which fails (and
+        // the bootloader panics) on a character above U+FFFF.
+        for text in [
+            "entry A\u{1f427}",
+            "entry A\nlinux \\\u{1f427}",
+            "entry A\nlinux \\X\ncmdline \u{1f427}",
+        ] {
+            let message = format!("{}", error(text));
+            assert!(message.is_ascii(), "{message}");
+            assert!(message.contains("\\u{1f427}"), "{message}");
+        }
     }
 
     #[test]

@@ -1023,12 +1023,16 @@ check_others uefi-others "$others_image"
 
 # A file with an error never hides our kernel: the line is named, the built-in
 # entries are all there is, and the countdown still starts Normal.
+# The label has a character the console cannot print (outside the Basic
+# Multilingual Plane): printing it would panic the bootloader, so the file must
+# be refused for it, at its line.
 bad_config_image="$(make_image bad-config "entry Fine
 chainload \\EFI\\TEST\\PROBE.EFI
-frobnicate everything" "${probe_files[@]}")"
+entry Penguin $(printf '\360\237\220\247')
+linux \\VMLINUZ" "${probe_files[@]}")"
 disk_image="$bad_config_image"
 check_uefi_boot uefi-bad-config 256 1 normal ""
-expect_once '\WSOS.CFG, line 3: unknown key: the built-in entries only' "the configuration error"
+expect_once "\\WSOS.CFG, line 3: '\\u{1f427}' cannot be in a label (printable ASCII only): the built-in entries only" "the configuration error"
 expect_plain_absent "3  Fine" "a menu built from a bad file"
 config_image="$(make_image with-config "entry Chain probe
 chainload \\EFI\\TEST\\PROBE.EFI" "${probe_files[@]}")"
