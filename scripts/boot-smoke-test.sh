@@ -1384,8 +1384,10 @@ check_heap_exhaustion() {
         # table and up to three more tables at the ends: 261 (the growth guard).
         [[ "$frames_left" -lt 261 ]] || fail "the heap refused with $frames_left frames left, enough for the request and its tables"
     else
-        [[ "$mapped_pages" -gt $(( (1 << 18) - 256 )) && "$mapped_pages" -le $((1 << 18)) ]] \
-            || fail "the window refused at $mapped_pages pages, expected within a block of 262144"
+        # A request of up to 257 pages (1 MiB aligned to a page) is refused when
+        # fewer pages than that are left in the window.
+        [[ "$mapped_pages" -ge $(( (1 << 18) - 257 )) && "$mapped_pages" -le $((1 << 18)) ]] \
+            || fail "the window refused at $mapped_pages pages, expected within 257 of 262144"
     fi
     if grep -qF "$PANIC_MARKER" "$serial_log"; then
         fail "kernel panicked while the heap ran out"

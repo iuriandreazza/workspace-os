@@ -50,7 +50,8 @@ same `alloc` and `free`.
 ## Consequences
 
 - Allocation is a word scan: constant per frame when memory is fresh, linear in
-  the window after heavy fragmentation. Acceptable until K5.
+  the window after heavy fragmentation. Acceptable through K5, which asks for one frame at a
+  time and does not fragment the bitmap; revisit with K8.
 - A frame is handed out with whatever it held; page tables must be zeroed by
   the caller.
 - Not covered yet: frames that need contiguity or alignment above 4 KiB (DMA
