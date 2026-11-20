@@ -45,8 +45,8 @@ const DEFAULT_WARMUP_MS: u64 = 1000;
 const CANDIDATES: usize = 16;
 
 // The classifier's shape. 512 bytes of a file header, each embedded in 32
-// numbers, one dense layer of 256, one of 128 and the heads: eight systems,
-// six protocols, a score for each of 16 companion slots.
+// numbers, one dense layer of 256, one of 128 and the heads: about 32
+// scores for the labels of ADR 0027 (system, protocol, role, group).
 const WINDOW: usize = 512;
 const EMBEDDING: usize = 32;
 const INPUTS: usize = WINDOW * EMBEDDING;
@@ -80,8 +80,8 @@ fn slm_weights() -> usize {
     LAYERS * layer_weights() + VOCABULARY * HIDDEN
 }
 
-/// The counter that runs at a fixed frequency, read with no barrier on
-/// purpose: the work between two reads is millions of instructions.
+/// The counter that runs at a fixed frequency. The `isb` keeps the read from
+/// being executed ahead of the work before it.
 fn ticks() -> u64 {
     let value: u64;
     // SAFETY: `CNTVCT_EL0` is readable at EL1 and EL2, which is where UEFI

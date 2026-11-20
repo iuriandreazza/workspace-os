@@ -82,7 +82,8 @@ based scanner runs beside it to overrule it.
 
 ## Open questions
 
-- Language model or purpose-trained classifier, and its size.
+- Language model or purpose-trained classifier, and its size. (Proposed in
+  ADR 0027.)
 - Which boot protocols the loader implements first.
 - How the weights are verified at boot.
 - What the user sees, and can correct, when a decision is wrong.

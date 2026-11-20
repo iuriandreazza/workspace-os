@@ -19,14 +19,13 @@ measures what the decision costs to run in the UEFI environment, which the
 research could not do.
 
 This ADR does not reopen ADR 0009, ADR 0008 or ADR 0002. It fills in the points
-ADR 0009 left open, inside the four limits it states, and it **narrows two of
-its statements**, which the project owner should accept knowingly: ADR 0009 says
-the model decides "the parameters to pass", and here the model only chooses
-among parameter lines that already exist on the disk; and the enumeration of
-section 2 has structural limits (a depth and a cap) that code, not the model,
-applies (our system boots without
+ADR 0009 left open, inside the four limits it states (our system boots without
 the model; decisions are stored; there is a fallback; the loader checks the
-format before jumping).
+format before jumping). It also **narrows two of its statements**, which the
+project owner should accept knowingly: ADR 0009 says the model decides "the
+parameters to pass", and here the model only chooses among parameter lines that
+already exist on the disk; and the enumeration of section 2 has structural
+limits (a depth and a cap) that code, not the model, applies.
 
 Status is `proposed`: the decision needs the project owner's acceptance, and
 the accuracy of any model is B2's to show, not this ADR's.
@@ -57,7 +56,14 @@ Worst case at the budget, **derived** from the measured throughput (about
 1.1 G multiply-accumulates per second on TCG and 24 to 30 G on HVF, below):
 4.1 G multiply-accumulates, about 3.8 s on TCG and about 0.2 s on HVF. The
 measured reference shape on a disk of 16 candidates takes 62 ms on TCG and
-2.8 ms on HVF.
+2.8 ms on HVF. Those two are **warm** figures: after a 1 s warm-up, on the
+same weights and the same headers. A real boot runs the model once, on cores
+that were mostly idle and with cold caches; the one earlier run without warm-up
+took 5.9 ms for the first disk on HVF against 2.8 ms later, so the first
+decision can take about twice as long (not measured on TCG). The worst case at
+the budget is a warm figure as well. A disk of 16 candidates is a small disk;
+at the cap of 256 candidates the reference shape takes about 1.0 s on TCG
+(256 times 3.87 ms) and 44 ms on HVF, warm.
 
 ### 2. Inputs: enumerated candidates, a window of bytes and a name
 
@@ -70,7 +76,9 @@ material over; it takes no decision. The enumeration:
 - applies no filter by name, size, extension or content, so no rule decides
   what looks like a kernel (the one structural limit is the cap of 256
   candidates, in the order the firmware lists them, and the loader says so on
-  screen when it is reached);
+  screen when it is reached; a disk with more than 256 files listed before its
+  kernel, such as a large Windows ESP, is not fully seen, and the model never
+  scored what the cap cut: a stated limit that code, not the model, imposes);
 - lists the GPT entries (type GUID, name) and the regular files of the ESP and
   of an XBOOTLDR partition, to a depth of three directories;
 - gives the model, for each candidate, a window of 512 positions: up to 64
@@ -88,8 +96,9 @@ stated limit, not a defect to fix here.
 
 ### 3. The typed decision
 
-For every candidate the model outputs closed labels, 32 scores in the reference
-shape: **system family** (an enum fixed by B2's corpus), **protocol**, **role**
+For every candidate the model outputs closed labels, about 32 scores in the
+reference shape (the labels below need 8 + 4 + 6 + 16 = 34; the two rows of
+difference are 256 multiply-accumulates and do not change the time): **system family** (an enum fixed by B2's corpus), **protocol**, **role**
 and a **group**:
 
 | Field | Closed set |
@@ -110,6 +119,13 @@ The decision is written as entries in the format of ADR 0025 (`entry`, `linux`,
 the same menu then apply, and the entries the model writes are limited to the
 seven the menu has room for. The built-in entries for our own kernel stay first
 and never depend on the model (ADR 0009, point 1).
+
+**Not expressible in ADR 0025 today:** a device tree (there is no key for it),
+a kernel or loader on another partition such as XBOOTLDR (ADR 0025 supports the
+ESP only), and our own kernel as a model-written entry (it is built in). Until
+an ADR that amends ADR 0025 adds them, the loader ignores the `device tree`
+role and the model's enumeration reads XBOOTLDR only for labels the format can
+express; B3 writes that amendment if the corpus shows it is needed.
 
 ### 4. Validation before the jump
 
@@ -168,8 +184,14 @@ bootloader started from.
 - **Time.** The firmware arms a **5 minute watchdog** before it starts a boot
   option and resets the machine when it fires (UEFI 2.10, 7.5.1, read from the
   Wayback snapshot of `07_Services_Boot_Services.html`, `20251207195607`). The
-  worst case at the budget is 3.8 s on TCG, so the bootloader does not disable
-  it; the measuring program does, because its series on TCG run longer.
+  worst case at the budget is 3.8 s on TCG, so the bootloader does not need to
+  disable it; the measuring program does, because its series on TCG run longer.
+  Inference runs before the menu, so it is under this watchdog (the menu
+  disables and re-arms it itself, `bootloader/src/menu.rs`). **A deadline of
+  30 s**, read from the counter between two candidates (each takes a few
+  milliseconds on TCG at the reference shape), ends a run that overruns and
+  takes the fallback of ADR 0009, point 3, well before the watchdog could
+  reset the machine into the same inference again.
 - **Runtime.** Hand-written Rust, about a hundred lines: an int8 matrix-vector
   product with sixteen independent lanes, a shift-and-clamp to int8 and an
   embedding lookup. No library, no `alloc`, no dependency. Every known runtime
@@ -269,9 +291,12 @@ extremes of the repetitions are printed with each repetition. The script reports
 the **median over series of the median of each series**, and drops a series when
 the load average at either end of the boot is above 4, when any workload's
 interquartile range exceeds 10 % of its median, or when the program's clock and
-the host's disagree by more than 10 %. The rule does not remove a steady
-disturbance that stays under those limits: the load average lags and a
-constant extra load gives a small spread. Memory: 512 MiB. One core is
+the host's disagree by more than 10 %. The load limit is half the eight cores
+(the M1 has four performance cores). The clock check detects a skewed counter,
+not interference: a vCPU that the host did not schedule delays both clocks
+alike. The rule does not remove a steady disturbance that stays under those
+limits: the load average lags, a constant extra load gives a small spread, and
+the number of other QEMU processes is printed but not used to drop a series. Memory: 512 MiB. One core is
 used by the guest. The machine is shared: another session ran its own QEMU gate
 during part of the HVF run (recorded as "other qemu" in the series lines).
 
@@ -341,7 +366,7 @@ the counter's was 1.00 to 1.03 (TCG) and 1.00 (HVF).
   `scripts/measure-boot-model.py` and the repetitions to be two (so the
   configuration was read); it fails if the arithmetic
   changed, if the firmware is missing, or if the program does not finish. It
-  uses the default CPU, not `-cpu max` (ADR 0026).
+  uses `-cpu cortex-a72`, not `-cpu max` (ADR 0026).
 
 ## Alternatives considered
 
@@ -373,8 +398,7 @@ that supersedes this one would swap the producer.
   model's boot time next to the stored-decision boot (ADR 0009, point 2).
 - The memory the classifier needs is 4.0 MiB of weights in the reference shape and at most
   18 MiB at the budget; the language model would have added 128 MiB to a bootloader that
-  already runs in 256 MiB in the gate and needs 2048 MiB on VirtualBox (ADR
-  0013).
+  already runs in 256 MiB in the gate and needs 2048 MiB on VirtualBox (`docs/booting-the-image.md`).
 
 ## Known limits
 

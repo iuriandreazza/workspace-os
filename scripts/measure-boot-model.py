@@ -129,7 +129,8 @@ def boot_once(accelerator, image, firmware, timeout):
     command = ["qemu-system-aarch64", *QEMU_COMMON, *ACCELERATORS[accelerator], "-bios", firmware,
                "-drive", f"file={image},format=raw,if=virtio"]
     started = time.monotonic()
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, bufsize=1)
     summary, raw, arrival, text = {}, {}, {}, []
     # A timer, not a test between lines: a firmware that stops printing would
     # block the read for ever.
@@ -145,6 +146,8 @@ def boot_once(accelerator, image, firmware, timeout):
         for line in process.stdout:
             line = ANSI.sub("", line.replace("\r", ""))
             text.append(line)
+            if "inferprobe: FAIL" in line:
+                break  # the firmware stays up after a failed probe; do not wait for it
             if match := LINE.search(line):
                 summary[match["name"]] = {key: (int(v) if key not in ("name", "checksum") else v)
                                          for key, v in match.groupdict().items()}
@@ -241,7 +244,7 @@ def main():
     parser.add_argument("--check", action="store_true", help="the gate's short run")
     parser.add_argument("--accel", action="append", choices=sorted(ACCELERATORS), help="repeat for several; default tcg")
     parser.add_argument("--series", type=int, default=7)
-    parser.add_argument("--reps", type=int, default=21)
+    parser.add_argument("--reps", type=int, default=21, choices=range(1, 65), metavar="1..64")
     parser.add_argument("--out", type=Path, default=ROOT / "target/boot-model-measurement")
     args = parser.parse_args()
     if args.check:
