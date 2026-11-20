@@ -74,7 +74,7 @@ and the files of the EFI system partition is how the firmware hands that
 material over; it takes no decision. The enumeration:
 
 - applies no filter by name, size, extension or content, so no rule decides
-  what looks like a kernel (the one structural limit is the cap of 256
+  what looks like a kernel (the structural limits are the cap of 256
   candidates, in the order the firmware lists them, and the loader says so on
   screen when it is reached; a disk with more than 256 files listed before its
   kernel, such as a large Windows ESP, is not fully seen, and the model never
@@ -185,10 +185,12 @@ bootloader started from.
   option and resets the machine when it fires (UEFI 2.10, 7.5.1, read from the
   Wayback snapshot of `07_Services_Boot_Services.html`, `20251207195607`). The
   worst case at the budget is 3.8 s on TCG, so the bootloader does not need to
-  disable it; the measuring program does, because its series on TCG run longer.
+  disable it; the measuring program does, because a series of any length must be measured without a reset.
   Inference runs before the menu, so it is under this watchdog (the menu
-  disables and re-arms it itself, `bootloader/src/menu.rs`). **A deadline of
-  30 s**, read from the counter between two candidates (each takes a few
+  disables and re-arms it itself, `bootloader/src/menu.rs`). The 3.8 s is inference only: reading the weights and the headers through the
+  firmware (not measured here, and slow on a slow USB or SD device) comes on top,
+  and B3 must measure it. **A deadline of 30 s** from the start of the weight
+  read, checked between reads and between two candidates (each takes a few
   milliseconds on TCG at the reference shape), ends a run that overruns and
   takes the fallback of ADR 0009, point 3, well before the watchdog could
   reset the machine into the same inference again.
@@ -327,7 +329,7 @@ us, in the order of the table. The table is the quieter first run.
 |---|---:|---:|
 | throughput, int8 | 1.1 G MAC/s | 24 to 30 G MAC/s |
 | the language model's decision: 300 prompt tokens and 60 generated, 360 token steps, no batching of the prompt | about 46 s | about 1.6 s |
-| the language model in fp32, one token (30 layers and the output projection, scaled from the one-layer time) | not computed (the fp32 layer is bimodal) | about 13 ms if the layer stays in cache; at least 18 ms if memory-bound (513 MiB at the 30 GB/s the int8 run streams), three to four times int8 |
+| the language model in fp32, one token (30 layers and the output projection, scaled from the one-layer time) | not computed (the fp32 layer is bimodal) | about 13 ms taking the one-layer time at face value; a rough indicator only: the layer (14 MB) is run repeatedly, the real model streams 513 MiB, and the figure is neither a floor nor a ceiling |
 | memory of the language model's weights | 128 MiB int8, 513 MiB fp32 | same |
 
 ### What each number is, and what it is not

@@ -31,7 +31,8 @@ the machine and decides how each one is loaded.
   headers of candidate files.
 - **What it decides, for each kernel found:** what system it is, which boot
   protocol applies, which companion files go with it (such as an initial
-  ramdisk), and the parameters to pass.
+  ramdisk), and the parameters to pass (narrowed in ADR 0027, proposed: the
+  model chooses among parameter lines that already exist on the disk).
 - **What it does not do:** the loading itself. The bootloader implements a
   fixed set of boot protocols in ordinary code; the model chooses among them
   and fills in their inputs.

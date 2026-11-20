@@ -163,7 +163,7 @@ fn allocate<T>(count: usize) -> Option<&'static mut [T]> {
         boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages).ok()?;
     // SAFETY: the firmware gave `pages` whole pages, aligned to 4096, that
     // nothing else uses and that stay allocated until the application ends.
-    // `T` is `i8` or `f32`, for which every bit pattern is valid, and the
+    // `T` is `i8`, `i32` or `f32`, for which every bit pattern is valid, and the
     // memory is zeroed first.
     unsafe {
         core::ptr::write_bytes(pointer.as_ptr(), 0, pages * PAGE);
@@ -478,8 +478,8 @@ fn settings() -> Settings {
 fn main() -> Status {
     let settings = settings();
     // The firmware arms a 5 minute watchdog before it starts a boot option
-    // (UEFI 2.10, 7.5.1) and resets the machine when it fires. The SLM series
-    // under emulation can come close, so the application disables it.
+    // (UEFI 2.10, 7.5.1) and resets the machine when it fires. A long
+    // series must not be reset in the middle, so the application disables it.
     if let Err(error) = boot::set_watchdog_timer(0, 0x1_0000, None) {
         println!(
             "  inferprobe: could not disable the watchdog: {:?}",

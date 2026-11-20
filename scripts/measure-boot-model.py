@@ -9,8 +9,8 @@ The program is `bootloader/probe/inferprobe.rs`, built in release, alone on a
 disk image. Each series is one boot of QEMU, which runs `--reps` repetitions of
 every workload and prints the time of each. The script reports, per workload,
 the median of the repetitions of each series and then the median over the
-series that were quiet, and says which series it dropped and why. It never
-reports a number measured on a loaded machine without saying so.
+series that were quiet, and says which series it dropped and why. A steady
+disturbance under its limits is not detected (ADR 0027).
 
 `--check` is what the gate runs: one short boot on TCG, with the checksums of
 the workload compared with the ones below. A checksum that changes means the
@@ -130,7 +130,7 @@ def boot_once(accelerator, image, firmware, timeout):
                "-drive", f"file={image},format=raw,if=virtio"]
     started = time.monotonic()
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True, bufsize=1)
+                               stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
     summary, raw, arrival, text = {}, {}, {}, []
     # A timer, not a test between lines: a firmware that stops printing would
     # block the read for ever.
@@ -206,6 +206,8 @@ def measure(accelerators, series, reps, out):
                 summary, raw, arrival, log = boot_once(accelerator, image, firmware, timeout=1800)
                 load_after, others_after = os.getloadavg()[0], others_running()
                 (out / f"{accelerator}-{index}.log").write_text(log)
+                if any(entry["reps"] != reps for entry in summary.values()):
+                    die(f"{accelerator}: the program ran another number of repetitions than {reps}: \\INFER.CFG was not read")
                 spread, widest = iqr_over_median(summary)
                 note = (f"load {load_before:.2f}->{load_after:.2f}, other qemu {others_before}->{others_after}, "
                         f"widest IQR/median {spread:.3f} ({widest})")
