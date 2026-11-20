@@ -146,6 +146,8 @@ def boot_once(accelerator, image, firmware, timeout):
         for line in process.stdout:
             line = ANSI.sub("", line.replace("\r", ""))
             text.append(line)
+            if "inferprobe: done" in line:
+                break  # the firmware may not power the machine off after it
             if "inferprobe: FAIL" in line:
                 break  # the firmware stays up after a failed probe; do not wait for it
             if match := LINE.search(line):
@@ -174,6 +176,8 @@ def check():
     for name, expected in EXPECTED_CHECKSUMS.items():
         if name not in summary:
             die(f"the program printed no '{name}' line\n{log}")
+        if summary[name]["median"] == 0:
+            die(f"'{name}' has a median of zero: the counter does not advance")
         if summary[name]["reps"] != CHECK_REPS:
             die(f"'{name}' ran {summary[name]['reps']} repetitions, expected {CHECK_REPS}: \\INFER.CFG was not read")
         got = summary[name]["checksum"]
@@ -187,7 +191,7 @@ def check():
 
 def iqr_over_median(summary):
     """The largest spread of any workload, and which one."""
-    return max(((e["q3"] - e["q1"]) / e["median"], name) for name, e in summary.items())
+    return max(((e["q3"] - e["q1"]) / max(e["median"], 1), name) for name, e in summary.items())
 
 
 def measure(accelerators, series, reps, out):

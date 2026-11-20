@@ -80,7 +80,7 @@ material over; it takes no decision. The enumeration:
   kernel, such as a large Windows ESP, is not fully seen, and the model never
   scored what the cap cut: a stated limit that code, not the model, imposes);
 - lists the GPT entries (type GUID, name) and the regular files of the ESP and
-  of an XBOOTLDR partition, to a depth of three directories;
+  of an XBOOTLDR partition (the latter read for entry text only, see section 3), to a depth of three directories;
 - gives the model, for each candidate, a window of 512 positions: up to 64
   bytes of its path or partition name followed by the first bytes of its
   content (the arm64 Linux `Image` header is 64 bytes, and a PE header is
@@ -91,8 +91,9 @@ material over; it takes no decision. The enumeration:
 Only FAT is read, as the firmware reads it. No filesystem driver is added: the
 known drivers are GPL-3.0-or-later (ADR 0005) and the research found no need
 yet. A disk whose Linux lives on a root filesystem the firmware cannot read is
-found only if it has a kernel on the ESP or on an XBOOTLDR partition; this is a
-stated limit, not a defect to fix here.
+found only if it has a kernel on the ESP; this is a stated limit, not a defect
+to fix here. A kernel on an XBOOTLDR partition is not bootable either until
+ADR 0025 is amended (section 3).
 
 ### 3. The typed decision
 
@@ -124,8 +125,8 @@ and never depend on the model (ADR 0009, point 1).
 a kernel or loader on another partition such as XBOOTLDR (ADR 0025 supports the
 ESP only), and our own kernel as a model-written entry (it is built in). Until
 an ADR that amends ADR 0025 adds them, the loader ignores the `device tree`
-role and the model's enumeration reads XBOOTLDR only for labels the format can
-express; B3 writes that amendment if the corpus shows it is needed.
+role, and XBOOTLDR is read only to take an `options` line for an entry whose
+files are on the ESP; B3 writes that amendment if the corpus shows it is needed.
 
 ### 4. Validation before the jump
 
@@ -151,9 +152,9 @@ menu lets the user correct (ADR 0009, open question on corrections; the
 entries of the model are plain text a person can overrule in `\WSOS.CFG`). A
 disk crafted to steer the model can steer more than the choice of a kernel:
 the initrd, the loader to chain-load and the `options` text are taken from
-files on the ESP or XBOOTLDR partition (for example a `.conf` file with
-`options init=/bin/sh`, or an extra initrd placed in front of a genuine
-kernel). The model adds no file that is not on a partition it was given, but
+files on the ESP (the `options` line, also from XBOOTLDR), for example a
+`.conf` file with `options init=/bin/sh`, or an extra initrd placed in front of
+a genuine kernel. The model adds no file that is not on a partition it was given, but
 it makes whatever a writable partition holds bootable from the menu; the
 firmware trusts the ESP, and a removable disk's partition is not trusted just
 because it is present. Which disks are enumerated, protecting the ESP and
@@ -321,7 +322,10 @@ A second run of the same command after the review fixes (the counter read lost
 its `nomem` promise), at a busier moment (load 3.0 to 4.0), kept 4 of 9 HVF
 series and 7 of 9 TCG series and gave the same picture: HVF 180, 2,798, 358 and
 4,671 us, TCG 3,878, 62,850, 29,310 (19,692 in the quietest series) and 127,762
-us, in the order of the table. The table is the quieter first run.
+us, in the order of the table. The table is the quieter first run, taken with commit 3e0c67a's probe (before
+the `nomem` change); the second run used the probe of the later commits, whose
+code is the final one. Rerunning the documented command on the final commit
+gives numbers within about 5 % of the table, not identical to it.
 
 **Derived (arithmetic on the numbers above, not measured):**
 

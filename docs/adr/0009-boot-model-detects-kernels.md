@@ -3,7 +3,7 @@ title: "ADR 0009: A small model in the bootloader detects and decides how to loa
 type: adr
 status: accepted
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-20
 tags: [boot, bootloader, model, linux, multi-boot]
 ---
 
@@ -31,8 +31,7 @@ the machine and decides how each one is loaded.
   headers of candidate files.
 - **What it decides, for each kernel found:** what system it is, which boot
   protocol applies, which companion files go with it (such as an initial
-  ramdisk), and the parameters to pass (narrowed in ADR 0027, proposed: the
-  model chooses among parameter lines that already exist on the disk).
+  ramdisk), and the parameters to pass.
 - **What it does not do:** the loading itself. The bootloader implements a
   fixed set of boot protocols in ordinary code; the model chooses among them
   and fills in their inputs.
@@ -84,7 +83,8 @@ based scanner runs beside it to overrule it.
 ## Open questions
 
 - Language model or purpose-trained classifier, and its size. (Proposed in
-  ADR 0027.)
+  ADR 0027, which also narrows "the parameters to pass" to choosing among
+  lines that already exist on the disk.)
 - Which boot protocols the loader implements first.
 - How the weights are verified at boot.
 - What the user sees, and can correct, when a decision is wrong.
