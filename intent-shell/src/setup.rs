@@ -7,9 +7,9 @@ use crate::host::UnixHost;
 use crate::log::JsonlLog;
 use crate::model::{LlamaPlanner, LlamaSpeaker, NoModel};
 use crate::ports::Planner;
-use crate::reply::Profile;
 use crate::screen::{self, Header};
 use crate::session::{Entry, SessionState};
+use crate::soul::Persona;
 
 static NO_MODEL: NoModel = NoModel;
 
@@ -20,11 +20,11 @@ pub struct Setup {
     /// `None` is the deterministic shell: no model, lines are commands (ADR 0022).
     pub planner: Option<LlamaPlanner>,
     pub log: JsonlLog,
-    /// The profile of the replies, or `None` for no replies (`--no-reply`). It
+    /// The persona of the replies, or `None` for no replies (`--no-reply`). It
     /// only counts when there is a model to write them (ADR 0021).
-    pub reply: Option<Profile>,
+    pub reply: Option<Persona>,
     /// Said to the person when the session opens, because on a screen the
-    /// error output is hidden: a voice profile that could not be used.
+    /// error output is hidden: a SOUL or a personality that could not be used.
     pub notice: Option<String>,
     /// The decision log's file name, for the header (its directory is in the details).
     pub log_name: String,
@@ -35,11 +35,11 @@ impl Setup {
         Entry::for_model(self.planner.is_some())
     }
 
-    /// Who writes the replies and in which profile, when replies are on and
+    /// Who writes the replies and with which persona, when replies are on and
     /// there is a model.
-    pub fn speaker(&self) -> Option<(LlamaSpeaker, Profile)> {
+    pub fn speaker(&self) -> Option<(LlamaSpeaker, Persona)> {
         let model = self.planner.as_ref()?;
-        Some((LlamaSpeaker::new(&model.address), self.reply?))
+        Some((LlamaSpeaker::new(&model.address), self.reply.clone()?))
     }
 
     /// The header for the directory the session is in now.
@@ -101,7 +101,7 @@ mod tests {
             host: UnixHost::from_environment(),
             planner: model,
             log: JsonlLog::open(&log).unwrap(),
-            reply: Some(Profile::DirectTechnical),
+            reply: Some(Persona::of(crate::soul::Profile::DirectTechnical)),
             notice: None,
             log_name: "d.jsonl".to_owned(),
         }

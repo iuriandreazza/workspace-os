@@ -211,6 +211,16 @@ pub fn quoted_path(path: &Path) -> String {
     out
 }
 
+/// At most `limit` characters, ending in `…` when cut.
+pub(crate) fn capped(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let mut kept: String = text.chars().take(limit.saturating_sub(1)).collect();
+    kept.push('…');
+    kept
+}
+
 /// Make text from the model or the machine safe to print: control and
 /// formatting characters become escapes, except newline and tab when `block`.
 pub fn printable(text: &str, block: bool) -> String {
