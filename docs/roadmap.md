@@ -138,7 +138,7 @@ and left out of the workspace's `default-members` (S3,
 |---|---|---|---|
 | R1 | Prior-art survey with verified references: learned policies in kernels, LLM-as-OS proposals, reuse of Linux drivers on other kernels, models in boot. Result: `docs/prior-art.md` | An annotated list where every claim has a source that was actually read | done |
 | R2 | Article 1: booting a Rust microkernel, and what two rounds of adversarial review found in 60 lines of boot code | Draft reviewed by the user | next |
-| R3 | Article 2: models as a control plane over a deterministic core | Draft reviewed by the user | blocked: S4 |
+| R3 | Article 2: models as a control plane over a deterministic core. Result: `docs/articles/02-models-as-control-plane.md` | Draft reviewed by the user | next |
 
 ## Track P: policy plane
 
