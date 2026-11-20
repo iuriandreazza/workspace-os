@@ -46,7 +46,7 @@ EXPECTED_CHECKSUMS = {
     "classifier-candidate": "0xe969488b9223262d",
     "classifier-disk": "0x64585504656c96b6",
     "slm-fp32-layer": "0x3d0c1fc04a8be4c7",
-    "slm-int8-token": "0xb736fd413e0de573",
+    "slm-int8-token": "0x5f64be65636e6c6d",
 }
 # One flag set per accelerator. `-cpu host` under HVF is the M1 itself.
 ACCELERATORS = {
@@ -194,14 +194,14 @@ def iqr_over_median(summary):
     return max(((e["q3"] - e["q1"]) / max(e["median"], 1), name) for name, e in summary.items())
 
 
-def measure(accelerators, series, reps, out):
+def measure(accelerators, series, reps, out, warmup):
     build()
     firmware = find_firmware()
     out.mkdir(parents=True, exist_ok=True)
     version = subprocess.run(["qemu-system-aarch64", "--version"], capture_output=True, text=True).stdout.splitlines()[0]
     print(f"{version}; firmware {firmware}; {series} series of {reps} repetitions per accelerator")
     with tempfile.TemporaryDirectory() as directory:
-        image = make_image(Path(directory), reps=reps, slm=True, warmup=True)
+        image = make_image(Path(directory), reps=reps, slm=True, warmup=warmup)
         for accelerator in accelerators:
             kept, dropped = [], []
             for index in range(series):
@@ -229,11 +229,15 @@ def measure(accelerators, series, reps, out):
                     print(f"{accelerator} series {index}: DROPPED, noisy ({note})")
                 else:
                     kept.append(summary)
+                for name, expected in EXPECTED_CHECKSUMS.items():
+                    if summary[name]["checksum"] != expected:
+                        die(f"{accelerator}: '{name}' checksum {summary[name]['checksum']} is not {expected}: the arithmetic changed")
                     print(f"{accelerator} series {index}: kept ({note})")
-            report(accelerator, kept, dropped, series)
+            print(f"{accelerator}: {len(dropped)} series dropped")
+            report(accelerator, kept, series)
 
 
-def report(accelerator, kept, dropped, series):
+def report(accelerator, kept, series):
     if len(kept) < MIN_QUIET_SERIES:
         die(f"{accelerator}: only {len(kept)} of {series} series were quiet; the machine is too loaded, try later")
     print(f"\n{accelerator}: {len(kept)} quiet series of {series}; microseconds")
@@ -251,12 +255,13 @@ def main():
     parser.add_argument("--accel", action="append", choices=sorted(ACCELERATORS), help="repeat for several; default tcg")
     parser.add_argument("--series", type=int, default=7)
     parser.add_argument("--reps", type=int, default=21, choices=range(1, 65), metavar="1..64")
+    parser.add_argument("--cold", action="store_true", help="no warm-up: the first repetitions run on idle cores")
     parser.add_argument("--out", type=Path, default=ROOT / "target/boot-model-measurement")
     args = parser.parse_args()
     if args.check:
         check()
     else:
-        measure(args.accel or ["tcg"], args.series, args.reps, args.out)
+        measure(args.accel or ["tcg"], args.series, args.reps, args.out, warmup=not args.cold)
 
 
 main()

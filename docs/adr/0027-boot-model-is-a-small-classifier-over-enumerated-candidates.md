@@ -129,8 +129,11 @@ entries of ADR 0025: hand-written ones first, the model's after them, and the
 model's are dropped when the seven are taken. This sharing is not in ADR 0025,
 which counts the entries of `\WSOS.CFG` alone; the amendment of ADR 0025 that B3
 writes states it. The model never writes
-`\WSOS.CFG`, which a person owns: its decisions and the fingerprint of the disk
-they were made from (ADR 0009, point 2) go to a file of their own, `\WSOS.DEC`,
+`\WSOS.CFG`, which a person owns. This reverses a reason ADR 0025 gave for the
+file ("the installer and later the boot model write the same file"): the model
+would overwrite what a person wrote, so it gets its own file instead. Its
+decisions and the fingerprint of the disk they were made from (ADR 0009, point 2)
+go to `\WSOS.DEC`,
 whose format B3 defines together with the amendment of ADR 0025 that makes the
 loader read it. The built-in entries for our own kernel stay first
 and never depend on the model (ADR 0009, point 1).
@@ -217,7 +220,12 @@ bootloader started from.
   would run the same inference. B3 must therefore keep an attempt counter in a
   UEFI variable, set before the model runs and cleared when it finishes, and
   skip the model, taking the fallback, when the counter shows an unfinished
-  attempt.
+  attempt. The model runs only if the counter was written and read back; if the
+  variable cannot be persisted (no variable store, as in every boot of the gate,
+  which uses `-bios`), the model does not run, so the mechanism fails closed.
+  The gate cannot exercise the counter without a firmware variable store (ADR
+  0025 says the same of `Boot####` variables); B3 needs a pflash store image to
+  test it.
 - **Runtime.** Hand-written Rust, about a hundred lines: an int8 matrix-vector
   product with sixteen independent lanes, a shift-and-clamp to int8 and an
   embedding lookup. No library, no `alloc`, no dependency. Every known runtime

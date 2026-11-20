@@ -341,7 +341,6 @@ impl Slm {
         matvec_i8(head, HIDDEN, &self.input[..HIDDEN], self.output);
         self.output
             .iter()
-            .step_by(97)
             .fold(FNV_START, |hash, value| fnv(hash, *value as u64))
     }
 }
