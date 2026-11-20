@@ -37,6 +37,11 @@ struct State {
 ///   while held (save and restore `DAIF`).
 /// - K7, threads: the same masking, because a tick must not switch away from a
 ///   thread that holds the lock, or a sleeping lock once a scheduler exists.
+/// - Ordering: the flag is taken with acquire and released with release, so the
+///   compiler cannot move the heap's accesses out of the critical section.
+///   If the closure panics the flag stays set, and an allocation on the panic
+///   path would hit the re-entry assertion: the panic handler must not
+///   allocate (it does not today), and K6 must keep it so.
 /// - K11, cores: a spin lock on `compare_exchange`. A plain load and store
 ///   cannot exclude a second core. Not done now because exclusive accesses to
 ///   memory that is Device or non-cacheable may never succeed on real cores
@@ -63,14 +68,14 @@ impl<T> Locked<T> {
     fn with<R>(&self, use_value: impl FnOnce(&mut T) -> R) -> R {
         // A plain load and store, not `swap`: see the type's documentation.
         assert!(
-            !self.busy.load(Ordering::Relaxed),
+            !self.busy.load(Ordering::Acquire),
             "kernel heap entered while it was in use"
         );
-        self.busy.store(true, Ordering::Relaxed);
+        self.busy.store(true, Ordering::Release);
         // SAFETY: the flag above is set, so this is the only reference to the
         // value until it is cleared below.
         let result = use_value(unsafe { &mut *self.value.get() });
-        self.busy.store(false, Ordering::Relaxed);
+        self.busy.store(false, Ordering::Release);
         result
     }
 }
@@ -409,7 +414,12 @@ pub fn selftest(mut out: impl Write) {
 /// never executable, maps a frame of its own, and the pages on either side of
 /// the mapped part do not translate.
 fn check_mapping(pages: usize, mut out: impl Write) {
-    let mut previous = None;
+    use alloc::vec::Vec;
+
+    let mut frames: Vec<u64> = Vec::new();
+    frames
+        .try_reserve_exact(pages)
+        .expect("room to list the heap's frames");
     for page in 0..pages as u64 {
         let (frame, permissions) = mmu::upper_page(HEAP_BASE + page * PAGE_SIZE)
             .unwrap_or_else(|| panic!("heap page {page} is not mapped"));
@@ -418,9 +428,14 @@ fn check_mapping(pages: usize, mut out: impl Write) {
             Some(Permissions::ReadWrite),
             "heap page {page} is not read and write, never executable"
         );
-        assert_ne!(Some(frame), previous, "two heap pages share a frame");
-        previous = Some(frame);
+        frames.push(frame);
     }
+    frames.sort_unstable();
+    assert!(
+        frames.windows(2).all(|pair| pair[0] != pair[1]),
+        "two heap pages share a frame"
+    );
+    drop(frames);
     assert!(
         mmu::upper_page(HEAP_BASE - PAGE_SIZE).is_none(),
         "the page below the heap is mapped"

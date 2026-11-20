@@ -401,8 +401,10 @@ check_heap() {
     read -r allocations size_kib pages blocks <<< "$stress"
     [[ "$allocations" -ge 1000 ]] || fail "the heap stress test made only $allocations allocations"
     # The first mapping is 16 pages: more means the heap grew on demand.
-    [[ "$pages" -gt 16 && "$size_kib" -eq $((pages * 4)) ]] \
-        || fail "the heap holds $size_kib KiB in $pages pages, expected growth past 16 pages at 4 KiB each"
+    # The stress test's live data peaks near 1.3 MiB (333 pages): a heap of more
+    # than 4 MiB (1024 pages) grew by more than it needed.
+    [[ "$pages" -gt 16 && "$pages" -le 1024 && "$size_kib" -eq $((pages * 4)) ]] \
+        || fail "the heap holds $size_kib KiB in $pages pages, expected growth past 16 pages and up to 1024, at 4 KiB each"
     [[ "$blocks" -eq 1 ]] || fail "the freed heap holds $blocks free blocks, expected them merged into 1"
     mapping="$(plain_log | sed -n 's/^  kernel  .\{4\}  heap: \([0-9]*\) pages mapped read write and never executed at \(0x[0-9a-f]*\), the pages around them unmapped$/\1 \2/p')"
     [[ "$(echo "$mapping" | wc -l)" -eq 1 && -n "$mapping" ]] || fail "heap mapping report not found exactly once"

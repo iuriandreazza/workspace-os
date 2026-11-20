@@ -149,7 +149,9 @@ lock is the only place that changes.
   `#[global_allocator]`. Nothing allocates before `heap::init`; a request before
   it is refused and panics with the allocator's message.
 - The frame allocator moves behind the heap's lock after `mmu::init`, because
-  growth needs it. The summary line reads the free count from there.
+  growth needs it. The boot summary is printed just before that, so it still
+  shows the frames free before the heap took any; the heap's own lines report
+  its pages.
 - Boot cost: the stress test is bounded (it does not scale with RAM). The
   exhaustion boot scales with RAM up to the 1 GiB window, so it runs on a
   128 MiB machine for physical exhaustion and on the default machine for the
