@@ -21,11 +21,15 @@ research could not do.
 This ADR does not reopen ADR 0009, ADR 0008 or ADR 0002. It fills in the points
 ADR 0009 left open, inside the four limits it states (our system boots without
 the model; decisions are stored; there is a fallback; the loader checks the
-format before jumping). It also **narrows two of its statements**, which the
+format before jumping). It also **narrows statements of it**, which the
 project owner should accept knowingly: ADR 0009 says the model decides "the
 parameters to pass", and here the model only chooses among parameter lines that
 already exist on the disk; and the enumeration of section 2 has structural
-limits (a depth and a cap) that code, not the model, applies.
+limits (a depth and a cap) that code, not the model, applies; and the loader ignores a
+role (the device tree) that ADR 0025 cannot express, which is a code rule too.
+If the owner prefers a strict reading of CLAUDE.md ("supersede, not edit"),
+this ADR can instead supersede ADR 0009 whole when it is accepted; ADR 0009
+carries only a pointer to it until then.
 
 Status is `proposed`: the decision needs the project owner's acceptance, and
 the accuracy of any model is B2's to show, not this ADR's.
@@ -60,7 +64,7 @@ measured reference shape on a disk of 16 candidates takes 62 ms on TCG and
 same weights and the same headers. A real boot runs the model once, on cores
 that were mostly idle and with cold caches; the one earlier run without warm-up
 took 5.9 ms for the first disk on HVF against 2.8 ms later, so the first
-decision can take about twice as long (not measured on TCG). The worst case at
+decision can take about twice as long (also seen on TCG: 7.8 ms against 3.8 ms for the first candidate of a series with no warm-up). The worst case at
 the budget is a warm figure as well. A disk of 16 candidates is a small disk;
 at the cap of 256 candidates the reference shape takes about 1.0 s on TCG
 (256 times 3.87 ms) and 44 ms on HVF, warm.
@@ -117,8 +121,13 @@ out of scope (K2d).
 
 The decision is written as entries in the format of ADR 0025 (`entry`, `linux`,
 `cmdline`, `initrd`, `chainload`). The same parser, the same format checks and
-the same menu then apply, and the entries the model writes are limited to the
-seven the menu has room for. The built-in entries for our own kernel stay first
+the same menu then apply, and the entries the model writes share the seven file
+entries of ADR 0025: hand-written ones first, the model's after them, and the
+model's are dropped when the seven are taken. The model never writes
+`\WSOS.CFG`, which a person owns: its decisions and the fingerprint of the disk
+they were made from (ADR 0009, point 2) go to a file of their own, `\WSOS.DEC`,
+whose format B3 defines together with the amendment of ADR 0025 that makes the
+loader read it. The built-in entries for our own kernel stay first
 and never depend on the model (ADR 0009, point 1).
 
 **Not expressible in ADR 0025 today:** a device tree (there is no key for it),
@@ -139,11 +148,14 @@ Deterministic code validates every decision (ADR 0002, ADR 0009 points 3 and
 2. Every path comes from the enumeration and is opened again at load time.
 3. The format check of the chosen protocol runs on the bytes that will be
    loaded: ELF and the handoff checks of ADR 0013 for our kernel; the PE check
-   of ADR 0025 for the stub and for the chain-load; the arm64 `Image` magic
-   (`0x644d5241` at offset 56, `Documentation/arch/arm64/booting.rst`) where
-   the image is not a PE file.
+   of ADR 0025 for the stub and for the chain-load. Linux is started through
+   its EFI stub only, so an image that is not a PE file is refused; entering an
+   `Image` directly stays out of scope (K2d).
 4. A decision that fails ends as one line on the menu naming the check that
-   failed, and the countdown stops; nothing is started (ADR 0009, point 4).
+   failed, and that decision is dropped; nothing is started from it (ADR 0009,
+   point 4). The other decisions and the built-in entries stay on the menu and
+   the countdown runs as usual, as for a bad `\WSOS.CFG` (ADR 0025), so a
+   headless machine still starts our own kernel.
 
 What the checks cannot see: a decision that is well-formed, passes every check
 and is still wrong, such as starting a different valid kernel, or a Linux with an
@@ -195,6 +207,12 @@ bootloader started from.
   milliseconds on TCG at the reference shape), ends a run that overruns and
   takes the fallback of ADR 0009, point 3, well before the watchdog could
   reset the machine into the same inference again.
+  A deadline cannot interrupt a firmware read that stalls (a dead USB or SD
+  device): the watchdog then resets the machine, and without more the next boot
+  would run the same inference. B3 must therefore keep an attempt counter in a
+  UEFI variable, set before the model runs and cleared when it finishes, and
+  skip the model, taking the fallback, when the counter shows an unfinished
+  attempt.
 - **Runtime.** Hand-written Rust, about a hundred lines: an int8 matrix-vector
   product with sixteen independent lanes, a shift-and-clamp to int8 and an
   embedding lookup. No library, no `alloc`, no dependency. Every known runtime
@@ -325,7 +343,7 @@ series and 7 of 9 TCG series and gave the same picture: HVF 180, 2,798, 358 and
 us, in the order of the table. The table is the quieter first run, taken with commit 3e0c67a's probe (before
 the `nomem` change); the second run used the probe of the later commits, whose
 code is the final one. Rerunning the documented command on the final commit
-gives numbers within about 5 % of the table, not identical to it.
+gives numbers within about 6 % of the table, not identical to it.
 
 **Derived (arithmetic on the numbers above, not measured):**
 
@@ -333,7 +351,7 @@ gives numbers within about 5 % of the table, not identical to it.
 |---|---:|---:|
 | throughput, int8 | 1.1 G MAC/s | 24 to 30 G MAC/s |
 | the language model's decision: 300 prompt tokens and 60 generated, 360 token steps, no batching of the prompt | about 46 s | about 1.6 s |
-| the language model in fp32, one token (30 layers and the output projection, scaled from the one-layer time) | not computed (the fp32 layer is bimodal) | about 13 ms taking the one-layer time at face value; a rough indicator only: the layer (14 MB) is run repeatedly, the real model streams 513 MiB, and the figure is neither a floor nor a ceiling |
+| the language model in fp32, one token (30 layers and the output projection, scaled from the one-layer time) | not computed (the fp32 layer is bimodal) | about 14 ms taking the one-layer time at face value; a rough indicator only: the layer (14 MB) is run repeatedly, the real model streams 513 MiB, and the figure is neither a floor nor a ceiling |
 | memory of the language model's weights | 128 MiB int8, 513 MiB fp32 | same |
 
 ### What each number is, and what it is not

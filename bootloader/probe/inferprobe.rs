@@ -155,8 +155,15 @@ fn fill_floats(values: &mut [f32], rng: &mut Rng) {
     }
 }
 
+/// Types for which all-zero bytes are a valid value, the only ones `allocate`
+/// may hand out.
+trait Zeroed {}
+impl Zeroed for i8 {}
+impl Zeroed for i32 {}
+impl Zeroed for f32 {}
+
 /// Pages from the firmware, as the bootloader takes them for the kernel.
-fn allocate<T>(count: usize) -> Option<&'static mut [T]> {
+fn allocate<T: Zeroed>(count: usize) -> Option<&'static mut [T]> {
     let bytes = count * size_of::<T>();
     let pages = bytes.div_ceil(PAGE).max(1);
     let pointer =
