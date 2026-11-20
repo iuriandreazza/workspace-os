@@ -34,3 +34,11 @@ name = "chainprobe"
 path = "probe/chainprobe.rs"
 test = false
 bench = false
+
+# Measures the boot model's inference time in UEFI (B1-2, ADR 0027). Never
+# loaded by the bootloader.
+[[bin]]
+name = "inferprobe"
+path = "probe/inferprobe.rs"
+test = false
+bench = false
