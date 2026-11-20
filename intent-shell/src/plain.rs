@@ -185,10 +185,9 @@ fn reply_text(reply: &str, width: usize) -> String {
 
 pub fn run(mut setup: Setup) -> Result<(), String> {
     let speaker = setup.speaker();
-    let voice = speaker.as_ref().map(|(speaker, profile)| Voice {
-        speaker,
-        profile: *profile,
-    });
+    let voice = speaker
+        .as_ref()
+        .map(|(speaker, persona)| Voice { speaker, persona });
     let mut confirm = TerminalConfirm { input_ended: false };
     let mut session = SessionState::start(&setup.host);
     println!("{}", setup.header(&session));

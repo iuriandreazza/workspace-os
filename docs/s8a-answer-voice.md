@@ -9,6 +9,8 @@ tags: [shell, soul, persona, model, ux]
 
 # S8a: the voice of the answers
 
+> The profile file described below is now the SOUL file (ADR 0028, `docs/s8-soul-format.md`): a one-word file still loads, as format 0, and `--voice-profile` is an alias of `--soul`.
+
 Roadmap item S8a, decided in ADR 0021 (accepted 2026-11-16, with the user's three
 decisions). After every result the intent shell asks the model for a short
 reply in the tone of a voice profile, and shows it under the result. The table,

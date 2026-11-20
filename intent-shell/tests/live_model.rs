@@ -193,9 +193,10 @@ fn the_model_can_change_directory_and_the_next_request_starts_there() {
 /// same real result. Prints the transcript and what each reply added.
 #[test]
 #[ignore = "needs llama-server with Bonsai 8B"]
-fn the_model_writes_a_short_reply_in_each_profile_and_decides_nothing() {
+fn the_model_writes_a_short_reply_in_each_persona_and_decides_nothing() {
     use intent_shell::model::LlamaSpeaker;
-    use intent_shell::reply::{self, Profile, Voice};
+    use intent_shell::reply::{self, Voice};
+    use intent_shell::soul::{Persona, Personality, Profile, Soul};
     use std::time::Instant;
 
     let address = planner().address;
@@ -227,18 +228,29 @@ fn the_model_writes_a_short_reply_in_each_profile_and_decides_nothing() {
         println!("{}", outcome.render());
         println!("(the result took {} ms)", started.elapsed().as_millis());
         let decided = log.0.clone();
-        for profile in Profile::ALL {
+        let mut personas: Vec<(String, Persona)> = Profile::ALL
+            .map(|profile| (profile.id().to_owned(), Persona::of(profile)))
+            .to_vec();
+        // The same SOUL as the last preset, with a user's personality on top (ADR 0028).
+        let soul =
+            Soul::parse("format: 1\npreset: warm-didactic\nname: Orion\nlanguages: en, pt-BR\n")
+                .unwrap();
+        let personality = Personality::parse(
+            "format: 1\nname: Dex\nformality: casual\ndetail: brief\nlanguage: pt-BR\n",
+        )
+        .unwrap();
+        personas.push((
+            "warm-didactic + personality (pt-BR)".to_owned(),
+            soul.with(&personality).unwrap(),
+        ));
+        for (label, persona) in &personas {
             let voice = Voice {
                 speaker: &speaker,
-                profile,
+                persona,
             };
             let started = Instant::now();
             let said = reply::reply_to(&voice, request, &outcome, &mut log);
-            println!(
-                "--- {} (+{} ms)",
-                profile.id(),
-                started.elapsed().as_millis()
-            );
+            println!("--- {} (+{} ms)", label, started.elapsed().as_millis());
             match &said {
                 Some(text) => {
                     println!(
