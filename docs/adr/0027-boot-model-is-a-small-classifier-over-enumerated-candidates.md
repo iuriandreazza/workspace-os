@@ -51,8 +51,8 @@ and 4,231,168 multiply-accumulates per candidate. B2 may change the shape
 
 | Budget | Limit | Why |
 |---|---|---|
-| Weights | at most 16 MiB | four times the reference; the whole model is read from the ESP and kept in RAM |
-| Work per candidate | at most 16 million int8 multiply-accumulates | four times the reference |
+| Weights | at most 16 MiB | about four times the reference (4.04 MiB); the whole model is read from the ESP and kept in RAM |
+| Work per candidate | at most 16 million int8 multiply-accumulates | about four times the reference (4.2 million) |
 | Candidates per decision | at most 256 | a hard cap; see "Inputs" |
 | Scratch memory | at most 2 MiB beyond the weights | allocated once, before the first candidate |
 
@@ -60,7 +60,10 @@ Worst case at the budget, **derived** from the measured throughput (about
 1.1 G multiply-accumulates per second on TCG and 24 to 30 G on HVF, below):
 4.1 G multiply-accumulates, about 3.8 s on TCG and about 0.2 s on HVF. The
 measured reference shape on a disk of 16 candidates takes 62 ms on TCG and
-2.8 ms on HVF. Those two are **warm** figures: after a 1 s warm-up, on the
+2.8 ms on HVF. The worst case also assumes the throughput of the reference
+shape, whose 4 MiB of weights stay in the M1's caches; a board with small
+caches and slow memory streams up to 16 MiB per candidate and may be slower, and
+that was not measured. Those figures are **warm** ones: after a 1 s warm-up, on the
 same weights and the same headers. A real boot runs the model once, on cores
 that were mostly idle and with cold caches; the one earlier run without warm-up
 took 5.9 ms for the first disk on HVF against 2.8 ms later, so the first
@@ -123,7 +126,9 @@ The decision is written as entries in the format of ADR 0025 (`entry`, `linux`,
 `cmdline`, `initrd`, `chainload`). The same parser, the same format checks and
 the same menu then apply, and the entries the model writes share the seven file
 entries of ADR 0025: hand-written ones first, the model's after them, and the
-model's are dropped when the seven are taken. The model never writes
+model's are dropped when the seven are taken. This sharing is not in ADR 0025,
+which counts the entries of `\WSOS.CFG` alone; the amendment of ADR 0025 that B3
+writes states it. The model never writes
 `\WSOS.CFG`, which a person owns: its decisions and the fingerprint of the disk
 they were made from (ADR 0009, point 2) go to a file of their own, `\WSOS.DEC`,
 whose format B3 defines together with the amendment of ADR 0025 that makes the
@@ -340,8 +345,8 @@ A second run of the same command after the review fixes (the counter read lost
 its `nomem` promise), at a busier moment (load 3.0 to 4.0), kept 4 of 9 HVF
 series and 7 of 9 TCG series and gave the same picture: HVF 180, 2,798, 358 and
 4,671 us, TCG 3,878, 62,850, 29,310 (19,692 in the quietest series) and 127,762
-us, in the order of the table. The table is the quieter first run, taken with commit 3e0c67a's probe (before
-the `nomem` change); the second run used the probe of the later commits, whose
+us, in the order of the table. The table is the quieter first run, taken with the first version of the probe (before
+the `nomem` change of the counter read); the second run used the probe of the later commits, whose
 code is the final one. Rerunning the documented command on the final commit
 gives numbers within about 6 % of the table, not identical to it.
 

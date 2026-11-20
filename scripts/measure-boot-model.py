@@ -163,7 +163,7 @@ def boot_once(accelerator, image, firmware, timeout):
     log = "".join(text)
     if expired.is_set():
         die(f"{accelerator}: no end after {timeout} s\n{log}")
-    if "inferprobe: done" not in log or "FAIL" in log:
+    if "inferprobe: done" not in log or "inferprobe: FAIL" in log:
         die(f"{accelerator}: the program did not finish cleanly\n{log}")
     return summary, raw, arrival, log
 
