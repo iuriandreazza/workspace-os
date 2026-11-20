@@ -309,9 +309,14 @@ version = "0.1.0"
 dependencies = [
  "bootinfo",
  "devicetree",
+ "kernelheap",
  "kernelvm",
  "physmem",
 ]
+
+[[package]]
+name = "kernelheap"
+version = "0.1.0"
 
 [[package]]
 name = "kernelvm"
