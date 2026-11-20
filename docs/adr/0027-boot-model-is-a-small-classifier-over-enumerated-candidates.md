@@ -57,7 +57,7 @@ and 4,231,168 multiply-accumulates per candidate. B2 may change the shape
 | Scratch memory | at most 2 MiB beyond the weights | allocated once, before the first candidate |
 
 Worst case at the budget, **derived** from the measured throughput (about
-1.1 G multiply-accumulates per second on TCG and 24 to 30 G on HVF, below):
+1.1 G multiply-accumulates per second on TCG and 24 to 29 G on HVF, below):
 4.1 G multiply-accumulates, about 3.8 s on TCG and about 0.2 s on HVF. The
 measured reference shape on a disk of 16 candidates takes 62 ms on TCG and
 2.8 ms on HVF. The worst case also assumes the throughput of the reference
@@ -336,35 +336,40 @@ during part of the HVF run (recorded as "other qemu" in the series lines).
 
 ### Results (microseconds; 9 series of 21 repetitions each)
 
-| Workload | TCG, cortex-a72 (9 of 9 series kept) | HVF, host CPU (7 of 9 series kept) |
+Measured with the program of the final commit of this change.
+
+| Workload | TCG, cortex-a72 (9 of 9 series kept) | HVF, host CPU (5 of 9 series kept) |
 |---|---:|---:|
-| classifier, one candidate | 3,870 (series medians 3,856 to 4,000) | 172 (171 to 173) |
-| classifier, 16 candidates (one disk) | 61,980 (61,682 to 63,937) | 2,772 (2,759 to 2,816) |
-| SLM int8, one token | 126,977 (125,846 to 129,850) | 4,430 (4,413 to 4,777) |
-| SLM fp32, one layer | 19,710, or 29,468 in 3 of 9 series | 357 (346 to 369) |
+| classifier, one candidate | 3,916 (series medians 3,872 to 4,029) | 174 (171 to 181) |
+| classifier, 16 candidates (one disk) | 62,251 (62,076 to 63,202) | 2,814 (2,784 to 2,972) |
+| SLM int8, one token | 127,390 (126,726 to 129,038) | 4,581 (4,480 to 4,748) |
+| SLM fp32, one layer | 19.6 to 19.9 ms in 5 of 9 series and 29.5 to 30.1 ms in the other 4 | 385 (358 to 391) |
 
-Load average at the start of the series was 1.9 to 2.5 on TCG and 2.2 to 4.0 on
-HVF. The two HVF series dropped had the widest spread in the fp32 layer and the
-int8 token (IQR 32 % and 15 % of the median), with the load at 3.1 to 3.6. The
-program's clock agrees with the host's: the host time of a series divided by
-the counter's was 1.00 to 1.03 (TCG) and 1.00 (HVF).
+Load average at the start of the series was 2.0 to 2.5 on TCG and 2.4 to 2.8 on
+HVF; another session's QEMU was running at the start of most series ("other
+qemu" in the script's lines, 1 for most of them). The four HVF series dropped
+had a spread of 24 %, 31 % and 32 % of the median in the fp32 layer, and 10 % in
+the int8 token; the integer classifier workloads were steady in all of them. The
+program's clock agrees with the host's: the host time of a series divided by the
+counter's was 1.00 to 1.03 on both.
 
-A second run of the same command after the review fixes (the counter read lost
-its `nomem` promise), at a busier moment (load 3.0 to 4.0), kept 4 of 9 HVF
-series and 7 of 9 TCG series and gave the same picture: HVF 180, 2,798, 358 and
-4,671 us, TCG 3,878, 62,850, 29,310 (19,692 in the quietest series) and 127,762
-us, in the order of the table. The table is the quieter first run, taken with the first version of the probe (before
-the `nomem` change of the counter read); the second run used the probe of the later commits, whose
-code is the final one. Rerunning the documented command on the final commit
-gives numbers within about 6 % of the table, not identical to it.
+Two earlier runs, with earlier versions of the probe (the first before the
+counter read lost its `nomem` promise, the second before the checksum covered
+the whole output projection), gave the same picture within about 6 %: HVF 172
+and 174 us for a candidate, 2,772 and 2,798 us for a disk, 4,430 and 4,671 us for
+a token; TCG 3,870 and 3,878, 61,980 and 62,850, 126,977 and 127,762 us. The
+second was taken at a load of 3 to 4 and kept 4 of 9 HVF series and 7 of 9 TCG
+series. The raw series logs are not in the repository (the script writes them to
+`target/boot-model-measurement`); the pull request shows the serial output of a
+boot.
 
 **Derived (arithmetic on the numbers above, not measured):**
 
 | | TCG | HVF |
 |---|---:|---:|
-| throughput, int8 | 1.1 G MAC/s | 24 to 30 G MAC/s |
-| the language model's decision: 300 prompt tokens and 60 generated, 360 token steps, no batching of the prompt | about 46 s | about 1.6 s |
-| the language model in fp32, one token (30 layers and the output projection, scaled from the one-layer time) | not computed (the fp32 layer is bimodal) | about 14 ms taking the one-layer time at face value; a rough indicator only: the layer (14 MB) is run repeatedly, the real model streams 513 MiB, and the figure is neither a floor nor a ceiling |
+| throughput, int8 | 1.1 G MAC/s | 24 to 29 G MAC/s |
+| the language model's decision: 300 prompt tokens and 60 generated, 360 token steps, no batching of the prompt | about 46 s | about 1.65 s |
+| the language model in fp32, one token (30 layers and the output projection, scaled from the one-layer time) | not computed (the fp32 layer is bimodal) | about 15 ms taking the one-layer time at face value; a rough indicator only: the layer (14 MB) is run repeatedly, the real model streams 513 MiB, and the figure is neither a floor nor a ceiling |
 | memory of the language model's weights | 128 MiB int8, 513 MiB fp32 | same |
 
 ### What each number is, and what it is not
@@ -415,7 +420,7 @@ gives numbers within about 6 % of the table, not identical to it.
 
 | Option | For | Against |
 |---|---|---|
-| A language model, SmolLM2-135M class, int8, with its output constrained to a grammar | Reads a listing as text; can generalise to layouts nobody labelled; Apache-2.0 weights exist (B1-1, section 3) | Measured: 128 MiB of weights (does not fit the 64 MiB image the tooling writes today), 127 ms a token on TCG and 4.4 ms on HVF, so about 46 s and 1.6 s a decision (derived); a grammar engine and a tokeniser to write and review in the root of trust; a grammar guarantees syntax, not that a path exists; free-text parameters; a stronger model than the closed decision needs |
+| A language model, SmolLM2-135M class, int8, with its output constrained to a grammar | Reads a listing as text; can generalise to layouts nobody labelled; Apache-2.0 weights exist (B1-1, section 3) | Measured: 128 MiB of weights (does not fit the 64 MiB image the tooling writes today), 127 ms a token on TCG and 4.4 ms on HVF, so about 46 s and 1.65 s a decision (derived); a grammar engine and a tokeniser to write and review in the root of trust; a grammar guarantees syntax, not that a path exists; free-text parameters; a stronger model than the closed decision needs |
 | A purpose-trained classifier over enumerated candidates (**chosen**) | Every output is a closed label, so validation is exhaustive and total; 4 MiB, 62 ms on TCG and 2.8 ms on HVF a disk (measured); an inference engine small enough to read in one sitting; no tokeniser, no grammar, no free text | Needs a labelled corpus (B2); cannot invent a command line; sees only what the enumeration gives it (FAT, partitions); a new kind of input (a layout never seen) is a wrong label, not a reasoned guess |
 | A tree ensemble over bytes | Smaller and faster still; trainers (LightGBM, `linfa`, MIT) exist | Size and time were not read or measured (B1-1, section 3); hand-made features would be the rule-based scanner ADR 0009 rules out, and raw bytes are weak for trees. **Kept open for B2** as a comparison inside the same budget and the same decision type |
 | Magika | Trained, small, fast (vendor claims) | Apache-2.0-only code cannot be linked (ADR 0005); no label for a kernel image or an initrd (B1-1, section 1) |

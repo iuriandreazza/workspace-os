@@ -229,10 +229,10 @@ def measure(accelerators, series, reps, out, warmup):
                     print(f"{accelerator} series {index}: DROPPED, noisy ({note})")
                 else:
                     kept.append(summary)
+                    print(f"{accelerator} series {index}: kept ({note})")
                 for name, expected in EXPECTED_CHECKSUMS.items():
                     if summary[name]["checksum"] != expected:
                         die(f"{accelerator}: '{name}' checksum {summary[name]['checksum']} is not {expected}: the arithmetic changed")
-                    print(f"{accelerator} series {index}: kept ({note})")
             print(f"{accelerator}: {len(dropped)} series dropped")
             report(accelerator, kept, series)
 
