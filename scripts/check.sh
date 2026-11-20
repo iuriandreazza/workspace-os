@@ -63,3 +63,8 @@ cargo test --quiet -p intent-shell --target "$host_target" --no-default-features
 
 echo "==> boot smoke test"
 ./scripts/boot-smoke-test.sh
+
+echo "==> boot model measurement program"
+# The program of B1-2 (ADR 0027) that times inference in UEFI must keep running,
+# with the checksums its numbers were measured with.
+python3 -I scripts/measure-boot-model.py --check
