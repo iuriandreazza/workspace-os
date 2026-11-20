@@ -230,6 +230,18 @@ only reports the register's value, would pass the removal of the write.
 - **A nested exception is reported, not recovered.** The exception stack is
   reset to its top by the fatal path, which overwrites the frame the first
   exception saved; nothing returns from it.
+- **The UEFI boots on `-cpu max` do not run on every firmware.** The firmware of
+  the CI runner (Ubuntu `qemu-efi-aarch64` 2025.11, QEMU 10.2.1) does not get
+  past its banner on `-cpu max`: it takes a prefetch abort at its own vector
+  without end, while the same image boots in 9 s on `neoverse-v1` and
+  `cortex-a76`. `pauth`, SVE, SME and PMU off did not change it; LPA2 off ended
+  in another prefetch abort. The gate checks that the firmware alone reaches its
+  boot manager on `-cpu max` and, if it does not, prints `SKIP` for the four
+  boots and runs the rest (the check fails if the firmware does not reach it on
+  the default CPU either). So on CI the bootloader's EL2 drop and its
+  `TCR2_EL1`/`HCRX_EL2` writes on a core with the features are not exercised;
+  the local gate on the Homebrew firmware runs them. The cause inside the
+  firmware is not known.
 - **S1PIE is only cleared, not used.** Only `-cpu max` on QEMU has exercised the
   path; no physical core with the feature was tried.
 - **The digest shows the same bytes were read, not that they are right.** It
