@@ -74,6 +74,10 @@ would keep.
   never executable** (the same `Permissions::ReadWrite` the data section has;
   `WXN` also holds), and calls `extend`. Frames for new tables come from the
   same allocator.
+- Before mapping anything, growth checks that the window and the frame allocator
+  can cover the request *and the page-table frames it needs* (one level 3 table
+  per 512 pages, plus up to three at the ends), so a request that cannot be
+  served takes no frame.
 - Growth stops on the first thing that fails: no frame (`physmem` empty), no
   table frame (`MapError::OutOfFrames`), or the window is full. Pages mapped
   before the failure stay and are used. If the request still does not fit, it

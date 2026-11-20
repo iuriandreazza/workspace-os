@@ -6,7 +6,7 @@ use alloc::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::fmt::{self, Write};
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 
 use kernelheap::{AllocError, FreeError, Heap};
 use kernelvm::{HEAP_BASE, HEAP_WINDOW, PAGE_SIZE, Permissions};
@@ -37,8 +37,9 @@ struct State {
 ///   while held (save and restore `DAIF`).
 /// - K7, threads: the same masking, because a tick must not switch away from a
 ///   thread that holds the lock, or a sleeping lock once a scheduler exists.
-/// - Memory ordering: the flag gives no ordering guarantee, and none is needed
-///   with one core and no interrupts. Whoever makes an interrupt able to
+/// - Memory ordering: compiler fences keep the compiler from moving the heap's
+///   accesses out of the critical section; there is no hardware ordering, and
+///   none is needed with one core and no interrupts. Whoever makes an interrupt able to
 ///   interleave with the allocator replaces `with` as a whole (an atomic
 ///   `swap` or `compare_exchange` with acquire, a release store, and masking),
 ///   not just the flag.
@@ -75,9 +76,11 @@ impl<T> Locked<T> {
             "kernel heap entered while it was in use"
         );
         self.busy.store(true, Ordering::Relaxed);
+        compiler_fence(Ordering::SeqCst);
         // SAFETY: the flag above is set, so this is the only reference to the
         // value until it is cleared below.
         let result = use_value(unsafe { &mut *self.value.get() });
+        compiler_fence(Ordering::SeqCst);
         self.busy.store(false, Ordering::Relaxed);
         result
     }
@@ -145,11 +148,15 @@ impl State {
     /// Adds pages until a request that was refused for `needed` more bytes can
     /// fit, or says it cannot: no more window, or fewer frames than that.
     /// Checked before mapping anything, so an impossible request (a huge size)
-    /// does not take every frame on its way to being refused.
+    /// does not take every frame on its way to being refused. The frames the
+    /// page tables need come from the same allocator, so they count: one level
+    /// 3 table per 512 pages, and up to three more where the range starts and
+    /// ends.
     fn grow(&mut self, needed: usize) -> bool {
         let required = needed.div_ceil(PAGE_SIZE as usize);
         let room = WINDOW_PAGES - self.pages;
-        if required > room || required > self.frames.free_frames() {
+        let frames_needed = required.saturating_add(required.div_ceil(512) + 3);
+        if required > room || frames_needed > self.frames.free_frames() {
             return false;
         }
         let wanted = required.max(MIN_GROWTH_PAGES).min(room);
@@ -356,8 +363,15 @@ pub fn selftest(mut out: impl Write) {
         8,
     )
     .expect("a layout");
+    // Fewer pages than there are frames, but not once the page tables that
+    // map them are counted: refused too, without taking a single frame.
+    let without_tables = Layout::from_size_align(
+        (after.free_frames + after.pages - 1) * PAGE_SIZE as usize,
+        8,
+    )
+    .expect("a layout");
     let past_window = Layout::from_size_align(1 << 50, 8).expect("a layout");
-    for huge in [more_than_frames, past_window] {
+    for huge in [more_than_frames, without_tables, past_window] {
         assert!(
             matches!(try_alloc(huge), Err(AllocError::OutOfMemory { .. })),
             "{huge:?} was not refused"
@@ -372,7 +386,7 @@ pub fn selftest(mut out: impl Write) {
     klog!(
         Ok,
         out,
-        "heap: refused zero size, alignment 8192, more bytes than frames and 2^50 bytes, and nothing changed"
+        "heap: refused zero size, alignment 8192, more bytes than frames, a request the frames cover but their tables do not, and 2^50 bytes, and nothing changed"
     );
 
     // An empty heap starts on a page, so every alignment would hold by luck:

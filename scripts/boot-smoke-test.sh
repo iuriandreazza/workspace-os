@@ -413,7 +413,7 @@ check_heap() {
     # In the upper half, on a gigabyte, above the image's gigabyte.
     [[ $((base - KERNEL_OFFSET)) -ge $((2 << 30)) && $((base % (1 << 30))) -eq 0 ]] \
         || fail "the heap starts at $base, expected a gigabyte boundary well above the image at $KERNEL_OFFSET"
-    expect_once "heap: refused zero size, alignment 8192, more bytes than frames and 2^50 bytes, and nothing changed" "refusal of invalid heap requests"
+    expect_once "heap: refused zero size, alignment 8192, more bytes than frames, a request the frames cover but their tables do not, and 2^50 bytes, and nothing changed" "refusal of invalid heap requests"
     expect_once "heap: blocks aligned to 16, 64, 256 and 4096 bytes" "alignment of heap blocks"
     expect_once "heap: double free refused" "heap double free refusal"
 }
