@@ -315,6 +315,12 @@ int8 token (IQR 32 % and 15 % of the median), with the load at 3.1 to 3.6. The
 program's clock agrees with the host's: the host time of a series divided by
 the counter's was 1.00 to 1.03 (TCG) and 1.00 (HVF).
 
+A second run of the same command after the review fixes (the counter read lost
+its `nomem` promise), at a busier moment (load 3.0 to 4.0), kept 4 of 9 HVF
+series and 7 of 9 TCG series and gave the same picture: HVF 180, 2,798, 358 and
+4,671 us, TCG 3,878, 62,850, 29,310 (19,692 in the quietest series) and 127,762
+us, in the order of the table. The table is the quieter first run.
+
 **Derived (arithmetic on the numbers above, not measured):**
 
 | | TCG | HVF |
