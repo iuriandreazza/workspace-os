@@ -37,10 +37,13 @@ struct State {
 ///   while held (save and restore `DAIF`).
 /// - K7, threads: the same masking, because a tick must not switch away from a
 ///   thread that holds the lock, or a sleeping lock once a scheduler exists.
-/// - Ordering: the flag is taken with acquire and released with release, so the
-///   compiler cannot move the heap's accesses out of the critical section.
-///   If the closure panics the flag stays set, and an allocation on the panic
-///   path would hit the re-entry assertion: the panic handler must not
+/// - Memory ordering: the flag gives no ordering guarantee, and none is needed
+///   with one core and no interrupts. Whoever makes an interrupt able to
+///   interleave with the allocator replaces `with` as a whole (an atomic
+///   `swap` or `compare_exchange` with acquire, a release store, and masking),
+///   not just the flag.
+/// - Panics: if the closure panics the flag stays set, and an allocation on the
+///   panic path would hit the re-entry assertion. The panic handler must not
 ///   allocate (it does not today), and K6 must keep it so.
 /// - K11, cores: a spin lock on `compare_exchange`. A plain load and store
 ///   cannot exclude a second core. Not done now because exclusive accesses to
@@ -68,14 +71,14 @@ impl<T> Locked<T> {
     fn with<R>(&self, use_value: impl FnOnce(&mut T) -> R) -> R {
         // A plain load and store, not `swap`: see the type's documentation.
         assert!(
-            !self.busy.load(Ordering::Acquire),
+            !self.busy.load(Ordering::Relaxed),
             "kernel heap entered while it was in use"
         );
-        self.busy.store(true, Ordering::Release);
+        self.busy.store(true, Ordering::Relaxed);
         // SAFETY: the flag above is set, so this is the only reference to the
         // value until it is cleared below.
         let result = use_value(unsafe { &mut *self.value.get() });
-        self.busy.store(false, Ordering::Release);
+        self.busy.store(false, Ordering::Relaxed);
         result
     }
 }

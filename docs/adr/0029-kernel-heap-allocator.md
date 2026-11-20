@@ -154,9 +154,13 @@ lock is the only place that changes.
   its pages.
 - Boot cost: the stress test is bounded (it does not scale with RAM). The
   exhaustion boot scales with RAM up to the 1 GiB window, so it runs on a
-  128 MiB machine for physical exhaustion and on the default machine for the
-  window limit.
+  128 MiB machine (the gate's default) for physical exhaustion and on a 2048 MiB
+  machine for the window limit.
 - `Known limits`: no shrinking; first fit's fragmentation and linear time; the
   TCG shows neither the missing barriers of growth nor TLB behaviour; the
   window address is a constant K4c may move; the lock does not exclude
   anything yet.
+- `kernelvm::audit` expects every upper-half leaf at the image's constant
+  offset and runs before the heap exists; after it, every heap page is flagged
+  `wrong_output`. A later audit of the upper half (K4c's included) must skip
+  the heap window.
