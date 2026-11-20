@@ -19,7 +19,12 @@ measures what the decision costs to run in the UEFI environment, which the
 research could not do.
 
 This ADR does not reopen ADR 0009, ADR 0008 or ADR 0002. It fills in the points
-ADR 0009 left open, inside the four limits it states (our system boots without
+ADR 0009 left open, inside the four limits it states, and it **narrows two of
+its statements**, which the project owner should accept knowingly: ADR 0009 says
+the model decides "the parameters to pass", and here the model only chooses
+among parameter lines that already exist on the disk; and the enumeration of
+section 2 has structural limits (a depth and a cap) that code, not the model,
+applies (our system boots without
 the model; decisions are stored; there is a fallback; the loader checks the
 format before jumping).
 
@@ -128,9 +133,16 @@ and is still wrong, such as starting a different valid kernel, or a Linux with a
 empty command line and no console. The cost is a wrong but valid boot, which the
 menu lets the user correct (ADR 0009, open question on corrections; the
 entries of the model are plain text a person can overrule in `\WSOS.CFG`). A
-disk crafted to steer the model can at most select a kernel already on the
-ESP, which the firmware already trusts as much as it trusts the ESP; protecting
-the ESP and the weights against tampering is B4.
+disk crafted to steer the model can steer more than the choice of a kernel:
+the initrd, the loader to chain-load and the `options` text are taken from
+files on the ESP or XBOOTLDR partition (for example a `.conf` file with
+`options init=/bin/sh`, or an extra initrd placed in front of a genuine
+kernel). The model adds no file that is not on a partition it was given, but
+it makes whatever a writable partition holds bootable from the menu; the
+firmware trusts the ESP, and a removable disk's partition is not trusted just
+because it is present. Which disks are enumerated, protecting the ESP and
+signing the weights are B4's; until then B3 enumerates only the disk the
+bootloader started from.
 
 ### 5. Inference in the UEFI environment
 
@@ -141,7 +153,7 @@ the ESP and the weights against tampering is B4.
   decision runs. The kernel's load range at `0x40200000` (ADR 0013) is reserved
   **before** the weights are allocated, so that the weights cannot take it; the
   pages are given back or left reclaimable at the handoff. The measurement
-  allocated 4.2 MiB for the classifier and 128 MiB plus 14 MiB for the larger
+  allocated 4.0 MiB of weights for the classifier and 128 MiB plus 14 MiB for the larger
   alternative, in a 512 MiB machine, with no failure.
 - **Floating point and SIMD.** The inference is integer arithmetic, but the
   compiler vectorises it with NEON, which `aarch64-unknown-uefi` enables by
@@ -255,8 +267,11 @@ Per series: one boot; a 1 s unmeasured warm-up of each workload; then 21
 repetitions timed with the counter (`CNTVCT_EL0`); the median, quartiles and
 extremes of the repetitions are printed with each repetition. The script reports
 the **median over series of the median of each series**, and drops a series when
-the load average at either end of the boot is above 4, or when any workload's
-interquartile range exceeds 10 % of its median. Memory: 512 MiB. One core is
+the load average at either end of the boot is above 4, when any workload's
+interquartile range exceeds 10 % of its median, or when the program's clock and
+the host's disagree by more than 10 %. The rule does not remove a steady
+disturbance that stays under those limits: the load average lags and a
+constant extra load gives a small spread. Memory: 512 MiB. One core is
 used by the guest. The machine is shared: another session ran its own QEMU gate
 during part of the HVF run (recorded as "other qemu" in the series lines).
 
@@ -281,7 +296,7 @@ the counter's was 1.00 to 1.03 (TCG) and 1.00 (HVF).
 |---|---:|---:|
 | throughput, int8 | 1.1 G MAC/s | 24 to 30 G MAC/s |
 | the language model's decision: 300 prompt tokens and 60 generated, 360 token steps, no batching of the prompt | about 46 s | about 1.6 s |
-| the language model in fp32, one token (30 layers and the output projection, scaled from the one-layer time) | not computed (the fp32 layer is bimodal) | about 13 ms, three times int8 |
+| the language model in fp32, one token (30 layers and the output projection, scaled from the one-layer time) | not computed (the fp32 layer is bimodal) | about 13 ms if the layer stays in cache; at least 18 ms if memory-bound (513 MiB at the 30 GB/s the int8 run streams), three to four times int8 |
 | memory of the language model's weights | 128 MiB int8, 513 MiB fp32 | same |
 
 ### What each number is, and what it is not
@@ -321,9 +336,10 @@ the counter's was 1.00 to 1.03 (TCG) and 1.00 (HVF).
   368 ms, against 127 ms at a quiet machine. The script now waits for the load
   to settle and drops disturbed series, and those attempts are not in the table.
 - **The gate checks the program, not the numbers.** `./scripts/check.sh` builds
-  the probe in release, boots it once on TCG with one repetition and no
-  language-model workload, and requires the two classifier checksums to equal
-  the ones in `scripts/measure-boot-model.py`; it fails if the arithmetic
+  the probe in release, boots it once on TCG with two repetitions, no warm-up
+  and every workload, and requires the four checksums to equal the ones in
+  `scripts/measure-boot-model.py` and the repetitions to be two (so the
+  configuration was read); it fails if the arithmetic
   changed, if the firmware is missing, or if the program does not finish. It
   uses the default CPU, not `-cpu max` (ADR 0026).
 
@@ -355,7 +371,7 @@ that supersedes this one would swap the producer.
   section 4 and the entries; it measures again on the real code, on at least
   one machine that is not an M1 under QEMU if one is at hand, and shows the
   model's boot time next to the stored-decision boot (ADR 0009, point 2).
-- The memory the classifier needs is 4.2 MiB in the reference shape and at most
+- The memory the classifier needs is 4.0 MiB of weights in the reference shape and at most
   18 MiB at the budget; the language model would have added 128 MiB to a bootloader that
   already runs in 256 MiB in the gate and needs 2048 MiB on VirtualBox (ADR
   0013).

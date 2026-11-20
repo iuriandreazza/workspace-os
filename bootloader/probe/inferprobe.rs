@@ -1,6 +1,6 @@
 //! Measures how long a boot model takes to run inside a UEFI application (B1-2,
 //! ADR 0027). It is not the bootloader and is never loaded by it: it is the
-//! only program on its own disk image (`scripts/measure-boot-model.sh`).
+//! only program on its own disk image (`scripts/measure-boot-model.py`).
 //!
 //! No trained weights exist yet (B2), so the weights are bytes from a fixed
 //! pseudo-random generator, laid out in the shapes of the candidates. Time does
@@ -86,7 +86,7 @@ fn ticks() -> u64 {
     let value: u64;
     // SAFETY: `CNTVCT_EL0` is readable at EL1 and EL2, which is where UEFI
     // applications run, and the read has no side effect.
-    unsafe { asm!("isb", "mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack)) };
+    unsafe { asm!("isb", "mrs {}, cntvct_el0", out(reg) value, options(nostack)) };
     value
 }
 
@@ -487,6 +487,10 @@ fn main() -> Status {
         );
     }
     let frequency = frequency();
+    if frequency == 0 {
+        println!("  inferprobe: FAIL the counter frequency is not set");
+        return Status::UNSUPPORTED;
+    }
     let level = current_el();
     println!();
     println!("  inferprobe: start");

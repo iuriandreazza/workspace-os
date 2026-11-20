@@ -27,6 +27,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -44,6 +45,8 @@ FIRMWARES = [
 EXPECTED_CHECKSUMS = {
     "classifier-candidate": "0xe969488b9223262d",
     "classifier-disk": "0x64585504656c96b6",
+    "slm-fp32-layer": "0x3d0c1fc04a8be4c7",
+    "slm-int8-token": "0xb736fd413e0de573",
 }
 # One flag set per accelerator. `-cpu host` under HVF is the M1 itself.
 ACCELERATORS = {
@@ -60,6 +63,9 @@ QEMU_COMMON = [
 # (interquartile range over median).
 QUIET_IQR_OVER_MEDIAN = 0.10
 QUIET_LOAD_AVERAGE = 4.0
+CLOCK_CHECK_RANGE = (0.9, 1.1)
+# Two repetitions: the program compares the checksum of the second with the first.
+CHECK_REPS = 2
 WARMUP_SECONDS = 1.0
 MIN_QUIET_SERIES = 3
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
@@ -125,10 +131,18 @@ def boot_once(accelerator, image, firmware, timeout):
     started = time.monotonic()
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     summary, raw, arrival, text = {}, {}, {}, []
+    # A timer, not a test between lines: a firmware that stops printing would
+    # block the read for ever.
+    expired = threading.Event()
+
+    def expire():
+        expired.set()
+        process.kill()
+
+    timer = threading.Timer(timeout, expire)
+    timer.start()
     try:
         for line in process.stdout:
-            if time.monotonic() - started > timeout:
-                die(f"{accelerator}: no end after {timeout} s\n" + "".join(text))
             line = ANSI.sub("", line.replace("\r", ""))
             text.append(line)
             if match := LINE.search(line):
@@ -138,9 +152,12 @@ def boot_once(accelerator, image, firmware, timeout):
                 raw[match["name"]] = [int(v) for v in match["values"].split()]
                 arrival[match["name"]] = time.monotonic()
     finally:
+        timer.cancel()
         process.kill()
         process.wait()
     log = "".join(text)
+    if expired.is_set():
+        die(f"{accelerator}: no end after {timeout} s\n{log}")
     if "inferprobe: done" not in log or "FAIL" in log:
         die(f"{accelerator}: the program did not finish cleanly\n{log}")
     return summary, raw, arrival, log
@@ -149,18 +166,20 @@ def boot_once(accelerator, image, firmware, timeout):
 def check():
     build()
     with tempfile.TemporaryDirectory() as directory:
-        image = make_image(Path(directory), reps=1, slm=False, warmup=False)
+        image = make_image(Path(directory), reps=CHECK_REPS, slm=True, warmup=False)
         summary, _, _, log = boot_once("tcg", image, find_firmware(), timeout=240)
     for name, expected in EXPECTED_CHECKSUMS.items():
         if name not in summary:
             die(f"the program printed no '{name}' line\n{log}")
+        if summary[name]["reps"] != CHECK_REPS:
+            die(f"'{name}' ran {summary[name]['reps']} repetitions, expected {CHECK_REPS}: \\INFER.CFG was not read")
         got = summary[name]["checksum"]
         if expected is None:
             die(f"EXPECTED_CHECKSUMS['{name}'] is not set; the program printed {got}")
         if got != expected:
             die(f"'{name}' has checksum {got}, expected {expected}: the arithmetic changed; "
                 "measure again and update EXPECTED_CHECKSUMS")
-    print("measure-boot-model: the measuring program runs and its checksums match")
+    print("measure-boot-model: the measuring program runs, reads its configuration and its checksums match")
 
 
 def iqr_over_median(summary):
@@ -194,7 +213,9 @@ def measure(accelerators, series, reps, out):
                 host = arrival["classifier-disk"] - arrival["classifier-candidate"]
                 counter = sum(raw["classifier-disk"]) / 1e6 + WARMUP_SECONDS
                 note += f", clock check host/counter {host / counter:.2f}"
-                if spread > QUIET_IQR_OVER_MEDIAN or max(load_before, load_after) > QUIET_LOAD_AVERAGE:
+                clock = host / counter
+                if (spread > QUIET_IQR_OVER_MEDIAN or max(load_before, load_after) > QUIET_LOAD_AVERAGE
+                        or not CLOCK_CHECK_RANGE[0] <= clock <= CLOCK_CHECK_RANGE[1]):
                     dropped.append((index, note))
                     print(f"{accelerator} series {index}: DROPPED, noisy ({note})")
                 else:
