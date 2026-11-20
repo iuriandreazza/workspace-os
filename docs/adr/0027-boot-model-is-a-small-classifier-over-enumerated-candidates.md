@@ -18,7 +18,7 @@ classifier, and its size". Roadmap item B1-1 researched the options
 measures what the decision costs to run in the UEFI environment, which the
 research could not do.
 
-This ADR does not reopen ADR 0009, ADR 0008 or ADR 0002. It fills in the points
+This ADR reopens no decision of ADR 0008 or ADR 0002 and none of the four limits of ADR 0009. It fills in the points
 ADR 0009 left open, inside the four limits it states (our system boots without
 the model; decisions are stored; there is a fallback; the loader checks the
 format before jumping). It also **narrows statements of it**, which the
@@ -67,7 +67,10 @@ that was not measured. Those figures are **warm** ones: after a 1 s warm-up, on 
 same weights and the same headers. A real boot runs the model once, on cores
 that were mostly idle and with cold caches; the one earlier run without warm-up
 took 5.9 ms for the first disk on HVF against 2.8 ms later, so the first
-decision can take about twice as long (also seen on TCG: 7.8 ms against 3.8 ms for the first candidate of a series with no warm-up). The worst case at
+decision may take longer than the figures here. The cause was not isolated (an
+idle core ramping up, or the guest thread moving between performance and
+efficiency cores), so no factor is claimed for other hardware; `--cold` of the
+script runs without the warm-up to see it. The worst case at
 the budget is a warm figure as well. A disk of 16 candidates is a small disk;
 at the cap of 256 candidates the reference shape takes about 1.0 s on TCG
 (256 times 3.87 ms) and 44 ms on HVF, warm.
@@ -220,9 +223,13 @@ bootloader started from.
   would run the same inference. B3 must therefore keep an attempt counter in a
   UEFI variable, set before the model runs and cleared when it finishes, and
   skip the model, taking the fallback, when the counter shows an unfinished
-  attempt. The model runs only if the counter was written and read back; if the
-  variable cannot be persisted (no variable store, as in every boot of the gate,
-  which uses `-bios`), the model does not run, so the mechanism fails closed.
+  attempt. The model must run only if the counter is known to be persistent (a
+  non-volatile variable on a firmware with a real store). A write read back in
+  the same boot does not prove that, and it is **not known** whether the
+  firmware of the gate (`-bios`, no pflash) keeps a RAM-only store that accepts
+  the write: B3 must establish what the firmware offers and refuse the model
+  where persistence cannot be shown; until then the loop on a stalled read is
+  not excluded.
   The gate cannot exercise the counter without a firmware variable store (ADR
   0025 says the same of `Boot####` variables); B3 needs a pflash store image to
   test it.
@@ -397,9 +404,9 @@ boot.
   real aarch64 board, and **accuracy**, which is B2's.
 - **Two measurement effects found on the way.** (1) On HVF the first 20 or so
   repetitions of the first run ran twice as slow as the rest (the classifier
-  went from 5.9 to 2.8 ms over one series, an idle core ramping up); the
+  went from 5.9 to 2.8 ms over one series, cause not isolated); the
   1 s warm-up exists because of that. (2) On TCG the fp32 layer takes either
-  19.5 or about 29 to 30 ms, constant within a boot and different between boots (6 and 3
+  19.5 or about 29 to 30 ms, constant within a boot and different between boots (5 and 4
   of 9); the integer workloads did not do this. The cause was not investigated.
   The fp32 figures are therefore the least reliable, and the decision does not
   rest on them.

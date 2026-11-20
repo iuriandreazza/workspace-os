@@ -220,7 +220,7 @@ def measure(accelerators, series, reps, out, warmup):
                 # the warm-up plus the repetitions of the disk series, as the
                 # program's counter counted them.
                 host = arrival["classifier-disk"] - arrival["classifier-candidate"]
-                counter = sum(raw["classifier-disk"]) / 1e6 + WARMUP_SECONDS
+                counter = sum(raw["classifier-disk"]) / 1e6 + (WARMUP_SECONDS if warmup else 0)
                 note += f", clock check host/counter {host / counter:.2f}"
                 clock = host / counter
                 if (spread > QUIET_IQR_OVER_MEDIAN or max(load_before, load_after) > QUIET_LOAD_AVERAGE
