@@ -1349,13 +1349,19 @@ check_extensions() {
 check_extensions dirty-tcr2 -cpu max -kernel "$dirty_elf"
 check_extensions dirty-tcr2-el2 -cpu max -machine virtualization=on -kernel "$dirty_elf"
 check_extensions dirty-tcr2-el3-el2 -cpu max -machine secure=on,virtualization=on -kernel "$dirty_elf"
+# The UEFI boots on `-cpu max` use QEMU'"'"'s fast pointer authentication: with the
+# default algorithm the TCG hashes every signed pointer, and the Ubuntu firmware
+# of the CI runner (qemu-efi-aarch64) printed its banner and nothing else in
+# 90 s. The kernel and the bootloader do not use pointer authentication, so the
+# setting changes how fast the firmware runs and nothing the test checks.
+readonly UEFI_CPU_MAX="max,pauth-impdef=on"
 BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
-check_extensions uefi-dirty-tcr2 -cpu max -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
+check_extensions uefi-dirty-tcr2 -cpu "$UEFI_CPU_MAX" -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
     -drive "file=$dirty_image,format=raw,if=virtio"
-check_extensions uefi-el2-dirty-tcr2 -cpu max -machine virt,acpi=off,virtualization=on -m 256M -bios "$uefi_firmware" \
+check_extensions uefi-el2-dirty-tcr2 -cpu "$UEFI_CPU_MAX" -machine virt,acpi=off,virtualization=on -m 256M -bios "$uefi_firmware" \
     -drive "file=$dirty_image,format=raw,if=virtio"
-check_uefi_boot uefi-cpu-max 256 1 normal enter -cpu max
+check_uefi_boot uefi-cpu-max 256 1 normal enter -cpu "$UEFI_CPU_MAX"
 # The bootloader's own drop from EL2 must enable the writes too.
-check_uefi_boot uefi-cpu-max-el2 256 2 normal enter -cpu max -machine virtualization=on
+check_uefi_boot uefi-cpu-max-el2 256 2 normal enter -cpu "$UEFI_CPU_MAX" -machine virtualization=on
 BOOT_TIMEOUT_SECONDS=10
 expected_extensions="$EXTENSIONS_ABSENT"
