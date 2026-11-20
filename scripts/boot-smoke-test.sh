@@ -413,7 +413,7 @@ check_heap() {
     # In the upper half, on a gigabyte, above the image's gigabyte.
     [[ $((base - KERNEL_OFFSET)) -ge $((2 << 30)) && $((base % (1 << 30))) -eq 0 ]] \
         || fail "the heap starts at $base, expected a gigabyte boundary well above the image at $KERNEL_OFFSET"
-    expect_once "heap: refused zero size, alignment 8192, more bytes than frames, a request the frames cover but their tables do not, and 2^50 bytes, and nothing changed" "refusal of invalid heap requests"
+    expect_once "heap: refused zero size, alignment 8192 and oversized requests, and nothing changed" "refusal of invalid heap requests"
     expect_once "heap: blocks aligned to 16, 64, 256 and 4096 bytes" "alignment of heap blocks"
     expect_once "heap: double free refused" "heap double free refusal"
 }
@@ -1380,7 +1380,9 @@ check_heap_exhaustion() {
     read -r mapped_pages frames_left <<< "$line"
     [[ -n "$mapped_pages" ]] || fail "heap exhaustion detail not found"
     if [[ "$cause" == "no frame is left" ]]; then
-        [[ "$frames_left" -lt 256 ]] || fail "the heap refused with $frames_left frames left, enough for the request"
+        # A block of 1 MiB needs 256 frames, one level 3 table and up to three more
+        # tables at the ends: 260 (the kernel's growth guard).
+        [[ "$frames_left" -lt 260 ]] || fail "the heap refused with $frames_left frames left, enough for the request and its tables"
     else
         [[ "$mapped_pages" -gt $(( (1 << 18) - 256 )) && "$mapped_pages" -le $((1 << 18)) ]] \
             || fail "the window refused at $mapped_pages pages, expected within a block of 262144"

@@ -156,7 +156,9 @@ lock is the only place that changes.
   growth needs it. The boot summary is printed just before that, so it still
   shows the frames free before the heap took any; the heap's own lines report
   its pages.
-- Boot cost: the stress test is bounded (it does not scale with RAM). The
+- Boot cost: the stress test is bounded (it does not scale with RAM); it needs
+  about 450 frames for its largest blocks and leaves them out on a machine with
+  fewer than 2048 free frames, so a machine of a few MiB still boots. The
   exhaustion boot scales with RAM up to the 1 GiB window, so it runs on a
   128 MiB machine (the gate's default) for physical exhaustion and on a 2048 MiB
   machine for the window limit.

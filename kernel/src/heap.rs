@@ -292,6 +292,9 @@ pub fn selftest(mut out: impl Write) {
     let before = stats();
     assert_eq!(before.used, 0, "heap in use before its self-test");
 
+    // The blocks of up to 300 KB make the heap grow to about 440 pages: only
+    // on a machine with the frames for that, so a very small one still boots.
+    let big_blocks = before.free_frames >= 2048;
     let mut random = Random(0x2545_f491_4f6c_dd1d);
     let mut slots: [Option<(Vec<u8>, u8)>; STRESS_SLOTS] = [const { None }; STRESS_SLOTS];
     let (mut allocations, mut live_bytes, mut peak) = (0usize, 0usize, 0usize);
@@ -306,14 +309,18 @@ pub fn selftest(mut out: impl Write) {
             continue;
         }
         let length = match random.below(40) {
-            0 => 20_000 + random.below(300_000) as usize,
+            0 if big_blocks => 20_000 + random.below(300_000) as usize,
+            0 => 1 + random.below(2000) as usize,
             1..=9 => 1 + random.below(8192) as usize,
             _ => 1 + random.below(300) as usize,
         };
         let mut buffer = Vec::new();
-        buffer
-            .try_reserve_exact(length)
-            .unwrap_or_else(|_| panic!("heap refused {length} bytes with memory to spare"));
+        buffer.try_reserve_exact(length).unwrap_or_else(|_| {
+            panic!(
+                "heap refused {length} bytes, {} frames free",
+                stats().free_frames
+            )
+        });
         let fill = 1 + random.below(255) as u8;
         buffer.resize(length, fill);
         live_bytes += length;
@@ -354,6 +361,9 @@ pub fn selftest(mut out: impl Write) {
         Layout::from_size_align(64, 8192).expect("a layout"),
         AllocError::AlignmentTooLarge,
     );
+    // On a machine with more frames than the window holds these are refused for
+    // the window instead; the boots with less RAM are the ones that reach the
+    // frame checks, the table-frame one included.
     // Past the window, and past the frames the machine has left once the free
     // heap is counted (it is all one block, so it merges with what growth
     // adds): the first must be refused before growth takes every frame on its
@@ -386,7 +396,7 @@ pub fn selftest(mut out: impl Write) {
     klog!(
         Ok,
         out,
-        "heap: refused zero size, alignment 8192, more bytes than frames, a request the frames cover but their tables do not, and 2^50 bytes, and nothing changed"
+        "heap: refused zero size, alignment 8192 and oversized requests, and nothing changed"
     );
 
     // An empty heap starts on a page, so every alignment would hold by luck:
