@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 bootinfo = { path = "../bootinfo" }
 devicetree = { path = "../devicetree" }
+kernelvm = { path = "../kernelvm" }
 physmem = { path = "../physmem" }
 
 # Each feature makes the kernel raise an exception nothing handles, so the boot
@@ -18,6 +19,11 @@ physmem = { path = "../physmem" }
 selftest-unhandled-class = []
 selftest-unhandled-vector = []
 selftest-compiler-trap = []
+# Each of these provokes one violation of write-xor-execute that must end in a
+# reported fault (ADR 0019).
+selftest-write-text = []
+selftest-execute-data = []
+selftest-execute-rodata = []
 
 [[bin]]
 name = "kernel"

@@ -325,6 +325,33 @@ check_frames() {
         || fail "reused frame $reused is not a frame of RAM"
 }
 
+# check_mmu [MEMORY_MIB]: the kernel walked the page tables the processor uses
+# and reported them (ADR 0019). The upper half must hold the image section by
+# section with the sizes the linker gave them, no page may be writable and
+# executable, and the lower half must hold the UART and no code. With
+# MEMORY_MIB (a machine with one region of RAM) the lower half must also hold
+# exactly that RAM less the image and its guard page.
+check_mmu() {
+    local upper lower text read_only read_write lower_rw device lower_text
+    expect_once "mmu: write xor execute holds: no page is writable and executable, WXN is set" \
+        "write xor execute report"
+    upper="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: upper half at 0x[0-9a-f]*: text \(0x[0-9a-f]*\) bytes, read only \(0x[0-9a-f]*\), read write \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
+    [[ "$(echo "$upper" | wc -l)" -eq 1 && -n "$upper" ]] || fail "upper half report not found exactly once"
+    read -r text read_only read_write <<< "$upper"
+    [[ $((text)) -eq "$text_bytes" && $((read_only)) -eq "$rodata_bytes" \
+        && $((read_write)) -eq $((data_bytes + stack_bytes)) ]] \
+        || fail "upper half maps text $text, read only $read_only, read write $read_write; the linker placed $text_bytes, $rodata_bytes and $((data_bytes + stack_bytes)) bytes"
+    lower="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: lower half at 0x[0-9a-f]*: read write \(0x[0-9a-f]*\) bytes, device \(0x[0-9a-f]*\), text \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
+    [[ "$(echo "$lower" | wc -l)" -eq 1 && -n "$lower" ]] || fail "lower half report not found exactly once"
+    read -r lower_rw device lower_text <<< "$lower"
+    [[ $((device)) -eq $FRAME_SIZE && $((lower_text)) -eq 0 ]] \
+        || fail "lower half maps $device bytes of devices and $lower_text of code, expected one page and none"
+    if [[ -n "${1:-}" ]]; then
+        [[ $((lower_rw)) -eq $(($1 * 1024 * 1024 - image_span_bytes)) ]] \
+            || fail "lower half maps $lower_rw bytes of RAM, expected $(($1 * 1024 * 1024 - image_span_bytes))"
+    fi
+}
+
 # check_boot NAME QEMU_IMAGE_ARGS...
 check_boot() {
     local expected_memory
@@ -346,6 +373,7 @@ check_boot() {
     expect_once "$BREAKPOINT_REPORT" "breakpoint report"
     expect_once "$RESUME_MARKER" "resume after the breakpoint"
     check_frames "$(memory_mib_of "$@")"
+    check_mmu "$(memory_mib_of "$@")"
 
     stop_qemu
     echo "PASS ($boot_name): kernel booted and stayed up"
@@ -370,6 +398,42 @@ check_panic() {
 
     stop_qemu
     echo "PASS ($boot_name): unhandled exception ended in a kernel panic"
+}
+
+# check_fault NAME CLASS_NAME CLASS ISS PC_RANGE FAR QEMU_ARGS...: a boot built
+# to break write-xor-execute (ADR 0019) must end in a kernel panic that reports
+# the exception exactly: its class, the low bits of its syndrome (ISS, as a
+# regular expression), the address of the faulting instruction (a number, or
+# START..END it must lie in) and the fault address. A boot where the violation
+# is allowed prints `selftest:` and panics with another message, so it fails.
+check_fault() {
+    local name="$1" class_name="$2" class="$3" iss="$4" pc_range="$5" far="$6" line pc
+    shift 6
+    start_qemu "$name" "$@"
+    for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
+        grep -qF "fault address" "$serial_log" && break
+        grep -qF "selftest: " "$serial_log" && grep -qF "$PANIC_MARKER" "$serial_log" && break
+        qemu_is_running || fail "QEMU exited without the expected fault"
+        sleep 0.1
+    done
+    line="$(plain_log | grep -F "unhandled synchronous exception" | head -1 || true)"
+    [[ -n "$line" ]] || fail "no unhandled synchronous exception in the log: $(plain_log | grep -F -A1 "$PANIC_MARKER" | head -2 | tr '\n' ' ' || true)"
+    [[ "$line" =~ ^unhandled\ synchronous\ exception:\ ${class_name}\ \(class\ ${class},\ iss\ ${iss},\ esr\ 0x[0-9a-f]+\)\ at\ (0x[0-9a-f]+),\ fault\ address\ (0x[0-9a-f]+)$ ]] \
+        || fail "the fault is not '$class_name (class $class, iss $iss) ... fault address $far': $line"
+    pc="${BASH_REMATCH[1]}"
+    [[ $((BASH_REMATCH[2])) -eq $((far)) ]] \
+        || fail "fault address ${BASH_REMATCH[2]}, expected $(printf '%#x' $((far)))"
+    if [[ "$pc_range" == *..* ]]; then
+        [[ $((pc)) -ge $((${pc_range%%..*})) && $((pc)) -lt $((${pc_range##*..})) ]] \
+            || fail "the faulting instruction $pc is outside the kernel's code ($pc_range)"
+    else
+        [[ $((pc)) -eq $((pc_range)) ]] || fail "the faulting instruction is $pc, expected $pc_range"
+    fi
+    # The tables had passed their audit before the violation was tried.
+    expect_once "mmu: write xor execute holds" "write xor execute report before the violation"
+    grep -qF "selftest: " "$serial_log" || fail "the violation was never tried"
+    stop_qemu
+    echo "PASS ($boot_name): $class_name at $(printf '%#x' $((far))) ended in a kernel panic"
 }
 
 # find_uefi_firmware: prints the AArch64 UEFI firmware image QEMU can load with
@@ -505,7 +569,7 @@ check_uefi_boot() {
     # placed the image (the stack included): a loader that misplaces or cuts
     # the image cannot print this.
     expect_once "started at EL$bootloader_el" "bootloader's exception level"
-    expect_once "kernel loaded at $(hex "$(symbol_address __image_start | sed 's/^0x//')")..$(hex "$(symbol_address __stack_top | sed 's/^0x//')"), entry $(hex "$(symbol_address _start | sed 's/^0x//')")" \
+    expect_once "kernel loaded at $(hex "$(physical_symbol __image_start)")..$(hex "$(physical_symbol __stack_top)"), entry $(hex "$entry")" \
         "bootloader's report of the kernel placement"
     expect_once "$EXPECTED_BANNER" "boot banner"
     expect_once "$UART_REPORT" "UART report"
@@ -595,14 +659,16 @@ check_uefi_boot() {
     # The probe prints -1 as 0xffffffff when it finds nothing, so the line ends here.
     [[ "$(plain_log | grep -cE 'mapping: runtime services 0xff$')" -eq 1 ]] \
         || fail "memory type of the runtime services regions is not Normal write-back (0xff)"
-    # SCTLR_EL1: MMU (bit 0), data cache (2) and instruction cache (12) on;
-    # alignment check (1) and write-implies-execute-never (19) off.
+    # SCTLR_EL1 as the boot code left it, before the kernel's own tables
+    # replace the bootloader's: MMU (bit 0), data cache (2) and instruction
+    # cache (12) on as the bootloader had them, alignment check (1) off, and
+    # write-implies-execute-never (19) turned on by the boot code (ADR 0019).
     local sctlr
     sctlr="$(plain_log | sed -n 's/^  kernel  .\{4\}  sctlr_el1 \(0x[0-9a-f]*\)$/\1/p')"
     [[ -n "$sctlr" ]] || fail "SCTLR_EL1 not reported"
     [[ $(((sctlr >> 0) & 1)) -eq 1 && $(((sctlr >> 2) & 1)) -eq 1 && $(((sctlr >> 12) & 1)) -eq 1 \
-        && $(((sctlr >> 1) & 1)) -eq 0 && $(((sctlr >> 19) & 1)) -eq 0 ]] \
-        || fail "SCTLR_EL1 is $sctlr: expected MMU, D-cache and I-cache on, alignment checks and WXN off"
+        && $(((sctlr >> 1) & 1)) -eq 0 && $(((sctlr >> 19) & 1)) -eq 1 ]] \
+        || fail "SCTLR_EL1 is $sctlr: expected MMU, D-cache, I-cache and WXN on, alignment checks off"
     local tables
     tables="$(plain_log | sed -n 's/.*page tables at \(0x[0-9a-f]*\).*/\1/p')"
     [[ -n "$tables" ]] || fail "bootloader did not report its page tables"
@@ -619,6 +685,7 @@ check_uefi_boot() {
     expect_once "frames: exhausted after $free allocations, next request refused" "exhaustion report"
     expect_once "frames: returned $free, $free free again" "return of every frame"
     expect_once "frames: double free refused" "double free refusal"
+    check_mmu
 
     BOOT_TIMEOUT_SECONDS=10
     stop_qemu
@@ -670,23 +737,56 @@ build_with_feature() {
 # llvm-nm and llvm-objcopy come with the `llvm-tools` rustup component.
 llvm_tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
 
-symbol_address() {
-    "$llvm_tools/llvm-nm" "$KERNEL_ELF" | awk -v name="$1" '$3 == name { print "0x" $1 }'
+# symbol_of ELF NAME: the address of a symbol in an ELF, as 0x...
+symbol_of() {
+    "$llvm_tools/llvm-nm" "$1" | awk -v name="$2" '$3 == name { print "0x" $1 }'
 }
 
-entry="$(symbol_address _start)"
-image_start_address=$(( $(symbol_address __image_start) ))
+symbol_address() {
+    symbol_of "$KERNEL_ELF" "$1"
+}
+
+# The kernel runs in the upper half (ADR 0019): the linker gives every symbol
+# its virtual address, which is the physical one plus this offset. The number is
+# read from where the tables are built, and the linker script must agree.
+KERNEL_OFFSET="$(sed -n 's/^pub const KERNEL_OFFSET: u64 = \(0x[0-9a-f_]*\);$/\1/p' kernelvm/src/lib.rs | tr -d '_')"
+readonly KERNEL_OFFSET
+[[ -n "$KERNEL_OFFSET" ]] || fail "KERNEL_OFFSET not found in kernelvm/src/lib.rs"
+[[ "$(( $(symbol_address KERNEL_OFFSET) ))" -eq $((KERNEL_OFFSET)) ]] \
+    || fail "link.ld defines KERNEL_OFFSET as $(symbol_address KERNEL_OFFSET), kernelvm as $KERNEL_OFFSET"
+
+# physical_symbol NAME: the physical address of a symbol, as a number.
+physical_symbol() {
+    echo $(( $(symbol_address "$1") - KERNEL_OFFSET ))
+}
+
+# The loaders enter at the ELF entry point and place segments by their physical
+# address, so both must stay physical although the code is linked in the upper
+# half: the entry is not the virtual `_start`, and it lies in the first segment.
+entry="$(physical_symbol _start)"
+[[ "$(( $(symbol_address _start_physical) ))" -eq "$entry" ]] || fail "_start_physical is not _start minus the offset"
+elf_entry="$("$llvm_tools/llvm-readobj" --file-headers "$KERNEL_ELF" | sed -n 's/^ *Entry: \(0x[0-9A-Fa-f]*\)$/\1/p')"
+[[ "$((elf_entry))" -eq "$entry" ]] || fail "the ELF entry point is $elf_entry, expected the physical address $(printf '%#x' "$entry")"
+"$llvm_tools/llvm-objdump" -p "$KERNEL_ELF" | grep -qE "LOAD .* vaddr 0x$(printf '%x' $((entry + KERNEL_OFFSET))) paddr 0x$(printf '%016x' "$entry")" \
+    || fail "no segment is linked at virtual $(printf '%#x' $((entry + KERNEL_OFFSET))) and loaded at physical $(printf '%#x' "$entry")"
+image_start_address=$(( $(physical_symbol __image_start) ))
 # The boot code is first in the image, so the reserved image must begin at the
 # entry point: a start symbol moved past it would leave the first frame free.
-if [[ "$image_start_address" -ne $((entry)) ]]; then
+if [[ "$image_start_address" -ne "$entry" ]]; then
     fail "__image_start is not the entry point $entry"
 fi
-image_end_address=$(( $(symbol_address __stack_top) ))
-hex() { printf '0x%x' "$((0x$1))"; }
-image_range="$(hex "$(symbol_address __image_start | sed 's/^0x//')")..$(hex "$(symbol_address __stack_bottom | sed 's/^0x//')")"
-stack_range="$(hex "$(symbol_address __stack_bottom | sed 's/^0x//')")..$(hex "$(symbol_address __stack_top | sed 's/^0x//')")"
-bss_start="$(symbol_address __bss_start)"
-bss_end="$(symbol_address __bss_end)"
+image_end_address=$(( $(physical_symbol __stack_top) ))
+hex() { printf '0x%x' "$1"; }
+image_range="$(hex "$(physical_symbol __image_start)")..$(hex "$(physical_symbol __stack_bottom)")"
+stack_range="$(hex "$(physical_symbol __stack_bottom)")..$(hex "$(physical_symbol __stack_top)")"
+# What the kernel's page tables must map, by section, from the linker's symbols.
+text_bytes=$(( $(symbol_address __text_end) - $(symbol_address __image_start) ))
+rodata_bytes=$(( $(symbol_address __rodata_end) - $(symbol_address __text_end) ))
+data_bytes=$(( $(symbol_address __data_end) - $(symbol_address __rodata_end) ))
+stack_bytes=$(( $(symbol_address __stack_top) - $(symbol_address __stack_bottom) ))
+image_span_bytes=$(( $(symbol_address __stack_top) - $(symbol_address __image_start) ))
+bss_start="$(physical_symbol __bss_start)"
+bss_end="$(physical_symbol __bss_end)"
 bss_size=$((bss_end - bss_start))
 if [[ "$bss_size" -le 0 ]]; then
     fail ".bss is empty, so the raw boot would not exercise the clearing loop"
@@ -742,6 +842,33 @@ extra_reserved_frames=$MEMRESERVE_FRAMES
 extra_reserved_ranges=2
 expected_blob_size=""
 check_boot memreserve -dtb "$memreserve_dtb" -kernel "$KERNEL_ELF"
+
+# Every frame below the image reserved: the allocator then hands the page tables
+# frames from the tail of the image's own 2 MiB, which the boot tables must map.
+below_dtb="$work_dir/reserved-below-image.dtb"
+python3 -I - "$dtb" "$below_dtb" <<'PY'
+import struct, sys
+source, target = sys.argv[1:3]
+blob = open(source, "rb").read()
+fields = list(struct.unpack(">10I", blob[:40]))
+rsvmap, structure, strings, strings_size = fields[4], fields[2], fields[3], fields[8]
+entry = struct.pack(">2Q", 0x40000000, 0x200000)
+body = entry + blob[rsvmap:strings + strings_size]
+fields[2], fields[3] = structure + len(entry), strings + len(entry)
+total = (rsvmap + len(body) + 7) // 8 * 8
+fields[1] = total
+open(target, "wb").write((struct.pack(">10I", *fields) + blob[40:rsvmap] + body).ljust(total, b"\0"))
+PY
+start_qemu reserved-below-image -dtb "$below_dtb" -kernel "$KERNEL_ELF"
+wait_for_line "$RESUME_MARKER"
+expect_once "mmu: write xor execute holds" "write xor execute report with the frames below the image reserved"
+# The test only means something if the allocator did give out frames from the
+# tail of the image's 2 MiB: the first free frame is then above the stack.
+reused="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: reused \(0x[0-9a-f]*\) after freeing it$/\1/p')"
+[[ -n "$reused" && $((reused)) -ge "$image_end_address" && $((reused)) -lt $((image_start_address + 2 * 1024 * 1024)) ]] \
+    || fail "the first free frame $reused is not in the tail of the image's 2 MiB (above $(printf '%#x' "$image_end_address"))"
+stop_qemu
+echo "PASS (reserved-below-image): page tables built in the image's own 2 MiB"
 extra_reserved_frames=0
 extra_reserved_ranges=0
 uefi_firmware="$(find_uefi_firmware)"
@@ -1056,3 +1183,42 @@ expect_plain_once "3  Chain probe" "the entry of the file in the menu"
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"
+
+# Write-xor-execute (ADR 0019): a write to the kernel's code, a jump into
+# constants and a jump into data each end in a reported fault, in every way the
+# kernel is entered. A data abort for a store whose address translates but may
+# not be written is a permission fault at level 3 (DFSC 0b001111) with WnR set,
+# so its syndrome ends in 0x4f; an instruction fetch from a page that may not
+# be executed is the same fault with IFSC 0b001111.
+write_elf="$work_dir/write-text.elf"
+data_elf="$work_dir/execute-data.elf"
+rodata_elf="$work_dir/execute-rodata.elf"
+build_with_feature selftest-write-text "$write_elf"
+build_with_feature selftest-execute-data "$data_elf"
+build_with_feature selftest-execute-rodata "$rodata_elf"
+cargo build --quiet --target-dir "$TARGET_DIR"
+for kind in write execute-data execute-rodata; do
+    case "$kind" in
+        write) elf="$write_elf" ;;
+        execute-data) elf="$data_elf" ;;
+        execute-rodata) elf="$rodata_elf" ;;
+    esac
+    # The addresses come from the very ELF that boots: a build with another
+    # feature may lay the sections out differently.
+    text_range="$(symbol_of "$elf" __image_start)..$(symbol_of "$elf" __text_end)"
+    image="$work_dir/$kind.img"
+    python3 -I scripts/make-disk-image.py "$image" target/aarch64-unknown-uefi/debug/bootloader.efi "$elf" > /dev/null
+    case "$kind" in
+        write) fault=(data\ abort 0x25 '0x[0-9a-f]{5}4f' "$text_range" "$(symbol_of "$elf" __image_start)") ;;
+        execute-data) fault=(instruction\ abort 0x21 0x000000f "$(symbol_of "$elf" __rodata_end)" "$(symbol_of "$elf" __rodata_end)") ;;
+        execute-rodata) fault=(instruction\ abort 0x21 0x000000f "$(symbol_of "$elf" __text_end)" "$(symbol_of "$elf" __text_end)") ;;
+    esac
+    check_fault "$kind" "${fault[@]}" -kernel "$elf"
+    check_fault "$kind-el2" "${fault[@]}" -machine virtualization=on -kernel "$elf"
+    BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+    check_fault "uefi-$kind" "${fault[@]}" -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
+        -drive "file=$image,format=raw,if=virtio"
+    check_fault "uefi-el2-$kind" "${fault[@]}" -machine virt,acpi=off,virtualization=on -m 256M -bios "$uefi_firmware" \
+        -drive "file=$image,format=raw,if=virtio"
+    BOOT_TIMEOUT_SECONDS=10
+done
