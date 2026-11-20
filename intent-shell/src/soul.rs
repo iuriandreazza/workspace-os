@@ -579,6 +579,11 @@ fn read(path: &Path, what: &str, named_by_person: bool) -> Result<Read, String> 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if named_by_person {
                 Err(format!("the {what} {at} does not exist"))
+            } else if path.symlink_metadata().is_ok() {
+                // `open` follows the link: a broken one is a file that is there, not an absent one.
+                Ok(Read::Problem(format!(
+                    "the {what} {at} is a link to something that does not exist"
+                )))
             } else {
                 Ok(Read::Absent)
             }

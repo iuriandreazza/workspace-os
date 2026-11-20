@@ -453,6 +453,21 @@ fn a_directory_a_device_and_a_pipe_are_read_at_their_start_and_never_hang() {
 }
 
 #[test]
+fn a_dangling_link_at_the_default_path_is_a_problem_not_an_absent_file() {
+    let dir = dir("dangling");
+    let link = dir.join("soul");
+    std::os::unix::fs::symlink(dir.join("missing"), &link).unwrap();
+    let loaded = load(&link, &dir.join("personality")).unwrap();
+    assert!(
+        problem(&loaded.soul).contains("a link to something that does not exist"),
+        "{:?}",
+        loaded.soul
+    );
+    let none = load(&dir.join("nothing"), &dir.join("personality")).unwrap();
+    assert!(matches!(none.soul, Source::Default), "{:?}", none.soul);
+}
+
+#[test]
 fn the_path_in_a_message_is_escaped() {
     let dir = dir("escape");
     let bad = write(&dir, "\u{1b}[2Jsoul", b"pirate");

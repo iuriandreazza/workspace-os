@@ -211,6 +211,16 @@ Round 2 (fresh subagent, whole diff): nothing confirmed on the decision path or 
 | The report said a missing named file stops the shell, but with `--no-reply` or `--no-model` neither file is read | Documented |
 | `soul_path` used `exists()`, so a dangling `soul` link fell back to the old file silently | Fixed: a link that is there counts as present |
 
+Round 3 (fresh subagent, whole diff): nothing on the decision path, the layering or the hostile-text handling; three low items:
+
+| Finding | Outcome |
+|---|---|
+| A dangling link at the default SOUL or personality path was read as absent, silently | Fixed: it is a problem with a message (test `a_dangling_link_at_the_default_path_is_a_problem_not_an_absent_file`, confirmed by mutation: the test fails without the fix) |
+| The SOUL's `languages` has no effect without a personality `language` | Same as round 2: documented, ADR 0028 section 3 |
+| `scripts/intent-shell.sh` still described `--voice-profile` | Fixed: it now describes `--soul` and `--personality` |
+
+Round 4 was not run: the round-3 fixes are one branch and one comment line.
+
 ## Not verified, limits
 
 - A personality is per user in the file layout (`~/.config`), but the shell does
