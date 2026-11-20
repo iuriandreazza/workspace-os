@@ -1351,7 +1351,9 @@ check_extensions dirty-tcr2-el2 -cpu max -machine virtualization=on -kernel "$di
 check_extensions dirty-tcr2-el3-el2 -cpu max -machine secure=on,virtualization=on -kernel "$dirty_elf"
 BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
 # firmware_reaches_boot_manager QEMU_ARGS...: the firmware alone, with no disk,
-# gets to its boot manager. Measured on the CI runner (QEMU 10.2.1, Ubuntu's
+# gets to its boot manager (the first line of the BDS phase, `BdsDxe:`, whichever
+# message follows: the Homebrew build starts its shell, the Ubuntu one reports
+# that no boot option was found). Measured on the CI runner (QEMU 10.2.1, Ubuntu's
 # qemu-efi-aarch64 2025.11): on `-cpu max` that firmware prints its banner and
 # then takes a prefetch abort at its own exception vector over and over (the
 # `-d int` log held 621 million lines after 300 s), while the same image boots
@@ -1362,7 +1364,7 @@ firmware_reaches_boot_manager() {
     start_qemu firmware-alone "$@" -machine virt,acpi=off -m 256M -bios "$uefi_firmware"
     local reached=1 _
     for _ in $(seq 1 $((UEFI_BOOT_TIMEOUT_SECONDS * 10))); do
-        if grep -qF "BdsDxe: loading" "$serial_log"; then
+        if grep -qF "BdsDxe:" "$serial_log"; then
             reached=0
             break
         fi
