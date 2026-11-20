@@ -50,7 +50,7 @@ A new host-testable crate `kernelheap` (no dependencies, `#![no_std]`).
 
 | Option | For | Against |
 |---|---|---|
-| Free list, first fit (chosen) | About 250 lines; reads end to end; coalesces; no size classes to tune; exact and cheap to test against a model | Linear in free blocks; fragmentation is first fit's |
+| Free list, first fit (chosen) | A few hundred lines with their docs; reads end to end; coalesces; no size classes to tune; exact and cheap to test against a model | Linear in free blocks; fragmentation is first fit's |
 | Bump allocator, never frees | Trivial | Fails the "reuse after free" the item asks for |
 | Size classes / slab | Constant time, little fragmentation | Needs a fallback for large sizes anyway; classes are a tuning decision with no workload yet |
 | Buddy | Bounded fragmentation, fast coalescing | Power-of-two waste, per-order lists and a bitmap: more code than anything needs until K8 |
@@ -78,6 +78,10 @@ would keep.
   can cover the request *and the page-table frames it needs* (one level 3 table
   per 512 pages, plus up to three at the ends), so a request that cannot be
   served takes no frame.
+- A request takes the pages it needs; the "at least 16 pages" extra is taken
+  only from frames that stay above a reserve of 64 for the rest of the kernel
+  (page tables, stacks). The rule is `kernelheap::growth_pages`, tested on the
+  host.
 - Growth stops on the first thing that fails: no frame (`physmem` empty), no
   table frame (`MapError::OutOfFrames`), or the window is full. Pages mapped
   before the failure stay and are used. If the request still does not fit, it
@@ -170,3 +174,5 @@ lock is the only place that changes.
   offset and runs before the heap exists; after it, every heap page is flagged
   `wrong_output`. A later audit of the upper half (K4c's included) must skip
   the heap window.
+- The boot self-test's growth is permanent too: on a machine with 2048 free
+  frames or more it leaves about 440 frames (1.7 MiB) mapped as free heap.

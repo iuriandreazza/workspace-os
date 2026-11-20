@@ -396,3 +396,43 @@ fn aligned_blocks_behind_a_small_one_leave_no_residue() {
     assert_eq!(heap.used_bytes(), 0);
     assert_eq!(heap.free_blocks(), 1);
 }
+
+fn tables(pages: usize) -> usize {
+    pages + pages.div_ceil(512) + 3
+}
+
+#[test]
+fn growth_is_refused_when_the_window_or_the_frames_with_their_tables_fall_short() {
+    // Past the window.
+    assert_eq!(growth_pages(101, 16, 64, 10_000, 100, tables), None);
+    // The frames cover the pages but not the tables that map them.
+    assert_eq!(growth_pages(1000, 16, 64, 1000, 10_000, tables), None);
+    assert_eq!(
+        growth_pages(1000, 16, 64, tables(1000) - 1, 10_000, tables),
+        None
+    );
+    assert_eq!(
+        growth_pages(1000, 16, 0, tables(1000), 10_000, tables),
+        Some(1000)
+    );
+    // No frames at all.
+    assert_eq!(growth_pages(1, 16, 64, 0, 10_000, tables), None);
+}
+
+#[test]
+fn the_minimum_growth_never_eats_the_reserve() {
+    // Plenty of frames: the minimum is added.
+    assert_eq!(growth_pages(1, 16, 64, 10_000, 10_000, tables), Some(16));
+    // Few frames: only the request, not the extra pages.
+    assert_eq!(growth_pages(1, 16, 64, 6, 10_000, tables), Some(1));
+    // Just above the reserve: some of the extra.
+    let free = tables(1) + 64 + 5;
+    assert_eq!(growth_pages(1, 16, 64, free, 10_000, tables), Some(6));
+    // A big request needs no extra and takes what it needs, reserve or not.
+    assert_eq!(
+        growth_pages(300, 16, 64, tables(300), 10_000, tables),
+        Some(300)
+    );
+    // The extra stays inside the window.
+    assert_eq!(growth_pages(1, 16, 0, 10_000, 4, tables), Some(4));
+}

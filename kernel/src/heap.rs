@@ -8,7 +8,7 @@ use core::fmt::{self, Write};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 
-use kernelheap::{AllocError, FreeError, Heap};
+use kernelheap::{AllocError, FreeError, Heap, growth_pages};
 use kernelvm::{HEAP_BASE, HEAP_WINDOW, PAGE_SIZE, Permissions};
 use physmem::FrameAllocator;
 
@@ -18,7 +18,16 @@ use crate::log::klog;
 /// The heap grows by at least this many pages at a time, so a run of small
 /// requests does not walk the page tables once each.
 const MIN_GROWTH_PAGES: usize = 16;
+/// Frames the heap leaves for the rest of the kernel when it grows by more
+/// than a request needs.
+const RESERVED_FRAMES: usize = 64;
 const WINDOW_PAGES: usize = (HEAP_WINDOW / PAGE_SIZE) as usize;
+
+/// The frames mapping `pages` pages takes: the pages, one level 3 table per 512
+/// of them, and up to three more tables where the range starts and ends.
+fn frames_to_map(pages: usize) -> usize {
+    pages.saturating_add(pages.div_ceil(512) + 3)
+}
 
 struct State {
     heap: Heap,
@@ -146,20 +155,19 @@ pub fn init(frames: FrameAllocator<'static>) -> Result<(), InitError> {
 
 impl State {
     /// Adds pages until a request that was refused for `needed` more bytes can
-    /// fit, or says it cannot: no more window, or fewer frames than that.
-    /// Checked before mapping anything, so an impossible request (a huge size)
-    /// does not take every frame on its way to being refused. The frames the
-    /// page tables need come from the same allocator, so they count: one level
-    /// 3 table per 512 pages, and up to three more where the range starts and
-    /// ends.
+    /// fit, or says it cannot (`kernelheap::growth_pages` decides, before
+    /// anything is mapped).
     fn grow(&mut self, needed: usize) -> bool {
-        let required = needed.div_ceil(PAGE_SIZE as usize);
-        let room = WINDOW_PAGES - self.pages;
-        let frames_needed = required.saturating_add(required.div_ceil(512) + 3);
-        if required > room || frames_needed > self.frames.free_frames() {
+        let Some(wanted) = growth_pages(
+            needed.div_ceil(PAGE_SIZE as usize),
+            MIN_GROWTH_PAGES,
+            RESERVED_FRAMES,
+            self.frames.free_frames(),
+            WINDOW_PAGES - self.pages,
+            frames_to_map,
+        ) else {
             return false;
-        }
-        let wanted = required.max(MIN_GROWTH_PAGES).min(room);
+        };
         let added = mmu::grow_heap(
             &mut self.frames,
             HEAP_BASE + self.pages as u64 * PAGE_SIZE,
