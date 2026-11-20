@@ -67,12 +67,13 @@ fn take_storage() -> &'static mut [u64] {
 }
 
 /// What the kernel itself occupies, which no device tree says.
-fn fixed_reservations(board: &Board) -> [(&'static str, Range<u64>); 3] {
+fn fixed_reservations(board: &Board) -> [(&'static str, Range<u64>); 4] {
     let widen = |range: Range<usize>| range.start as u64..range.end as u64;
     let blob = &board.device_tree;
     [
         ("kernel image", widen(arch::kernel_image())),
         ("boot stack", widen(arch::boot_stack())),
+        ("exception stack", widen(arch::exception_stack())),
         (
             "device tree",
             blob.base..blob.base.saturating_add(blob.size),

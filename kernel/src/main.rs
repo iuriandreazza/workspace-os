@@ -125,10 +125,30 @@ pub extern "C" fn kernel_main(
     memory::report(&frames, &board, &mut console);
     memory::selftest(&mut frames, &board, &mut console);
 
+    let before = board.handoff_digest();
     if let Err(error) = arch::mmu::init(&mut frames, &board) {
         panic!("mmu: {error}");
     }
-    arch::mmu::verify(&mut console);
+    arch::mmu::verify(&mut console, &board);
+
+    // The hand-over is read again from its address, now through the window the
+    // kernel built (ADR 0026): a window that lost a region faults here, one
+    // that maps another frame reads other bytes.
+    let after = match board.read_again(handoff_address) {
+        Ok(again) => again.handoff_digest(),
+        Err(error) => panic!("handoff read again after the switch: {error}"),
+    };
+    assert!(
+        before == after,
+        "handoff read after the switch differs from the one before it"
+    );
+    klog!(
+        Ok,
+        console,
+        "handoff: read again after the switch, {} bytes, digest {:#x}, as before it",
+        after.bytes,
+        after.value
+    );
 
     let entry = match board.entry {
         board::Entry::Direct => "direct load by the QEMU loader",
@@ -148,6 +168,10 @@ pub extern "C" fn kernel_main(
     arch::run_selftest();
     klog!(Ok, console, "resumed after breakpoint");
 
+    #[cfg(feature = "selftest-stack-overflow")]
+    arch::overflow_stack();
+    #[cfg(feature = "selftest-nested-exception")]
+    arch::raise_nested_exception();
     #[cfg(feature = "selftest-write-text")]
     arch::mmu::write_to_text();
     #[cfg(feature = "selftest-execute-data")]
@@ -168,5 +192,16 @@ pub extern "C" fn kernel_main(
 fn panic(info: &PanicInfo) -> ! {
     let mut console = board::console();
     klog!(Error, console, "kernel panic: {info}");
+    #[cfg(feature = "selftest-stack-overflow")]
+    klog!(
+        Info,
+        console,
+        "selftest: .bss stack probe {}",
+        if arch::stack_probe_intact() {
+            "intact"
+        } else {
+            "overwritten"
+        }
+    );
     arch::halt()
 }

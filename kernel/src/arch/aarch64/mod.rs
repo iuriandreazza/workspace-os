@@ -16,6 +16,7 @@ global_asm!(
     TCR_UPPER_MASK = const kernelvm::TCR_UPPER_HALF_MASK,
     TCR_UPPER_HALF = const kernelvm::TCR_UPPER_HALF,
     WXN = const kernelvm::SCTLR_WXN,
+    SELFTEST_DIRTY_TCR2 = const cfg!(feature = "selftest-dirty-tcr2") as u64,
 );
 global_asm!(include_str!("exceptions.s"));
 
@@ -27,6 +28,9 @@ unsafe extern "C" {
     safe static __image_start: u8;
     safe static __stack_bottom: u8;
     safe static __stack_top: u8;
+    safe static __exception_stack_top: u8;
+    safe static __stack_probe_start: u8;
+    safe static __stack_probe_end: u8;
 }
 
 macro_rules! address_of {
@@ -51,8 +55,55 @@ pub fn boot_stack() -> Range<usize> {
     physical(address_of!(__stack_bottom))..physical(address_of!(__stack_top))
 }
 
+/// Physical addresses of the guard page above the boot stack and the exception
+/// stack above it (ADR 0026), both reserved with the image.
+pub fn exception_stack() -> Range<usize> {
+    physical(address_of!(__stack_top))..physical(address_of!(__exception_stack_top))
+}
+
+/// The last 8 KiB of `.bss`, which the linker reserves: where a stack that ran
+/// past its guard page would write first.
+#[cfg(feature = "selftest-stack-overflow")]
+fn stack_probe() -> *mut u64 {
+    address_of!(__stack_probe_start) as *mut u64
+}
+
+#[cfg(feature = "selftest-stack-overflow")]
+fn stack_probe_words() -> usize {
+    (address_of!(__stack_probe_end) - address_of!(__stack_probe_start)) / size_of::<u64>()
+}
+
+#[cfg(feature = "selftest-stack-overflow")]
+const STACK_PROBE_PATTERN: u64 = 0x57AC_0000_0000_0000;
+
+#[cfg(feature = "selftest-stack-overflow")]
+fn fill_stack_probe() {
+    for word in 0..stack_probe_words() {
+        // SAFETY: the probe is reserved `.bss` that nothing else uses, mapped
+        // read and write, and `word` is within it.
+        unsafe {
+            stack_probe()
+                .add(word)
+                .write_volatile(STACK_PROBE_PATTERN | word as u64)
+        };
+    }
+}
+
+/// Whether every word of the probe still holds what `fill_stack_probe` wrote.
+#[cfg(feature = "selftest-stack-overflow")]
+pub fn stack_probe_intact() -> bool {
+    (0..stack_probe_words()).all(|word| {
+        // SAFETY: as in `fill_stack_probe`.
+        unsafe { stack_probe().add(word).read_volatile() == STACK_PROBE_PATTERN | word as u64 }
+    })
+}
+
+#[cfg(feature = "selftest-stack-overflow")]
+pub use exceptions::overflow_stack;
 #[cfg(feature = "selftest-compiler-trap")]
 pub use exceptions::raise_compiler_trap;
+#[cfg(feature = "selftest-nested-exception")]
+pub use exceptions::raise_nested_exception;
 #[cfg(feature = "selftest-unhandled-class")]
 pub use exceptions::raise_unhandled_class;
 #[cfg(feature = "selftest-unhandled-vector")]

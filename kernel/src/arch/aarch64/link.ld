@@ -38,20 +38,27 @@ SECTIONS
         *(.data .data.*)
     }
 
-    /* 8-byte alignment at both ends: the boot code clears .bss one word at a time. */
+    /* 8-byte alignment at both ends: the boot code clears .bss one word at a time.
+       The last 8 KiB are reserved as a probe (ADR 0026): the part of .bss right
+       below the guard page, which a stack that ran past the guard page would
+       overwrite. The boot code zeroes it with the rest, and the stack-overflow
+       self-test checks it. */
     .bss (NOLOAD) : ALIGN(8) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
-        . = ALIGN(8);
+        . = ALIGN(PAGE);
+        __stack_probe_start = .;
+        . += 0x2000;
+        __stack_probe_end = .;
         __bss_end = .;
     }
     . = ALIGN(PAGE);
     __data_end = .;
 
-    /* One unmapped page below the stack: an overflow faults. The exception
-       handler then works on the same stack, so this is not a full guard
-       (ADR 0019, "Known limits"). */
+    /* One unmapped page below the stack: an overflow faults. Exceptions run on
+       their own stack (ADR 0026), so the fault is reported where the handler
+       does not touch what lies below. */
     . += PAGE;
 
     /* 64 KiB boot stack; AArch64 requires a 16-byte aligned stack pointer.
@@ -63,6 +70,15 @@ SECTIONS
         __stack_top = .;
     }
 
+    /* The stack synchronous exceptions run on (ADR 0026), with its own guard
+       page below it. */
+    . += PAGE;
+    .exception_stack (NOLOAD) : ALIGN(PAGE) {
+        __exception_stack_bottom = .;
+        . += 0x4000;
+        __exception_stack_top = .;
+    }
+
     /DISCARD/ : {
         *(.comment)
         *(.eh_frame*)
@@ -71,5 +87,5 @@ SECTIONS
     /* The boot code maps the image with one level 3 table, which covers 2 MiB
        aligned to 2 MiB. */
     ASSERT(KERNEL_PHYSICAL_BASE % 0x200000 == 0, "the image must start on a 2 MiB boundary")
-    ASSERT(__stack_top - __image_start <= 0x200000, "the image no longer fits the boot tables (2 MiB)")
+    ASSERT(__exception_stack_top - __image_start <= 0x200000, "the image no longer fits the boot tables (2 MiB)")
 }

@@ -16,10 +16,15 @@ pub struct TrapFrame {
     spsr: u64,
     esr: u64,
     far: u64,
+    /// The stack pointer of the interrupted code: the handler runs on the
+    /// exception stack (ADR 0026).
+    sp: u64,
+    _reserved: u64,
 }
 
 const _: () = {
-    assert!(size_of::<TrapFrame>() == 288);
+    assert!(size_of::<TrapFrame>() == 304);
+    assert!(offset_of!(TrapFrame, sp) == 288);
     assert!(offset_of!(TrapFrame, x) == 0);
     assert!(offset_of!(TrapFrame, sp_el0) == 248);
     assert!(offset_of!(TrapFrame, elr) == 256);
@@ -45,6 +50,10 @@ const EC_WATCHPOINT_LOWER: u64 = 0x34;
 const EC_WATCHPOINT: u64 = 0x35;
 
 const INSTRUCTION_BYTES: u64 = 4;
+
+/// The breakpoint whose handler takes another exception, on the exception stack.
+#[cfg(feature = "selftest-nested-exception")]
+const NESTING_BREAKPOINT: u64 = 0x801;
 
 /// ESR_EL1 split into its fields.
 struct Syndrome {
@@ -145,6 +154,11 @@ extern "C" fn handle_sync_exception(frame: &mut TrapFrame) {
         frame.elr += INSTRUCTION_BYTES;
         return;
     }
+    #[cfg(feature = "selftest-nested-exception")]
+    if syndrome.class == EC_BRK_A64 && syndrome.iss & 0xffff == NESTING_BREAKPOINT {
+        // SAFETY: the exception ends in a kernel panic, which is what the test checks.
+        unsafe { asm!("brk #0x802") };
+    }
     let report = Report {
         esr: frame.esr,
         elr: frame.elr,
@@ -168,6 +182,7 @@ fn vector_description(index: u64) -> &'static str {
         10 => "FIQ, lower EL (AArch64)",
         11 => "SError, lower EL (AArch64)",
         12..=15 => "lower EL (AArch32)",
+        16 => "nested exception on the exception stack",
         _ => "unknown vector",
     }
 }
@@ -218,6 +233,41 @@ pub fn current_el() -> u64 {
         asm!("mrs {}, CurrentEL", out(reg) current_el, options(nomem, nostack, preserves_flags));
     }
     current_el >> 2
+}
+
+/// Overflows the boot stack by recursing. The first store below the stack hits
+/// the guard page; the report must be made on the exception stack and leave the
+/// `.bss` probe whole (ADR 0026).
+#[cfg(feature = "selftest-stack-overflow")]
+pub fn overflow_stack() {
+    super::fill_stack_probe();
+    let mut console = board::console();
+    crate::log::klog!(Info, console, "selftest: overflowing the boot stack");
+    recurse(0);
+    panic!("selftest: the boot stack did not overflow");
+}
+
+/// The recursion cannot be folded into a loop: the frame is written through
+/// `black_box` and read after the call.
+#[cfg(feature = "selftest-stack-overflow")]
+#[inline(never)]
+fn recurse(depth: usize) -> usize {
+    let mut frame = [0u8; 256];
+    core::hint::black_box(&mut frame)[0] = depth as u8;
+    let below = if core::hint::black_box(true) {
+        recurse(depth + 1)
+    } else {
+        0
+    };
+    below + core::hint::black_box(frame[0]) as usize
+}
+
+/// The handler of this breakpoint takes a second exception while it runs on the
+/// exception stack, which must be reported as nested.
+#[cfg(feature = "selftest-nested-exception")]
+pub fn raise_nested_exception() {
+    // SAFETY: the exception ends in a kernel panic, which is what the test checks.
+    unsafe { asm!("brk #0x801") };
 }
 
 /// SVC from the kernel is a class no handler exists for.

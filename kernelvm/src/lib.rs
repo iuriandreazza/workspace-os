@@ -409,6 +409,22 @@ impl Leaf {
     }
 }
 
+impl Leaf {
+    /// The kind of memory the bits describe, or `None` for a leaf that is
+    /// writable and executable, which no kind is.
+    pub fn permissions(&self, types: MemoryTypes) -> Option<Permissions> {
+        match (self.writable, self.executable) {
+            (true, true) => None,
+            (false, true) => Some(Permissions::Text),
+            (false, false) => Some(Permissions::ReadOnly),
+            (true, false) if self.attribute_index == types.device_index => {
+                Some(Permissions::Device)
+            }
+            (true, false) => Some(Permissions::ReadWrite),
+        }
+    }
+}
+
 fn span(level: u8) -> u64 {
     match level {
         1 => GIGABYTE,
@@ -439,6 +455,21 @@ pub fn translate<M: TableRead>(memory: &M, root: u64, virtual_address: u64) -> O
     None
 }
 
+/// What a root's leaves must look like, beyond the permissions every leaf has
+/// to respect (never writable and executable, never reachable from EL0).
+#[derive(Clone, Copy, Debug)]
+pub struct Expectation<'a> {
+    pub types: MemoryTypes,
+    /// A range of physical addresses nothing under the root may map.
+    pub forbidden: &'a Range<u64>,
+    /// The physical range that is Device memory: a leaf that touches it must
+    /// have the Device attribute index, every other leaf the Normal one.
+    pub device: &'a Range<u64>,
+    /// When present, the only memory the root maps: each leaf must lie inside
+    /// one of these physical ranges and have that range's permissions.
+    pub known: Option<&'a [(Range<u64>, Permissions)]>,
+}
+
 /// What a walk over every translation of a root found.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Audit {
@@ -453,47 +484,83 @@ pub struct Audit {
     pub user_reachable: Option<u64>,
     /// The first virtual address whose output lies in the forbidden range.
     pub aliased: Option<u64>,
+    /// The first virtual address whose output is not the virtual address minus
+    /// the root's base: both halves map by a constant offset.
+    pub wrong_output: Option<u64>,
+    /// The first virtual address whose memory type is neither Normal nor
+    /// Device, or is Device where it should not be, or is not where it should.
+    pub wrong_memory_type: Option<u64>,
+    /// The first virtual address whose leaf lies outside the known ranges or
+    /// has the permissions of another one.
+    pub wrong_section: Option<u64>,
     /// Entries that are neither empty, a table, a block nor a page.
     pub malformed: u64,
 }
 
 impl Audit {
     /// Nothing is writable and executable, nothing is for EL0, nothing aliases
-    /// the forbidden range and every entry is well formed.
+    /// the forbidden range, every leaf maps the frame and has the memory type
+    /// it should, and every entry is well formed.
     pub fn is_clean(&self) -> bool {
         self.writable_executable.is_none()
             && self.user_reachable.is_none()
             && self.aliased.is_none()
+            && self.wrong_output.is_none()
+            && self.wrong_memory_type.is_none()
+            && self.wrong_section.is_none()
             && self.malformed == 0
     }
 }
 
 struct Walk<'a> {
-    types: MemoryTypes,
-    forbidden: &'a Range<u64>,
+    expect: &'a Expectation<'a>,
+    base: u64,
     audit: Audit,
+}
+
+fn overlaps(range: &Range<u64>, start: u64, size: u64) -> bool {
+    start < range.end && range.start < start.saturating_add(size)
 }
 
 impl Walk<'_> {
     fn leaf(&mut self, descriptor: u64, level: u8, at: u64) {
+        let types = self.expect.types;
         let found = Leaf::decode(descriptor, level);
         let size = span(level);
-        match (found.writable, found.executable) {
-            (true, true) => {
+        let permissions = found.permissions(types);
+        match permissions {
+            None => {
                 self.audit.writable_executable.get_or_insert(at);
             }
-            (false, true) => self.audit.text += size,
-            (false, false) => self.audit.read_only += size,
-            (true, false) if found.attribute_index == self.types.device_index => {
-                self.audit.device += size;
-            }
-            (true, false) => self.audit.read_write += size,
+            Some(Permissions::Text) => self.audit.text += size,
+            Some(Permissions::ReadOnly) => self.audit.read_only += size,
+            Some(Permissions::ReadWrite) => self.audit.read_write += size,
+            Some(Permissions::Device) => self.audit.device += size,
         }
         if found.user_accessible || found.user_executable {
             self.audit.user_reachable.get_or_insert(at);
         }
-        if found.output < self.forbidden.end && self.forbidden.start < found.output + size {
+        if overlaps(self.expect.forbidden, found.output, size) {
             self.audit.aliased.get_or_insert(at);
+        }
+        if found.output != at.wrapping_sub(self.base) {
+            self.audit.wrong_output.get_or_insert(at);
+        }
+        let known_type = found.attribute_index == types.normal_index
+            || found.attribute_index == types.device_index;
+        let is_device = found.attribute_index == types.device_index;
+        if !known_type || is_device != overlaps(self.expect.device, found.output, size) {
+            self.audit.wrong_memory_type.get_or_insert(at);
+        }
+        if let Some(known) = self.expect.known {
+            let right = known.iter().any(|(range, wanted)| {
+                range.start <= found.output
+                    && found.output.saturating_add(size) <= range.end
+                    && permissions == Some(*wanted)
+            });
+            if !right {
+                self.audit.wrong_section.get_or_insert(at);
+            }
         }
     }
 
@@ -511,18 +578,11 @@ impl Walk<'_> {
 }
 
 /// Walks every entry under `root`, whose lowest address is `base` (0 for the
-/// lower half, [`KERNEL_OFFSET`] for the upper one). `forbidden` is a range of
-/// physical addresses nothing under this root may map.
-pub fn audit<M: TableRead>(
-    memory: &M,
-    root: u64,
-    base: u64,
-    types: MemoryTypes,
-    forbidden: &Range<u64>,
-) -> Audit {
+/// lower half, [`KERNEL_OFFSET`] for the upper one), against `expect`.
+pub fn audit<M: TableRead>(memory: &M, root: u64, base: u64, expect: &Expectation<'_>) -> Audit {
     let mut walk = Walk {
-        types,
-        forbidden,
+        expect,
+        base,
         audit: Audit::default(),
     };
     walk.table(memory, root, 1, base);
@@ -537,7 +597,7 @@ pub enum LayoutError {
     Unaligned,
     /// The sections overlap or are out of order.
     Misordered,
-    /// The stack does not start a page above the data.
+    /// A stack does not start a page above what lies below it.
     NoGuardPage,
 }
 
@@ -559,7 +619,11 @@ pub struct ImageLayout {
     pub rodata: Range<u64>,
     /// `.data` and `.bss`.
     pub data: Range<u64>,
+    /// The boot stack.
     pub stack: Range<u64>,
+    /// The stack synchronous exceptions run on (ADR 0026), above the boot
+    /// stack with a guard page between them.
+    pub exception_stack: Range<u64>,
 }
 
 impl ImageLayout {
@@ -568,12 +632,14 @@ impl ImageLayout {
         rodata: Range<u64>,
         data: Range<u64>,
         stack: Range<u64>,
+        exception_stack: Range<u64>,
     ) -> Result<Self, LayoutError> {
         let layout = Self {
             text,
             rodata,
             data,
             stack,
+            exception_stack,
         };
         let boundaries = [
             layout.text.start,
@@ -584,6 +650,8 @@ impl ImageLayout {
             layout.data.end,
             layout.stack.start,
             layout.stack.end,
+            layout.exception_stack.start,
+            layout.exception_stack.end,
         ];
         if !boundaries.iter().all(|b| b.is_multiple_of(PAGE_SIZE)) {
             return Err(LayoutError::Unaligned);
@@ -591,28 +659,33 @@ impl ImageLayout {
         if boundaries.windows(2).any(|pair| pair[0] > pair[1]) || layout.text.is_empty() {
             return Err(LayoutError::Misordered);
         }
-        if layout.stack.start < layout.data.end + PAGE_SIZE {
+        if layout.stack.start < layout.data.end + PAGE_SIZE
+            || layout.exception_stack.start < layout.stack.end + PAGE_SIZE
+        {
             return Err(LayoutError::NoGuardPage);
         }
         Ok(layout)
     }
 
-    /// Everything the image occupies, the guard page included.
+    /// Everything the image occupies, the guard pages included.
     pub fn span(&self) -> Range<u64> {
-        self.text.start..self.stack.end
+        self.text.start..self.exception_stack.end
     }
 
-    fn parts(&self) -> [(&Range<u64>, Permissions); 4] {
+    /// Each mapped part of the image with the permissions it must have. What
+    /// lies between them (the guard pages) is not in the list.
+    pub fn parts(&self) -> [(Range<u64>, Permissions); 5] {
         [
-            (&self.text, Permissions::Text),
-            (&self.rodata, Permissions::ReadOnly),
-            (&self.data, Permissions::ReadWrite),
-            (&self.stack, Permissions::ReadWrite),
+            (self.text.clone(), Permissions::Text),
+            (self.rodata.clone(), Permissions::ReadOnly),
+            (self.data.clone(), Permissions::ReadWrite),
+            (self.stack.clone(), Permissions::ReadWrite),
+            (self.exception_stack.clone(), Permissions::ReadWrite),
         ]
     }
 
     /// Maps each part to its physical address plus `offset`, with its own
-    /// permissions. The guard page between the data and the stack stays empty.
+    /// permissions. The guard pages below the stacks stay empty.
     pub fn map<M: TableMemory>(
         &self,
         mapper: &mut Mapper<'_, M>,

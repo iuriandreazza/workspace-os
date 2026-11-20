@@ -5,18 +5,20 @@
 // handler and returns to the interrupted code. Every other entry is not
 // handled yet and ends in a kernel panic that names the entry.
 //
-// Known limit: the handled path trusts SP. A fault with a corrupt stack
-// pointer faults again while saving the context. The guard page below the stack
-// (ADR 0019) makes an overflow fault, but the nested faults move SP down 288
-// bytes each until the saves land in .bss and a report is printed over it.
+// Synchronous exceptions run on their own stack (ADR 0026), never on the one
+// they interrupted, so an overflow of the boot stack is reported and writes
+// nothing below the guard page. The interrupted SP is saved in the frame.
 
 // Layout of `TrapFrame` in exceptions.rs, checked there with const asserts.
-.equ FRAME_SIZE, 288
+.equ FRAME_SIZE, 304
 .equ FRAME_SP_EL0, 248
 .equ FRAME_ELR, 256
 .equ FRAME_SPSR, 264
 .equ FRAME_ESR, 272
 .equ FRAME_FAR, 280
+.equ FRAME_SP, 288
+// Size of .exception_stack in link.ld.
+.equ EXCEPTION_STACK_SIZE, 0x4000
 
 .macro unhandled index
     mov  x0, #\index
@@ -51,7 +53,28 @@ exception_vectors:
     unhandled 15
 
 sync_exception_entry:
+    // There is no stack to save a register on yet. x0 is parked in TPIDR_EL1,
+    // which nothing else uses, and exchanged with SP by three instructions
+    // that need no third register: afterwards SP is the top of the exception
+    // stack and x0 the interrupted SP.
+    msr  tpidr_el1, x0
+    adrp x0, __exception_stack_top
+    add  x0, x0, :lo12:__exception_stack_top
+    add  sp, sp, x0
+    sub  x0, sp, x0
+    sub  sp, sp, x0
+    // An exception taken on the exception stack itself (the handler or the
+    // report faulted) must not reuse it: the interrupted SP is within one
+    // stack size below the top, or in the guard page below that (the handler
+    // overflowed it). SP exactly at the bottom of the guard page is the empty
+    // boot stack, not an overflow.
+    sub  x0, sp, x0
+    cmp  x0, #(EXCEPTION_STACK_SIZE + 0x1000)
+    b.lo nested_exception_entry
+    sub  x0, sp, x0
     sub  sp, sp, #FRAME_SIZE
+    str  x0, [sp, #FRAME_SP]
+    mrs  x0, tpidr_el1
     stp  x0, x1, [sp, #0]
     stp  x2, x3, [sp, #16]
     stp  x4, x5, [sp, #32]
@@ -94,7 +117,6 @@ sync_exception_entry:
     msr  elr_el1, x1
     ldr  x0, [sp, #FRAME_SPSR]
     msr  spsr_el1, x0
-    ldp  x0, x1, [sp, #0]
     ldp  x2, x3, [sp, #16]
     ldp  x4, x5, [sp, #32]
     ldp  x6, x7, [sp, #48]
@@ -110,14 +132,24 @@ sync_exception_entry:
     ldp  x26, x27, [sp, #208]
     ldp  x28, x29, [sp, #224]
     ldr  x30, [sp, #240]
-    add  sp, sp, #FRAME_SIZE
+    // x0 and x1 are the last to come back, x0 through TPIDR_EL1, once SP is
+    // the interrupted one again.
+    ldr  x0, [sp, #0]
+    msr  tpidr_el1, x0
+    ldr  x1, [sp, #8]
+    ldr  x0, [sp, #FRAME_SP]
+    mov  sp, x0
+    mrs  x0, tpidr_el1
     eret
 
+nested_exception_entry:
+    mov  x0, #16
 unhandled_exception_entry:
     // The interrupted stack may be what faulted, and this path never returns,
-    // so start again from the top of the boot stack. x0 holds the entry index.
-    adrp x4, __stack_top
-    add  x4, x4, :lo12:__stack_top
+    // so start again from the top of the exception stack. x0 holds the entry
+    // index.
+    adrp x4, __exception_stack_top
+    add  x4, x4, :lo12:__exception_stack_top
     mov  sp, x4
 
     mrs  x1, esr_el1

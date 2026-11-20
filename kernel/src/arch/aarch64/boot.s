@@ -52,7 +52,29 @@ _start:
     // RW: lower levels are AArch64. HCE: hvc is enabled. Bits 5:4 are RES1.
     // NS: the kernel runs
     // in the non-secure world.
+    // TCR2En and SCTLR2En (bits 43 and 44): without them a write to TCR2_EL1
+    // or SCTLR2_EL1 from a lower level traps to EL3 (ADR 0026), and only where
+    // the registers exist (ID_AA64MMFR3_EL1) are the bits defined.
+    mrs  x4, S3_0_C0_C7_3
+    mov  x5, #0
+    ubfx x6, x4, #0, #4
+    cbz  x6, 50f
+    orr  x5, x5, #(1 << 43)
+50:
+    ubfx x6, x4, #4, #4
+    cbz  x6, 51f
+    orr  x5, x5, #(1 << 44)
+51:
+    // HXEn (bit 38) lets EL2 write HCRX_EL2, which the EL2 path below does only
+    // when it has an enable to set.
+    cbz  x5, 55f
+    mrs  x4, S3_0_C0_C7_1
+    ubfx x4, x4, #40, #4
+    cbz  x4, 55f
+    orr  x5, x5, #(1 << 38)
+55:
     mov  x0, #((1 << 10) | (1 << 8) | (3 << 4) | (1 << 0))
+    orr  x0, x0, x5
     msr  scr_el3, x0
     msr  cptr_el3, xzr              // FP and SIMD do not trap to EL3
     // HCR_EL2.RW resets to an unknown value, so when EL2 exists the kernel goes
@@ -78,6 +100,28 @@ _start:
     msr  sctlr_el2, x0
     mov  x0, #(1 << 31)             // HCR_EL2: RW only, EL1 is AArch64
     msr  hcr_el2, x0
+    // HCRX_EL2 (where ID_AA64MMFR1_EL1.HCX says it exists) has unknown reset
+    // bits, and its TCR2En and SCTLR2En (14 and 15) decide whether EL1 may
+    // write TCR2_EL1 and SCTLR2_EL1, which the code below does where they
+    // exist (ADR 0026): enable exactly those, and clear the rest.
+    mrs  x4, S3_0_C0_C7_1
+    ubfx x4, x4, #40, #4
+    cbz  x4, 52f
+    mrs  x4, S3_0_C0_C7_3
+    mov  x5, #0
+    ubfx x6, x4, #0, #4
+    cbz  x6, 53f
+    orr  x5, x5, #(1 << 14)
+53:
+    ubfx x6, x4, #4, #4
+    cbz  x6, 54f
+    orr  x5, x5, #(1 << 15)
+54:
+    // Nothing to enable: leave HCRX_EL2 alone, since writing it traps to EL3
+    // unless that level allows it.
+    cbz  x5, 52f
+    msr  S3_4_C1_C2_2, x5
+52:
     // Reset values are unknown: FP, SIMD, debug and trace accesses must not trap
     // to EL2, where no handler exists.
     mov  x0, #0x33ff                // CPTR_EL2: RES1 bits only
@@ -114,6 +158,34 @@ _start:
     // `ldr x, =symbol` its virtual one. Nothing here uses the stack or a
     // vector table: VBAR_EL1 is still whatever it was, so a fault in this stretch
     // goes to an unknown address (a hang, or the firmware's handler).
+
+    // Permission indirection and the other extensions of the translation
+    // registers (ADR 0026): where TCR2_EL1 and SCTLR2_EL1 exist their reset
+    // values are unknown, and a set TCR2_EL1.PIE would give the descriptors'
+    // AP and PXN bits another meaning. ID_AA64MMFR3_EL1 reads as zero where it
+    // does not exist, and writing a register the processor lacks is UNDEFINED,
+    // with no vector table to catch it: each is written only if its field says
+    // it exists (and a drop from EL3 or EL2 enabled the access, above). The
+    // registers are named by encoding, which every assembler accepts:
+    // ID_AA64MMFR3_EL1, TCR2_EL1 and SCTLR2_EL1. On the bootloader path the
+    // write happens with the firmware's map live: that map is built with the
+    // descriptors' AP and PXN bits in their plain meaning (ADR 0013), so
+    // clearing PIE leaves their reading as it was.
+    mrs  x0, S3_0_C0_C7_3
+    ubfx x1, x0, #0, #4             // TCRX
+    cbz  x1, 40f
+.if {SELFTEST_DIRTY_TCR2}
+    // Test build: stands for firmware that left TCR2_EL1.PIE set.
+    mov  x2, #(1 << 1)
+    msr  S3_0_C2_C0_3, x2
+.endif
+    msr  S3_0_C2_C0_3, xzr
+40:
+    ubfx x1, x0, #4, #4             // SCTLRX
+    cbz  x1, 41f
+    msr  S3_0_C1_C0_3, xzr
+41:
+    isb
 
     // The boot tables are written below, in memory whose cache state is
     // unknown on the direct path: invalidate their lines first, so that no
@@ -195,9 +267,9 @@ _start:
 
     // The image's pages, at level 3: 512 entries cover 2 MiB from the start of
     // the image (link.ld checks that it fits). Text is read and execute,
-    // .rodata read only, .data, .bss, the stack and the rest of the 2 MiB
+    // .rodata read only, .data, .bss, the stacks and the rest of the 2 MiB
     // (RAM the allocator may give to the tables of phase B) read and write, and
-    // the guard page below the stack stays empty. Nothing is writable and
+    // the guard pages below the two stacks stay empty. Nothing is writable and
     // executable.
     adrp x9, __image_start
     adrp x10, boot_l3
@@ -205,6 +277,8 @@ _start:
     adrp x12, __rodata_end
     adrp x13, __data_end
     adrp x14, __stack_bottom
+    adrp x15, __stack_top
+    adrp x16, __exception_stack_bottom
     mov  x1, #0
 8:
     add  x2, x9, x1, lsl #12
@@ -216,8 +290,12 @@ _start:
     cmp  x2, x13
     b.lo 12f                        // .data and .bss
     cmp  x2, x14
-    b.lo 13f                        // guard page
-    b    12f                        // stack, and the rest of the 2 MiB
+    b.lo 13f                        // guard page below the stack
+    cmp  x2, x15
+    b.lo 12f                        // stack
+    cmp  x2, x16
+    b.lo 13f                        // guard page below the exception stack
+    b    12f                        // exception stack, and the rest of the 2 MiB
 10:
     orr  x3, x2, x26
     orr  x3, x3, #{READ_ONLY}
