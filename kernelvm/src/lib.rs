@@ -32,6 +32,14 @@ pub const HEAP_BASE: u64 = KERNEL_OFFSET + (448 << 30);
 /// The most the heap can grow to: 1 GiB.
 pub const HEAP_WINDOW: u64 = 1 << 30;
 
+/// The frames mapping `pages` consecutive pages inside the heap window takes:
+/// the pages themselves, one level 3 table per 512 of them, and up to three more
+/// tables where the range starts and ends (the window is one level 1 entry, so at
+/// most one new level 2 table).
+pub const fn frames_to_map(pages: usize) -> usize {
+    pages.saturating_add(pages.div_ceil(512) + 3)
+}
+
 pub const fn virtual_of(physical: u64) -> u64 {
     physical.wrapping_add(KERNEL_OFFSET)
 }

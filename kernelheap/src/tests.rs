@@ -397,6 +397,8 @@ fn aligned_blocks_behind_a_small_one_leave_no_residue() {
     assert_eq!(heap.free_blocks(), 1);
 }
 
+/// The frames needed to map `pages` pages: the same formula the kernel uses,
+/// which `kernelvm` checks against the tables a real mapping takes.
 fn tables(pages: usize) -> usize {
     pages + pages.div_ceil(512) + 3
 }

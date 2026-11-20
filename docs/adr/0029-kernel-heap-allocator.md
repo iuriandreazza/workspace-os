@@ -79,9 +79,12 @@ would keep.
   per 512 pages, plus up to three at the ends), so a request that cannot be
   served takes no frame.
 - A request takes the pages it needs; the "at least 16 pages" extra is taken
-  only from frames that stay above a reserve of 64 for the rest of the kernel
-  (page tables, stacks). The rule is `kernelheap::growth_pages`, tested on the
-  host.
+  only from frames above a reserve of 64. The reserve is a growth heuristic, not
+  a promise: a request's own pages ignore it, and after `heap::init` the frame
+  allocator is private to the heap, so K8, which needs frames for page tables,
+  must add an accessor (and decide the reserve then). The rule is
+  `kernelheap::growth_pages`, tested on the host; the table-frame formula is
+  `kernelvm::frames_to_map`, tested against the tables a real mapping takes.
 - Growth stops on the first thing that fails: no frame (`physmem` empty), no
   table frame (`MapError::OutOfFrames`), or the window is full. Pages mapped
   before the failure stay and are used. If the request still does not fit, it
@@ -156,8 +159,9 @@ lock is the only place that changes.
 - `alloc` becomes available; `kernel` gets `extern crate alloc` and a
   `#[global_allocator]`. Nothing allocates before `heap::init`; a request before
   it is refused and panics with the allocator's message.
-- The frame allocator moves behind the heap's lock after `mmu::init`, because
-  growth needs it. The boot summary is printed just before that, so it still
+- **Amends ADR 0012**, which says the frame allocator is an owned value, not a
+  global: after `mmu::init` it moves behind the heap's lock, because growth needs
+  it. Until K8 adds an accessor, the heap is its only user. The boot summary is printed just before that, so it still
   shows the frames free before the heap took any; the heap's own lines report
   its pages.
 - Boot cost: the stress test is bounded (it does not scale with RAM); it needs
@@ -176,3 +180,5 @@ lock is the only place that changes.
   the heap window.
 - The boot self-test's growth is permanent too: on a machine with 2048 free
   frames or more it leaves about 440 frames (1.7 MiB) mapped as free heap.
+- Growth runs a mapper with about 4 KiB of stack in the allocator's path: fine
+  on the boot stack, a constraint on the stacks K7 gives its threads.

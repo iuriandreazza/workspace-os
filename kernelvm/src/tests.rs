@@ -968,3 +968,34 @@ fn the_walked_descriptors_are_the_ones_the_mapping_wrote() {
     assert!(nothing[0].is_some() && nothing[2].is_none());
     assert_eq!(walked_descriptors(&arena, root, 1 << 60), [None; 3]);
 }
+
+#[test]
+fn mapping_pages_in_the_heap_window_takes_no_more_tables_than_the_formula_says() {
+    for (start, pages) in [
+        (0usize, 1usize),
+        (511, 2),
+        (0, 512),
+        (1, 512),
+        (300, 1000),
+        (0, 5000),
+    ] {
+        let mut arena = Arena::new(10_000);
+        let root = upper(&mut arena);
+        let before = arena.tables.len();
+        let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+        mapper
+            .map_range(
+                HEAP_BASE + start as u64 * PAGE_SIZE,
+                0x8000_0000,
+                pages as u64 * PAGE_SIZE,
+                Permissions::ReadWrite,
+            )
+            .unwrap();
+        let tables = arena.tables.len() - before;
+        assert!(
+            tables + pages <= frames_to_map(pages),
+            "{pages} pages at {start} took {tables} tables, formula allows {}",
+            frames_to_map(pages) - pages
+        );
+    }
+}

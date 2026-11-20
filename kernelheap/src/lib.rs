@@ -76,8 +76,8 @@ pub enum ExtendError {
 /// How many pages the heap should add to serve a request that needs `required`
 /// more pages, or `None` if it cannot (ADR 0029).
 ///
-/// The request is refused, before anything is mapped, when the window has less
-/// than `room` pages left or the frames, counting those the page tables take
+/// `room` is how many pages the window has left. The request is refused, before
+/// anything is mapped, when it needs more than that or the frames, counting those the page tables take
 /// (`frames_for` pages), do not cover it: a refused request must not drain the
 /// frame allocator on its way to failing. Beyond what the request needs the
 /// heap adds up to `minimum` pages in all, so a run of small requests does not

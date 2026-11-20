@@ -523,6 +523,9 @@ pub fn verify(mut out: impl Write, board: &Board) {
 /// the new descriptors in memory it can see, so the lines of every descriptor
 /// written are cleaned and then a barrier and `isb` make the pages usable.
 pub fn grow_heap(frames: &mut FrameAllocator, at: u64, pages: usize) -> usize {
+    // `init` read the memory types and stopped the boot if they were missing,
+    // so this cannot fail on a kernel that got here; zero would be reported as
+    // a heap with no frames.
     let Ok(types) = memory_types() else {
         return 0;
     };

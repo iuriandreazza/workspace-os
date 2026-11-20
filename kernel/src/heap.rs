@@ -23,12 +23,6 @@ const MIN_GROWTH_PAGES: usize = 16;
 const RESERVED_FRAMES: usize = 64;
 const WINDOW_PAGES: usize = (HEAP_WINDOW / PAGE_SIZE) as usize;
 
-/// The frames mapping `pages` pages takes: the pages, one level 3 table per 512
-/// of them, and up to three more tables where the range starts and ends.
-fn frames_to_map(pages: usize) -> usize {
-    pages.saturating_add(pages.div_ceil(512) + 3)
-}
-
 struct State {
     heap: Heap,
     frames: FrameAllocator<'static>,
@@ -164,7 +158,7 @@ impl State {
             RESERVED_FRAMES,
             self.frames.free_frames(),
             WINDOW_PAGES - self.pages,
-            frames_to_map,
+            kernelvm::frames_to_map,
         ) else {
             return false;
         };

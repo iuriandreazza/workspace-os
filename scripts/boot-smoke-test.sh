@@ -1380,9 +1380,9 @@ check_heap_exhaustion() {
     read -r mapped_pages frames_left <<< "$line"
     [[ -n "$mapped_pages" ]] || fail "heap exhaustion detail not found"
     if [[ "$cause" == "no frame is left" ]]; then
-        # A block of 1 MiB needs 256 frames, one level 3 table and up to three more
-        # tables at the ends: 260 (the kernel's growth guard).
-        [[ "$frames_left" -lt 260 ]] || fail "the heap refused with $frames_left frames left, enough for the request and its tables"
+        # A block of 1 MiB aligned to a page needs up to 257 frames, one level 3
+        # table and up to three more tables at the ends: 261 (the growth guard).
+        [[ "$frames_left" -lt 261 ]] || fail "the heap refused with $frames_left frames left, enough for the request and its tables"
     else
         [[ "$mapped_pages" -gt $(( (1 << 18) - 256 )) && "$mapped_pages" -le $((1 << 18)) ]] \
             || fail "the window refused at $mapped_pages pages, expected within a block of 262144"
