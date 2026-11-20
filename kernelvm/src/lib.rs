@@ -25,6 +25,13 @@ pub const ADDRESS_BITS: u32 = 39;
 /// (the boot smoke test compares them).
 pub const KERNEL_OFFSET: u64 = 0xffff_ff80_0000_0000;
 
+/// Where the kernel heap lives (ADR 0029): 448 GiB into the upper half, far
+/// above the image, in a window of its own. Only heap pages are ever mapped in
+/// it, so the pages around the mapped part are the guard pages.
+pub const HEAP_BASE: u64 = KERNEL_OFFSET + (448 << 30);
+/// The most the heap can grow to: 1 GiB.
+pub const HEAP_WINDOW: u64 = 1 << 30;
+
 pub const fn virtual_of(physical: u64) -> u64 {
     physical.wrapping_add(KERNEL_OFFSET)
 }
@@ -240,6 +247,16 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
         })
     }
 
+    /// Adds to tables that already exist, rooted at `root`, instead of making
+    /// new ones: the way the kernel grows the live upper half after the switch.
+    pub fn resume(memory: &'a mut M, types: MemoryTypes, root: u64) -> Self {
+        Self {
+            memory,
+            types,
+            root,
+        }
+    }
+
     /// The physical address of the level 1 table, the value for `TTBRn_EL1`.
     pub fn root(&self) -> u64 {
         self.root
@@ -453,6 +470,31 @@ pub fn translate<M: TableRead>(memory: &M, root: u64, virtual_address: u64) -> O
         }
     }
     None
+}
+
+/// The physical addresses of the descriptors a walk to `virtual_address` reads,
+/// one per level down to the leaf (or to the first empty one). The kernel
+/// cleans these lines to the point of coherency after it adds a mapping.
+pub fn walked_descriptors<M: TableRead>(
+    memory: &M,
+    root: u64,
+    virtual_address: u64,
+) -> [Option<u64>; 3] {
+    let mut found = [None; 3];
+    if !is_canonical(virtual_address) {
+        return found;
+    }
+    let mut table = root;
+    for level in 1..=3u8 {
+        let index = level_index(virtual_address, level);
+        found[usize::from(level) - 1] = Some(table + 8 * index as u64);
+        let descriptor = memory.table(table).0[index];
+        if descriptor & 3 != 3 || level == 3 {
+            break;
+        }
+        table = descriptor & ADDRESS_MASK;
+    }
+    found
 }
 
 /// What a root's leaves must look like, beyond the permissions every leaf has

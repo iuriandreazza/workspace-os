@@ -156,17 +156,22 @@ impl FrameTables<'_, '_> {
         let line_size = data_cache_line_size();
         for &table in &self.owned[..self.count] {
             for line in (table..table + kernelvm::PAGE_SIZE).step_by(line_size) {
-                // SAFETY: cleaning and invalidating a line of RAM the kernel
-                // owns changes no data. The invalidate matters when the
-                // walker's attributes are cacheable and the kernel's own
-                // writes were not (the direct path runs with `C` clear), so
-                // a stale line must not survive.
-                unsafe { asm!("dc civac, {}", in(reg) line, options(nostack, preserves_flags)) };
+                clean_and_invalidate(line);
             }
         }
         // SAFETY: a barrier.
         unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
     }
+}
+
+/// Cleans and invalidates the line holding `address` to the point of
+/// coherency. It changes no data; the invalidate matters when the walker's
+/// attributes are cacheable and the kernel's own writes were not (the direct
+/// path runs with `C` clear), so a stale line must not survive.
+fn clean_and_invalidate(address: u64) {
+    // SAFETY: cleaning and invalidating a line of RAM the kernel owns changes
+    // no data.
+    unsafe { asm!("dc civac, {}", in(reg) address, options(nostack, preserves_flags)) };
 }
 
 /// The smallest data cache line, in bytes: `CTR_EL0.DminLine` is its log2 in
@@ -504,6 +509,71 @@ pub fn verify(mut out: impl Write, board: &Board) {
         out,
         "mmu: write xor execute holds: no page is writable and executable, WXN is set"
     );
+}
+
+// ---- The heap's pages (ADR 0029) -----------------------------------------
+
+/// Maps up to `pages` pages from `at` in the live upper half, each to a frame
+/// of `frames`, read and write and never executed, and returns how many it
+/// mapped. It stops at the first frame or table frame it cannot get, and the
+/// pages mapped before stay mapped.
+///
+/// The slots are empty before, so nothing is replaced: no break-before-make and
+/// no TLB invalidation (an empty entry is not cached). What the walker needs is
+/// the new descriptors in memory it can see, so the lines of every descriptor
+/// written are cleaned and then a barrier and `isb` make the pages usable.
+pub fn grow_heap(frames: &mut FrameAllocator, at: u64, pages: usize) -> usize {
+    let Ok(types) = memory_types() else {
+        return 0;
+    };
+    let root = read_ttbr1();
+    let mut tables = FrameTables {
+        frames,
+        owned: [0; MAX_TABLES],
+        count: 0,
+    };
+    let mut mapped = 0;
+    while mapped < pages {
+        let Some(frame) = tables.frames.alloc() else {
+            break;
+        };
+        let page = at + mapped as u64 * kernelvm::PAGE_SIZE;
+        let result = Mapper::resume(&mut tables, types, root).map_range(
+            page,
+            frame,
+            kernelvm::PAGE_SIZE,
+            Permissions::ReadWrite,
+        );
+        if result.is_err() {
+            // The frame was never mapped, so giving it back is sound.
+            let _ = tables.frames.free(frame);
+            break;
+        }
+        mapped += 1;
+    }
+    tables.publish();
+    for page in 0..mapped {
+        let page = at + page as u64 * kernelvm::PAGE_SIZE;
+        for descriptor in kernelvm::walked_descriptors(&PhysicalTables, root, page)
+            .into_iter()
+            .flatten()
+        {
+            clean_and_invalidate(descriptor);
+        }
+    }
+    // SAFETY: barriers: the descriptors are visible to the walker before the
+    // first use of the new pages.
+    unsafe { asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
+    mapped
+}
+
+/// What the live upper half says about the page at `virtual_address`: the frame
+/// it maps and its permissions (`None` for a combination the kernel never
+/// builds, such as writable and executable), or nothing if it is unmapped.
+pub fn upper_page(virtual_address: u64) -> Option<(u64, Option<Permissions>)> {
+    let types = memory_types().ok()?;
+    let leaf = kernelvm::translate(&PhysicalTables, read_ttbr1(), virtual_address)?;
+    Some((leaf.output, leaf.permissions(types)))
 }
 
 // ---- Boots that must end in a fault --------------------------------------

@@ -388,6 +388,34 @@ check_handoff_read_again() {
         || fail "the hand-over digest covers $bytes bytes, fewer than the $((blob_end - blob_start)) of the device tree"
 }
 
+# check_heap: the kernel heap (ADR 0029) ran its stress test and reported it:
+# many allocations, growth past the first pages, everything freed and merged
+# back into one block, the pages it mapped read back from the live tables as
+# read write and never executed, invalid requests refused and a double free
+# refused. The heap lives in a window of its own in the upper half, far above
+# the image.
+check_heap() {
+    local stress allocations size_kib pages blocks mapping mapped base
+    stress="$(plain_log | sed -n 's/^  kernel  .\{4\}  heap: stress: \([0-9]*\) allocations, [0-9]* KiB live at the peak, grown to \([0-9]*\) KiB in \([0-9]*\) pages, all freed, \([0-9]*\) free block$/\1 \2 \3 \4/p')"
+    [[ "$(echo "$stress" | wc -l)" -eq 1 && -n "$stress" ]] || fail "heap stress report not found exactly once"
+    read -r allocations size_kib pages blocks <<< "$stress"
+    [[ "$allocations" -ge 1000 ]] || fail "the heap stress test made only $allocations allocations"
+    # The first mapping is 16 pages: more means the heap grew on demand.
+    [[ "$pages" -gt 16 && "$size_kib" -eq $((pages * 4)) ]] \
+        || fail "the heap holds $size_kib KiB in $pages pages, expected growth past 16 pages at 4 KiB each"
+    [[ "$blocks" -eq 1 ]] || fail "the freed heap holds $blocks free blocks, expected them merged into 1"
+    mapping="$(plain_log | sed -n 's/^  kernel  .\{4\}  heap: \([0-9]*\) pages mapped read write and never executed at \(0x[0-9a-f]*\), the pages around them unmapped$/\1 \2/p')"
+    [[ "$(echo "$mapping" | wc -l)" -eq 1 && -n "$mapping" ]] || fail "heap mapping report not found exactly once"
+    read -r mapped base <<< "$mapping"
+    [[ "$mapped" -eq "$pages" ]] || fail "the heap mapped $mapped pages, the stress test grew it to $pages"
+    # In the upper half, on a gigabyte, above the image's gigabyte.
+    [[ $((base - KERNEL_OFFSET)) -ge $((2 << 30)) && $((base % (1 << 30))) -eq 0 ]] \
+        || fail "the heap starts at $base, expected a gigabyte boundary well above the image at $KERNEL_OFFSET"
+    expect_once "heap: refused zero size, alignment 8192, more bytes than frames and 2^50 bytes, and nothing changed" "refusal of invalid heap requests"
+    expect_once "heap: blocks aligned to 16, 64, 256 and 4096 bytes" "alignment of heap blocks"
+    expect_once "heap: double free refused" "heap double free refusal"
+}
+
 # check_boot NAME QEMU_IMAGE_ARGS...
 check_boot() {
     local expected_memory
@@ -410,6 +438,7 @@ check_boot() {
     expect_once "$RESUME_MARKER" "resume after the breakpoint"
     check_frames "$(memory_mib_of "$@")"
     check_mmu "$(memory_mib_of "$@")"
+    check_heap
 
     stop_qemu
     echo "PASS ($boot_name): kernel booted and stayed up"
@@ -743,6 +772,7 @@ check_uefi_boot() {
     expect_once "frames: returned $free, $free free again" "return of every frame"
     expect_once "frames: double free refused" "double free refusal"
     check_mmu
+    check_heap
 
     BOOT_TIMEOUT_SECONDS=10
     stop_qemu
@@ -1318,6 +1348,59 @@ for kind in write execute-data execute-rodata stack-overflow; do
 done
 FAULT_ALSO=""
 FAULT_ABSENT=""
+
+# The heap runs out (ADR 0029): a kernel built to take 1 MiB blocks until the
+# heap refuses must report the refusal and its cause, free everything, and find
+# the heap usable again, with no panic. On a machine smaller than the heap's
+# window the frames run out first; on a bigger one the window fills first. The
+# amount taken must be close to the limit, or a heap that refused early would
+# pass.
+heap_elf="$work_dir/heap-exhaustion.elf"
+build_with_feature selftest-heap-exhaustion "$heap_elf"
+cargo build --quiet --target-dir "$TARGET_DIR"
+heap_image="$work_dir/heap-exhaustion.img"
+python3 -I scripts/make-disk-image.py "$heap_image" target/aarch64-unknown-uefi/debug/bootloader.efi "$heap_elf" > /dev/null
+
+# check_heap_exhaustion NAME CAUSE MIN_MIB MAX_MIB QEMU_ARGS...
+check_heap_exhaustion() {
+    local name="$1" cause="$2" min="$3" max="$4" line taken mapped_pages frames_left
+    shift 4
+    start_qemu "$name" "$@"
+    wait_for_line "heap: usable again after freeing everything, 1 free block"
+    wait_for_line "$RESUME_MARKER"
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  heap: exhausted after \([0-9]*\) MiB in blocks of 1 MiB: heap exhausted, [0-9]* bytes needed; \(.*\)$/\1|\2/p')"
+    [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "heap exhaustion report not found exactly once"
+    taken="${line%%|*}"
+    [[ "${line#*|}" == "$cause" ]] || fail "the heap ran out because '${line#*|}', expected '$cause'"
+    [[ "$taken" -ge "$min" && "$taken" -le "$max" ]] \
+        || fail "the heap gave $taken MiB before refusing, expected between $min and $max"
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  heap: [0-9]* KiB mapped in \([0-9]*\) pages, \([0-9]*\) frames left$/\1 \2/p')"
+    read -r mapped_pages frames_left <<< "$line"
+    [[ -n "$mapped_pages" ]] || fail "heap exhaustion detail not found"
+    if [[ "$cause" == "no frame is left" ]]; then
+        [[ "$frames_left" -lt 256 ]] || fail "the heap refused with $frames_left frames left, enough for the request"
+    else
+        [[ "$mapped_pages" -gt $(( (1 << 18) - 256 )) && "$mapped_pages" -le $((1 << 18)) ]] \
+            || fail "the window refused at $mapped_pages pages, expected within a block of 262144"
+    fi
+    if grep -qF "$PANIC_MARKER" "$serial_log"; then
+        fail "kernel panicked while the heap ran out"
+    fi
+    check_heap
+    stop_qemu
+    echo "PASS ($boot_name): the heap refused after $taken MiB ($cause) and worked again"
+}
+physical_exhaustion="no frame is left"
+check_heap_exhaustion heap-exhaustion "$physical_exhaustion" 100 128 -kernel "$heap_elf"
+check_heap_exhaustion heap-exhaustion-el2 "$physical_exhaustion" 100 128 -machine virtualization=on -kernel "$heap_elf"
+BOOT_TIMEOUT_SECONDS=60
+check_heap_exhaustion heap-exhaustion-window "the window is full" 1000 1024 -m 2048M -kernel "$heap_elf"
+BOOT_TIMEOUT_SECONDS=$UEFI_BOOT_TIMEOUT_SECONDS
+check_heap_exhaustion uefi-heap-exhaustion "$physical_exhaustion" 150 256 -machine virt,acpi=off -m 256M -bios "$uefi_firmware" \
+    -drive "file=$heap_image,format=raw,if=virtio"
+check_heap_exhaustion uefi-el2-heap-exhaustion "$physical_exhaustion" 150 256 -machine virt,acpi=off,virtualization=on -m 256M -bios "$uefi_firmware" \
+    -drive "file=$heap_image,format=raw,if=virtio"
+BOOT_TIMEOUT_SECONDS=10
 
 # Permission indirection (ADR 0026): `-cpu max` has FEAT_S1PIE, so the kernel
 # writes and then reads back TCR2_EL1 and SCTLR2_EL1. QEMU resets them to zero,

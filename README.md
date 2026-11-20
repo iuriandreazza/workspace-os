@@ -19,9 +19,11 @@ tree and manages physical memory in 4 KiB frames. A UEFI bootloader loads it fro
 disk image (QEMU and VirtualBox on Apple silicon) and hands over the memory map.
 
 The kernel runs in the upper half of the address space on its own page tables,
-with no page both writable and executable (ADR 0019, `kernelvm/`).
+with no page both writable and executable (ADR 0019, `kernelvm/`). It has a heap
+(`Box`, `Vec`) that grows on demand in a window of its own (ADR 0029,
+`kernelheap/`).
 
-Next milestone: the kernel heap, then interrupts. The full plan is in [docs/roadmap.md](docs/roadmap.md).
+Next milestone: interrupts. The full plan is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Requirements
 
@@ -63,6 +65,9 @@ passing.
 | `kernel/src/memory_image.rs` | Boot-time self-test of `.bss` and `.data` |
 | `kernel/src/memory.rs` | Builds the frame allocator from the device tree and the kernel layout; boot-time self-test |
 | `physmem/` | Allocation-free physical frame allocator with host unit tests |
+| `kernelvm/` | The kernel's page tables: descriptors, permissions, mapping and auditing, with host unit tests |
+| `kernel/src/heap.rs` | The `#[global_allocator]`: grows the heap from frames, maps its pages, self-test |
+| `kernelheap/` | Allocation-free heap allocator (free list, first fit) with host unit tests |
 | `kernel/src/board.rs` | Reads memory and UART from the device tree; QEMU `virt` fallback location of the blob |
 | `devicetree/` | Minimal, allocation-free device tree reader with host unit tests |
 | `kernel/src/drivers/` | Device drivers that live in the kernel for now |
@@ -84,6 +89,7 @@ passing.
 - [ADR 0010: Own minimal device tree reader, with no allocation](docs/adr/0010-own-device-tree-reader.md)
 - [ADR 0013: Boot handoff structure between the bootloader and the kernel](docs/adr/0013-boot-handoff-structure.md)
 - [ADR 0017: MPL-2.0 dependencies in a GPL-2.0-only system](docs/adr/0017-mpl2-dependencies.md)
+- [ADR 0029: Kernel heap: a first-fit free list in its own window](docs/adr/0029-kernel-heap-allocator.md)
 
 ## Licence
 
