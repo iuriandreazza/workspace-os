@@ -157,13 +157,29 @@ fn session_with_input(
     profile: Option<&str>,
     input: &[u8],
 ) -> Run {
+    // The S8a file, still read (ADR 0028).
+    let files: Vec<(&str, &str)> = profile
+        .map(|text| ("voice-profile", text))
+        .into_iter()
+        .collect();
+    session_with_config(server, name, extra, &files, input)
+}
+
+/// A session whose home holds these files in `.config/workspace-os`.
+fn session_with_config(
+    server: &Server,
+    name: &str,
+    extra: &[&str],
+    files: &[(&str, &str)],
+    input: &[u8],
+) -> Run {
     let home =
         std::env::temp_dir().join(format!("intent-shell-reply-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(home.join("Documents")).unwrap();
     fs::write(home.join("keep.txt"), "x").unwrap();
-    if let Some(profile) = profile {
-        write_profile(&home, profile);
+    for (file, text) in files {
+        write_config(&home, file, text);
     }
     // Outside the home, whose listing the session prints: the log grows with a reply.
     let log_dir = std::env::temp_dir().join(format!(
@@ -197,10 +213,10 @@ fn session_with_input(
     run
 }
 
-fn write_profile(home: &Path, text: &str) {
+fn write_config(home: &Path, file: &str, text: &str) {
     let dir = home.join(".config/workspace-os");
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("voice-profile"), text).unwrap();
+    fs::write(dir.join(file), text).unwrap();
 }
 
 fn events(run: &Run, name: &str) -> Vec<serde_json::Value> {
@@ -365,4 +381,117 @@ fn a_line_that_is_not_text_at_a_question_is_not_the_end_of_the_input() {
     );
     assert_eq!(server.reply_requests().len(), 2, "{}", run.stdout);
     assert!(run.home.join("keep.txt").exists());
+}
+
+const SOUL: &str = "format: 1\npreset: formal-discreet\nname: Orion\nlanguages: en, pt-BR\n";
+
+#[test]
+fn the_soul_and_the_personality_files_shape_the_prompt_and_change_nothing_else() {
+    let server = Server::start();
+    server.says(Reply::Text("ok".to_owned()));
+    // The same home layout (a `.config` folder is listed too), a SOUL and no personality.
+    let plain = session_with_config(
+        &server,
+        "soul-none",
+        &[],
+        &[("soul", SOUL)],
+        b"list my home\n",
+    );
+    let shaped = session_with_config(
+        &server,
+        "soul-both",
+        &[],
+        &[
+            ("soul", SOUL),
+            (
+                "personality",
+                "format: 1\nname: Dex\ndetail: minimal\nlanguage: pt-BR\n",
+            ),
+        ],
+        b"list my home\n",
+    );
+    let prompt = &server.reply_requests()[1];
+    for wanted in [
+        "Formal and discreet",
+        "Your name is \\\"Orion\\\"",
+        "calls you \\\"Dex\\\"",
+        "Detail: minimal",
+        "pt-BR",
+    ] {
+        assert!(prompt.contains(wanted), "{wanted}: {prompt}");
+    }
+    assert_eq!(without_reply(&plain.stdout), without_reply(&shaped.stdout));
+    assert_eq!(events(&shaped, "personality")[0]["source"], "file");
+    assert_eq!(events(&shaped, "personality")[0]["nickname"], "Dex");
+    // The SOUL's event records the SOUL, not what the personality added.
+    assert!(events(&shaped, "voice_profile")[0]["nickname"].is_null());
+    assert_eq!(
+        events(&shaped, "voice_profile")[0]["language"],
+        serde_json::Value::Null
+    );
+    assert!(shaped.stderr.is_empty(), "{}", shaped.stderr);
+}
+
+#[test]
+fn a_personality_at_the_default_path_that_contradicts_the_soul_is_dropped_with_the_field_and_the_reason()
+ {
+    let server = Server::start();
+    server.says(Reply::Text("ok".to_owned()));
+    let run = session_with_config(
+        &server,
+        "soul-contradiction",
+        &[],
+        &[
+            ("soul", SOUL),
+            ("personality", "format: 1\nhumour: marked\nname: Dex\n"),
+        ],
+        b"list my home\n",
+    );
+    assert!(
+        run.stderr
+            .contains("humour: marked is outside the SOUL's range none")
+            && run.stderr.contains("using the SOUL alone"),
+        "{}",
+        run.stderr
+    );
+    let prompt = &server.reply_requests()[0];
+    assert!(
+        prompt.contains("Humour: none") && !prompt.contains("Dex"),
+        "{prompt}"
+    );
+    assert_eq!(
+        events(&run, "personality")[0]["source"],
+        "default_after_problem"
+    );
+}
+
+#[test]
+fn a_personality_the_person_names_that_contradicts_the_soul_stops_the_shell() {
+    let server = Server::start();
+    let home = std::env::temp_dir().join(format!(
+        "intent-shell-personality-named-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    write_config(&home, "soul", SOUL);
+    let personality = home.join("p");
+    fs::write(&personality, "format: 1\nlanguage: fr\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_intent-shell"))
+        .args(["--model", &server.address, "--plain", "--personality"])
+        .arg(&personality)
+        .arg("--log")
+        .arg(home.join("d.jsonl"))
+        .env("HOME", &home)
+        .env("TERM", "dumb")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("language: fr is not among the SOUL's languages en, pt-BR"),
+        "{stderr}"
+    );
 }

@@ -21,6 +21,7 @@ pub mod resolve;
 pub mod screen;
 pub mod session;
 pub mod setup;
+pub mod soul;
 
 #[cfg(feature = "tui")]
 pub mod tui;
@@ -39,6 +40,9 @@ mod reply_tests;
 
 #[cfg(test)]
 mod resolution_tests;
+
+#[cfg(test)]
+mod soul_tests;
 
 #[cfg(test)]
 mod directories_tests;

@@ -3,11 +3,13 @@ title: "ADR 0021: The voice of the answers, written by the model from the SOUL"
 type: adr
 status: accepted
 created: 2026-11-16
-updated: 2026-11-16
+updated: 2026-11-20
 tags: [shell, soul, persona, model, ux]
 ---
 
 # ADR 0021: The voice of the answers, written by the model from the SOUL
+
+> Section 3 (what a SOUL is, and the preset file) is superseded by ADR 0028, which defines the SOUL file and the personality file. Everything else stands.
 
 ## Context
 

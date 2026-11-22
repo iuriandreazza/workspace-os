@@ -16,10 +16,10 @@ use intent_shell::log::JsonlLog;
 use intent_shell::model::LlamaPlanner;
 use intent_shell::plain;
 use intent_shell::ports::{DecisionLog, User};
-use intent_shell::reply::{Profile, Source, load_profile};
 use intent_shell::setup::Setup;
+use intent_shell::soul::{self, Persona, Source};
 
-const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--voice-profile FILE]";
+const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--soul FILE] [--personality FILE]";
 
 struct Options {
     /// `None` is the deterministic shell: no model, lines are commands (ADR 0022).
@@ -30,8 +30,9 @@ struct Options {
     transcript: Option<PathBuf>,
     /// No replies from the model after a result (ADR 0021).
     no_reply: bool,
-    /// The voice profile file, and whether the person named it.
-    voice_profile: (PathBuf, bool),
+    /// The SOUL file and the personality file, and whether the person named each.
+    soul: (PathBuf, bool),
+    personality: (PathBuf, bool),
 }
 
 /// The value of a flag. One that looks like a flag is not taken for it, so
@@ -43,6 +44,7 @@ fn value(args: &mut impl Iterator<Item = String>) -> Result<String, String> {
 }
 
 fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Options, String> {
+    let config = PathBuf::from(home).join(".config/workspace-os");
     let mut options = Options {
         model: Some("127.0.0.1:8089".to_owned()),
         log: PathBuf::from(home).join(".local/state/workspace-os/intent-shell/decisions.jsonl"),
@@ -50,10 +52,8 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
         plain: false,
         transcript: None,
         no_reply: false,
-        voice_profile: (
-            PathBuf::from(home).join(".config/workspace-os/voice-profile"),
-            false,
-        ),
+        soul: (config.join("soul"), false),
+        personality: (config.join("personality"), false),
     };
     let mut args = args;
     let (mut chose_model, mut chose_none) = (false, false);
@@ -71,7 +71,9 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
             "--administrator" => options.administrator = true,
             "--plain" => options.plain = true,
             "--no-reply" => options.no_reply = true,
-            "--voice-profile" => options.voice_profile = (PathBuf::from(value(&mut args)?), true),
+            // The S8a name of the SOUL file, kept so nothing that used it breaks (ADR 0028).
+            "--soul" | "--voice-profile" => options.soul = (PathBuf::from(value(&mut args)?), true),
+            "--personality" => options.personality = (PathBuf::from(value(&mut args)?), true),
             "--transcript" => options.transcript = Some(PathBuf::from(value(&mut args)?)),
             _ => return Err(USAGE.to_owned()),
         }
@@ -104,28 +106,63 @@ fn main() {
     }
 }
 
-/// The profile of the replies, or `None` when there are none: turned off, or
-/// no model to write them. A profile file that cannot be used is said once, on
-/// the error output, and the default is used (ADR 0021).
+/// The SOUL file: the one named, else `soul`, else the S8a `voice-profile`
+/// beside it when that is what exists (ADR 0028).
+fn soul_path(options: &Options) -> PathBuf {
+    let (path, named) = &options.soul;
+    let legacy = path.with_file_name("voice-profile");
+    // A dangling link is a `soul` that is there and broken, not an absent one.
+    if *named || path.symlink_metadata().is_ok() || !legacy.exists() {
+        path.clone()
+    } else {
+        legacy
+    }
+}
+
+/// The persona of the replies, or `None` when there are none: turned off, or
+/// no model to write them. A SOUL or a personality that cannot be used is said
+/// once, on the error output, and logged (ADR 0021, ADR 0028). Neither file is
+/// read when there are no replies.
 fn voice_of(
     options: &Options,
     log: &mut dyn DecisionLog,
-) -> Result<(Option<Profile>, Option<String>), String> {
+) -> Result<(Option<Persona>, Option<String>), String> {
     if options.no_reply || options.model.is_none() {
         return Ok((None, None));
     }
-    let (profile, source) = load_profile(&options.voice_profile.0, options.voice_profile.1)?;
-    let (how, problem) = match &source {
-        Source::Default => ("default", None),
-        Source::File => ("file", None),
-        Source::DefaultAfterProblem(problem) => ("default_after_problem", Some(problem)),
-    };
-    if let Some(problem) = problem {
+    let soul_file = soul_path(options);
+    let loaded = soul::load(
+        (&soul_file, options.soul.1),
+        (&options.personality.0, options.personality.1),
+    )?;
+    let mut problems = Vec::new();
+    for (event, source) in [
+        ("voice_profile", &loaded.soul),
+        ("personality", &loaded.personality),
+    ] {
+        let (how, problem) = match source {
+            Source::Default => ("default", None),
+            Source::File => ("file", None),
+            Source::DefaultAfterProblem(problem) => ("default_after_problem", Some(problem)),
+        };
+        problems.extend(problem.cloned());
+        let persona = if event == "voice_profile" {
+            &loaded.soul_persona
+        } else {
+            &loaded.persona
+        };
+        let mut recorded = persona.describe();
+        recorded["event"] = json!(event);
+        recorded["source"] = json!(how);
+        recorded["problem"] = json!(problem);
+        log.record(recorded)
+            .map_err(|e| format!("cannot write the decision log: {e}"))?;
+    }
+    for problem in &problems {
         eprintln!("{problem}");
     }
-    log.record(json!({"event": "voice_profile", "profile": profile.id(), "source": how, "problem": problem}))
-        .map_err(|e| format!("cannot write the decision log: {e}"))?;
-    Ok((Some(profile), problem.cloned()))
+    let notice = (!problems.is_empty()).then(|| problems.join("\n"));
+    Ok((Some(loaded.persona), notice))
 }
 
 fn run() -> Result<(), String> {
@@ -196,20 +233,21 @@ mod tests {
     }
 
     #[test]
-    fn replies_are_on_by_default_and_the_profile_file_defaults_to_the_config_directory() {
+    fn replies_are_on_by_default_and_the_soul_and_personality_default_to_the_config_directory() {
         let on = options(&[]).unwrap();
         assert!(!on.no_reply);
-        assert_eq!(
-            on.voice_profile,
-            (
-                std::path::PathBuf::from("/home/x/.config/workspace-os/voice-profile"),
-                false
-            )
-        );
+        let config = std::path::PathBuf::from("/home/x/.config/workspace-os");
+        assert_eq!(on.soul, (config.join("soul"), false));
+        assert_eq!(on.personality, (config.join("personality"), false));
         assert!(options(&["--no-reply"]).unwrap().no_reply);
-        let named = options(&["--voice-profile", "/p"]).unwrap();
-        assert_eq!(named.voice_profile, (std::path::PathBuf::from("/p"), true));
-        assert!(options(&["--voice-profile", "--no-reply"]).is_err());
+        for flag in ["--soul", "--voice-profile"] {
+            let named = options(&[flag, "/p"]).unwrap();
+            assert_eq!(named.soul, (std::path::PathBuf::from("/p"), true));
+        }
+        let named = options(&["--personality", "/q"]).unwrap();
+        assert_eq!(named.personality, (std::path::PathBuf::from("/q"), true));
+        assert!(options(&["--soul", "--no-reply"]).is_err());
+        assert!(options(&["--personality", "--no-reply"]).is_err());
     }
 
     #[test]
