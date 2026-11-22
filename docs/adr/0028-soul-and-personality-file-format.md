@@ -1,9 +1,9 @@
 ---
 title: "ADR 0028: The SOUL file and the personality file: a closed, versioned text format"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-20
-updated: 2026-11-20
+updated: 2026-11-22
 tags: [soul, persona, personality, format, shell, security]
 ---
 
@@ -11,7 +11,7 @@ tags: [soul, persona, personality, format, shell, security]
 
 ## Status
 
-**Proposed, for the project owner to accept** (the three points below were
+**Accepted by the project owner on 2026-11-22** (the three points below were
 answered in the session, see "Decisions taken by the user"). It fills the gap
 that ADR 0006 (what a SOUL and a personality are) and ADR 0021 (a preset file,
 "S8's remainder") leave open: the file format. It supersedes only ADR 0021

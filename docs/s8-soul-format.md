@@ -9,7 +9,7 @@ tags: [shell, soul, persona, personality, format]
 
 # S8: the SOUL file, the presets and the personality per user
 
-Roadmap item S8, decided in ADR 0006 and ADR 0028 (proposed: the format is a
+Roadmap item S8, decided in ADR 0006 and ADR 0028 (accepted on 2026-11-22: the format is a
 decision ADR 0006 and ADR 0021 do not cover; it supersedes only section 3 of
 ADR 0021). The generalisation of S8a: the profile file of one word became the
 SOUL file, and a second file, the personality, sits on top of it. The reply
