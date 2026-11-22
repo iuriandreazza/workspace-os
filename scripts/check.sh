@@ -36,14 +36,15 @@ bash -n eval/run-matrix.sh
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings
-cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap,selftest-write-text,selftest-execute-data,selftest-execute-rodata,selftest-stack-overflow,selftest-nested-exception,selftest-dirty-tcr2 -- -D warnings
+cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap,selftest-write-text,selftest-execute-data,selftest-execute-rodata,selftest-stack-overflow,selftest-nested-exception,selftest-dirty-tcr2,selftest-heap-exhaustion -- -D warnings
 # The device tree reader, the frame allocator, the handoff structure
-# (`bootinfo`) and the kernel's page tables (`kernelvm`) are plain Rust with
+# (`bootinfo`), the kernel's page tables (`kernelvm`) and the heap allocator
+# (`kernelheap`) are plain Rust with
 # unit tests, so they are checked and tested on the host: the test harness
 # cannot be built for the bare-metal target. The kernel also builds them for the
 # bare-metal target, as dependencies.
 host_target="$(rustc -vV | sed -n 's/^host: //p')"
-cargo clippy --all-targets -p devicetree -p physmem -p bootinfo -p kernelvm --target "$host_target" -- -D warnings
+cargo clippy --all-targets -p devicetree -p physmem -p bootinfo -p kernelvm -p kernelheap --target "$host_target" -- -D warnings
 # The bootloader is a third target: a UEFI application, which neither the
 # bare-metal kernel target nor the host can build. It is not a default member
 # of the workspace, so a bare `cargo build` never tries.
@@ -57,7 +58,7 @@ cargo clippy --all-targets -p intent-shell --target "$host_target" -- -D warning
 cargo clippy --all-targets -p intent-shell --target "$host_target" --no-default-features -- -D warnings
 
 echo "==> unit tests"
-cargo test --quiet -p devicetree -p physmem -p bootinfo -p kernelvm --target "$host_target"
+cargo test --quiet -p devicetree -p physmem -p bootinfo -p kernelvm -p kernelheap --target "$host_target"
 cargo test --quiet -p intent-shell --target "$host_target"
 cargo test --quiet -p intent-shell --target "$host_target" --no-default-features
 

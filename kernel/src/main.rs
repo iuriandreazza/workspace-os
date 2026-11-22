@@ -1,9 +1,12 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 mod arch;
 mod board;
 mod drivers;
+mod heap;
 mod log;
 mod memory;
 mod memory_image;
@@ -164,6 +167,14 @@ pub extern "C" fn kernel_main(
             console: board.uart.base,
         },
     );
+
+    // The frame allocator moves into the heap, which grows from it.
+    if let Err(error) = heap::init(frames) {
+        panic!("heap: {error}");
+    }
+    heap::selftest(&mut console);
+    #[cfg(feature = "selftest-heap-exhaustion")]
+    heap::exhaust(&mut console);
 
     arch::run_selftest();
     klog!(Ok, console, "resumed after breakpoint");

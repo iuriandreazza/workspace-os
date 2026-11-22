@@ -878,3 +878,124 @@ fn leaf_permissions_are_read_back_from_the_bits() {
     let both = leaf(&TYPES, 0, Permissions::ReadWrite, 3) & !PRIVILEGED_EXECUTE_NEVER;
     assert_eq!(Leaf::decode(both, 3).permissions(TYPES), None);
 }
+
+#[test]
+fn the_heap_window_is_in_the_upper_half_and_clear_of_the_image() {
+    let image = layout().span();
+    let window = HEAP_BASE..HEAP_BASE + HEAP_WINDOW;
+    assert!(is_canonical(window.start) && is_canonical(window.end - 1));
+    assert!(window.start >= KERNEL_OFFSET);
+    assert!(window.start > image.end + KERNEL_OFFSET + (1 << 30));
+    assert!(HEAP_BASE.is_multiple_of(GIGABYTE));
+}
+
+#[test]
+fn heap_pages_added_to_the_live_tables_are_read_write_never_executable() {
+    let mut arena = Arena::new(64);
+    let root = upper(&mut arena);
+    let frames = [0x8000_0000u64, 0x8000_5000, 0x9000_0000];
+    for (page, &frame) in frames.iter().enumerate() {
+        let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+        let at = HEAP_BASE + page as u64 * PAGE_SIZE;
+        mapper
+            .map_range(at, frame, PAGE_SIZE, Permissions::ReadWrite)
+            .unwrap();
+        let leaf = translate(&arena, root, at).unwrap();
+        assert_eq!(leaf.output, frame);
+        assert_eq!(leaf.permissions(TYPES), Some(Permissions::ReadWrite));
+    }
+    // The pages around the mapped part are the guard pages.
+    assert!(translate(&arena, root, HEAP_BASE - PAGE_SIZE).is_none());
+    assert!(translate(&arena, root, HEAP_BASE + 3 * PAGE_SIZE).is_none());
+    // The image is where it was.
+    assert!(translate(&arena, root, virtual_of(BASE)).is_some());
+    // `audit` describes the image's map (every leaf at the constant offset)
+    // and runs before the heap exists; heap pages are the one thing in the
+    // upper half that is not at that offset, which is why it flags them.
+    let report = audit(&arena, root, KERNEL_OFFSET, &open());
+    assert_eq!(report.wrong_output, Some(HEAP_BASE));
+    assert!(report.writable_executable.is_none() && report.user_reachable.is_none());
+}
+
+#[test]
+fn growing_the_heap_cannot_remap_a_page_and_runs_out_of_table_frames_cleanly() {
+    let mut arena = Arena::new(64);
+    let root = upper(&mut arena);
+    let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+    mapper
+        .map_range(HEAP_BASE, 0x8000_0000, PAGE_SIZE, Permissions::ReadWrite)
+        .unwrap();
+    assert_eq!(
+        mapper.map_range(HEAP_BASE, 0x8000_1000, PAGE_SIZE, Permissions::ReadWrite),
+        Err(MapError::Overlap)
+    );
+    // No frame left for the tables a page 1 GiB away needs.
+    let used = arena.tables.len();
+    arena.limit = used;
+    let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+    assert_eq!(
+        mapper.map_range(
+            HEAP_BASE + HEAP_WINDOW - PAGE_SIZE,
+            0x8000_0000,
+            PAGE_SIZE,
+            Permissions::ReadWrite
+        ),
+        Err(MapError::OutOfFrames)
+    );
+}
+
+#[test]
+fn the_walked_descriptors_are_the_ones_the_mapping_wrote() {
+    let mut arena = Arena::new(64);
+    let root = upper(&mut arena);
+    let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+    mapper
+        .map_range(HEAP_BASE, 0x8000_0000, PAGE_SIZE, Permissions::ReadWrite)
+        .unwrap();
+    let walked = walked_descriptors(&arena, root, HEAP_BASE);
+    let [Some(l1), Some(l2), Some(l3)] = walked else {
+        panic!("a mapped page has three descriptors: {walked:?}");
+    };
+    assert_eq!(l1, root + 8 * level_index(HEAP_BASE, 1) as u64);
+    let read = |address: u64| {
+        arena.table(address & !(PAGE_SIZE - 1)).0[((address & (PAGE_SIZE - 1)) / 8) as usize]
+    };
+    assert_eq!(read(l1) & 3, 3);
+    assert_eq!(read(l2) & 3, 3);
+    assert_eq!(read(l3) & ADDRESS_MASK, 0x8000_0000);
+    // An unmapped address stops at the first empty descriptor.
+    let nothing = walked_descriptors(&arena, root, HEAP_BASE + (32 << 30));
+    assert!(nothing[0].is_some() && nothing[2].is_none());
+    assert_eq!(walked_descriptors(&arena, root, 1 << 60), [None; 3]);
+}
+
+#[test]
+fn mapping_pages_in_the_heap_window_takes_no_more_tables_than_the_formula_says() {
+    for (start, pages) in [
+        (0usize, 1usize),
+        (511, 2),
+        (0, 512),
+        (1, 512),
+        (300, 1000),
+        (0, 5000),
+    ] {
+        let mut arena = Arena::new(10_000);
+        let root = upper(&mut arena);
+        let before = arena.tables.len();
+        let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+        mapper
+            .map_range(
+                HEAP_BASE + start as u64 * PAGE_SIZE,
+                0x8000_0000,
+                pages as u64 * PAGE_SIZE,
+                Permissions::ReadWrite,
+            )
+            .unwrap();
+        let tables = arena.tables.len() - before;
+        assert!(
+            tables + pages <= frames_to_map(pages),
+            "{pages} pages at {start} took {tables} tables, formula allows {}",
+            frames_to_map(pages) - pages
+        );
+    }
+}
