@@ -1,9 +1,9 @@
 ---
 title: "ADR 0027: The boot model is a small trained classifier over enumerated candidates"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-20
-updated: 2026-11-20
+updated: 2026-11-22
 tags: [boot, bootloader, model, uefi, inference, licence, aarch64]
 ---
 
@@ -31,8 +31,8 @@ If the owner prefers a strict reading of CLAUDE.md ("supersede, not edit"),
 this ADR can instead supersede ADR 0009 whole when it is accepted; ADR 0009
 carries only a pointer to it until then.
 
-Status is `proposed`: the decision needs the project owner's acceptance, and
-the accuracy of any model is B2's to show, not this ADR's.
+Status is `accepted`: the project owner accepted it on 2026-11-22. The accuracy
+of any model is B2's to show, not this ADR's.
 
 ## Decision
 
