@@ -77,8 +77,34 @@ class Shape:
         return f"Shape{self.tuple()}"
 
 
+INT32 = 2 ** 31
+
+
+def _shift_problem(shape):
+    for shift in (shape.shift1, shape.shift2):
+        if not 0 <= shift < 32:
+            return f"shift {shift} outside 0..31"
+    return None
+
+
+def sum_overflow(shape):
+    """Why a dense layer's 32-bit sum could overflow in the bootloader, or None.
+
+    Python integers do not wrap, a 32-bit sum does: a shape in which the largest possible sum
+    (every weight and input at -128) reaches 2**31 would run differently in `mdl.forward`
+    and in the bootloader.
+    """
+    for name, count in (("dense1", shape.inputs()), ("dense2", shape.hidden1), ("heads", shape.hidden2)):
+        if count * 128 * 128 >= INT32:
+            return f"{name} sums {count} products of int8 values, which can overflow 32 bits"
+    return None
+
+
 def within_budget(shape):
     """Why a shape is over the budget of ADR 0027, or None."""
+    reason = sum_overflow(shape) or _shift_problem(shape)
+    if reason:
+        return reason
     if shape.weight_bytes() > MAX_WEIGHT_BYTES:
         return f"{shape.weight_bytes()} weight bytes, limit {MAX_WEIGHT_BYTES}"
     if shape.macs() > MAX_MACS:
@@ -94,6 +120,9 @@ def write(shape, tensors):
     """The file for `shape` and its four tensors (flat lists of ints in -128..127)."""
     if len(tensors) != 4:
         raise ValueError("four tensors: embedding, dense1, dense2, heads")
+    refused = sum_overflow(shape) or _shift_problem(shape)
+    if refused:
+        raise ValueError(refused)
     for tensor, size in zip(tensors, shape.sizes()):
         if len(tensor) != size:
             raise ValueError(f"tensor has {len(tensor)} weights, the shape needs {size}")
@@ -116,6 +145,9 @@ def read(data):
         raise ValueError(f"unsupported version {version}")
     window, embedding, hidden1, hidden2, heads, shift1, shift2, length = fields
     shape = Shape(window, embedding, hidden1, hidden2, heads, shift1, shift2)
+    refused = _shift_problem(shape)
+    if refused:
+        raise ValueError(refused)
     if length != shape.weight_bytes():
         raise ValueError("payload length does not match the shape")
     if len(data) != HEADER.size + length + CRC.size:

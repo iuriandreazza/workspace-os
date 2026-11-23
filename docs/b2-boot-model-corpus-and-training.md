@@ -36,7 +36,7 @@ bootloader will use:
 | disks where every candidate is exact | 829 of 1,500 (55 %) |
 | disks with no safety error (below) | 1,219 of 1,500 (81 %) |
 
-The two cases that matter most for safety, on the same set:
+The two cases that matter most for safety, on the same set (the metric counts a non-kernel called a kernel, and our kernel not called our kernel; a kernel of another system given the wrong protocol is a wrong label that the loader's format check, ADR 0027 section 4, is there to catch, and is not in these counts):
 
 - A candidate that is **not a kernel image labelled as one**: 0 of 14,434.
 - **Our own kernel missed**: 0 of 294.
@@ -80,14 +80,13 @@ those (the second table of the report lists the confusion matrices).
   are called an initrd.
 - **A distribution it has not seen is much worse** (last table above): on Fedora, Rocky,
   AlmaLinux and openSUSE after training without any of them, initrd recall is 0.0 % (their
-  initrds are xz streams and the training set holds only gzip ones), entry text recall is 0.0 %,
-  kernel recall 55.9 % and 406 data files are called kernels. A boot model that meets a new
+  initrds are xz streams and the training set holds only gzip ones), kernel recall 55.9 % and 406 data files are called kernels. (Entry text recall is also 0.0 % there, but that is by construction: the only generator of entry text
+  is the Fedora family, which the fold removes, so the training set had none.) A boot model that meets a new
   distribution will be wrong, and wrong in the direction the safety rule fears. The loader's
   format check (ADR 0027, section 4) is what stops a false kernel from being started; the model
   does not.
 - **It reads names.** Trained on the name alone it gets 95.98 % on the test set, on the bytes alone
-  94.76 %, both together 95.11 %. Bytes alone cannot separate an initrd from any other compressed file, so the name carries that
-  decision, and a file with a kernel's name and no kernel's header is called a kernel about 12 % of the time: 145 false kernels among about 1,209 decoy files of the decoy set (the 2.1 % in the table is the share of all 6,794 non-kernel candidates of that set).
+  94.76 %, both together 95.11 %. On bytes alone the protocol is 100 % and the role 94.8 %: every error is a kernel called "other", no initrd was taken for another file. That is partly because the negatives are easy: the junk files are made by `synthetic.py` and a generated gzip file is not a real initrd, and partitions and Alpine rootfs files fill most of the 14,434 non-kernels. The "0 false kernels" of the headline is against those negatives, and a harder set of real compressed files was not built. The name carries the rest of the decision, and a file with a kernel's name and no kernel's header is called a kernel about 12 % of the time: 145 false kernels among about 1,209 decoy files of the decoy set (the 2.1 % in the table is the share of all 6,794 non-kernel candidates of that set).
 
 ## Label set
 
@@ -120,9 +119,7 @@ table has nothing to decide about one.
 
 For a GPT entry: the partition name narrowed (at most 36 units) in the name slot, then the 16 bytes of
 the type GUID as stored on disk, then the first 432 bytes of the partition. Content always starts at
-offset 64, so the arm64 Linux magic and the PE fields land at fixed positions. Files are read from
-real long names (`vmlinuz-virt`) and from 8.3 uppercase ones (`VMLINUZ`), as `scripts/make-disk-image.py`
-writes. The window does not reach an ext4 or Btrfs superblock; a second window for that was not built.
+offset 64, so the arm64 Linux magic and the PE fields land at fixed positions. Most templates use long names (`vmlinuz-virt`); only a few use 8.3 uppercase ones (`VMLINUZ`, `INITRD`, `KERNEL.ELF`), the only form `scripts/make-disk-image.py` can write. B3's own test disks, which carry 8.3 names, are therefore partly out of the distribution of the name half of the window. The window does not reach an ext4 or Btrfs superblock; a second window for that was not built.
 
 ## The corpus
 
@@ -161,7 +158,7 @@ tarball, 56 MB; total for the corpus about 208 MB.
 templates that follow the packaging of each system (`layouts.py`): where Debian, Fedora, Alpine,
 openSUSE, OpenBSD and our image put a kernel, an initrd, a loader. They are the author's reading of
 those conventions. Entry text in the Boot Loader Specification format is written from the specification,
-not copied from a machine, because no image carrying `loader/entries` was downloaded. A disk is the list
+not copied from a machine, and the text a generated disk carries does not name that disk's files (random machine id and version), so a rule that reads those lines was not exercised, because no image carrying `loader/entries` was downloaded. A disk is the list
 of candidates the enumeration of ADR 0027 will produce, with the window function of this report; the
 enumeration itself does not exist before B3. The first 64 bytes of a path are the model's most useful
 input and they come from templates the model was also trained on, which is why validation is perfect and
@@ -193,7 +190,7 @@ generated from different seeds for each split. The same bytes can still occur in
 publisher ships one file twice (for instance a device tree that did not change): `render_report.py` and the
 run report the **novel windows**, the test windows that no training window equals byte for byte. They are
 76 % of the test candidates, and the model gets 93.57 % of them right on all three labels, against 95.11 %
-on all of the set, so the leaked windows do not account for the result. QEMU trees are split by CPU model,
+on all of the set, so the leaked windows do not account for the result. QEMU trees are split by CPU model (their first 448 bytes are nearly identical across models, so their 100 % recall is not evidence of generalisation: the exact-equality check does not catch near-duplicates),
 our own kernels by commit (a kernel at two commits differs by a few header words: the "ours" result mostly
 says that this linker layout is recognised, from 10 distinct windows). A split by release does not make a
 distribution new: a new release of Debian is still Debian. The last table of the result is the
@@ -247,7 +244,7 @@ more scores, so the times of ADR 0027 apply: about 3.9 ms for a candidate on TCG
 2.8 ms for a disk of 16 candidates (measured by B1-2, not repeated here, because a trained model runs the
 same loops: there is no data-dependent branch). The extra 256 multiply-accumulates are 0.006 %. The gate
 still runs `scripts/measure-boot-model.py --check`. `mdl.within_budget` checks the weight bytes (limit 16 MiB)
-and the multiply-accumulates (limit 16 million) of any shape the exporter writes, with tests at the limits. Not
+and the multiply-accumulates (limit 16 million) of any shape the exporter writes, and refuses a shape whose 32-bit sums could overflow or whose shift is outside 0 to 31 (a Python integer does not wrap, the loader's does), with tests at the limits. Not
 measured: a trained file read from an ESP by the firmware, on a machine that is not the M1, or the model in
 the bootloader (B3).
 

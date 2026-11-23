@@ -75,8 +75,8 @@ one directory.
 ## Consequences
 
 - If accepted, B3 specifies the assembly rule with tests on the host (BLS parsing and the
-  same-directory rule) and measures it on layouts of the B2 generator and, where one is
-  at hand, on real disks. B2's report is the evidence that the rule is needed.
+  same-directory rule) and measures it on layouts whose entry text names the files of the disk (the B2 generator
+  does not write that yet) and, where one is at hand, on real disks. B2's report is the evidence that the rule is needed.
 - If rejected, ADR 0027 stands as written and its group output has no known way to be
   trained; B3 cannot use it.
 - The group slice stays in the file so a later model can use it without a format change.

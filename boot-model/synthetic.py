@@ -136,20 +136,6 @@ def bls_entry(rng, family):
     return ("\n".join(lines) + "\n").encode(), machine, version
 
 
-def grub_cfg(rng):
-    version = f"{rng.randrange(4, 7)}.{rng.randrange(0, 20)}.{rng.randrange(0, 200)}"
-    return (f'set default="0"\nset timeout=5\nmenuentry "Linux {version}" {{\n'
-            f"    linux /boot/vmlinuz-{version} root=/dev/vda2 ro quiet\n    initrd /boot/initrd.img-{version}\n}}\n").encode()
-
-
-def boot_conf(rng):
-    return f"set tty com0\nset image /bsd\nboot /bsd.{rng.choice(('mp', 'rd'))}\n".encode()
-
-
-def wsos_cfg(rng):
-    return (f"entry Alpine Linux\nlinux \\VMLINUZ\ncmdline console=ttyAMA0 earlycon\ninitrd \\INITRD.IMG\n").encode()
-
-
 # First bytes of a partition (432 are visible to the model after the 16-byte type GUID).
 def fat32_boot_sector(rng):
     head = b"\xeb\x58\x90" + rng.choice((b"mkfs.fat", b"MSDOS5.0", b"BSD  4.4")) + struct.pack(

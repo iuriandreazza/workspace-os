@@ -121,6 +121,8 @@ def checksum_line(url, name):
 
 def prefix_pin(pins, system, release, url, licence):
     data, total = http(url, (0, PREFIX_BYTES - 1))
+    if len(data) > PREFIX_BYTES:
+        raise SystemExit(f"{url}: the server ignored the Range request and sent {len(data)} bytes")
     pins.append(dict(system=system, release=release, url=url, mode="prefix", bytes=len(data),
                      size=total, sha256=store(data), verified_against="first fetch (trust on first use)",
                      licence=licence))
@@ -196,6 +198,10 @@ def fetch():
             continue
         if pin_["mode"] == "prefix":
             data = http(pin_["url"], (0, pin_["bytes"] - 1))[0]
+            if len(data) > pin_["bytes"]:
+                print(f"{pin_['url']}: the server ignored the Range request", file=sys.stderr)
+                bad += 1
+                continue
         else:
             data = http(pin_["url"])[0]
         if sha256(data) != pin_["sha256"]:

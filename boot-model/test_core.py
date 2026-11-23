@@ -224,6 +224,35 @@ class Mdl(unittest.TestCase):
         finally:
             mdl.MAX_WEIGHT_BYTES, mdl.MAX_MACS = saved
 
+    def test_a_shape_whose_sums_can_overflow_32_bits_is_refused(self):
+        big = mdl.Shape(512, 512, 8, 8, 34, 9, 9)  # inside both budgets, 262144 products in one sum
+        self.assertLessEqual(big.macs(), mdl.MAX_MACS)
+        self.assertIn("overflow", mdl.within_budget(big))
+        self.assertIn("dense1", mdl.sum_overflow(big))
+        edge = mdl.Shape(512, 8, 8, 8, 34, 9, 9)  # 4096 products
+        self.assertIsNone(mdl.sum_overflow(edge))
+        with self.assertRaisesRegex(ValueError, "overflow"):
+            mdl.write(big, [[0] * n for n in big.sizes()])
+
+    def test_the_overflow_limit_is_exactly_two_to_the_31(self):
+        # 131071 products of 128 * 128 stay below 2**31, 131072 reach it
+        below = mdl.Shape(1, 131071, 1, 1, 1, 0, 0)
+        at = mdl.Shape(1, 131072, 1, 1, 1, 0, 0)
+        self.assertIsNone(mdl.sum_overflow(below))
+        self.assertIn("dense1", mdl.sum_overflow(at))
+
+    def test_shifts_must_be_between_0_and_31(self):
+        for bad in (-1, 32):
+            shape = mdl.Shape(2, 2, 3, 2, 2, bad, 0)
+            self.assertIn("shift", mdl.within_budget(shape))
+            with self.assertRaises(ValueError):
+                mdl.write(shape, [[0] * n for n in shape.sizes()])
+        data = bytearray(mdl.write(tiny_shape(), tiny_tensors()))
+        data[28] = 32  # shift1 in the header
+        data[-4:] = zlib.crc32(bytes(data[:-4])).to_bytes(4, "little")
+        with self.assertRaisesRegex(ValueError, "shift"):
+            mdl.read(bytes(data))
+
     def test_budget(self):
         too_many_weights = mdl.Shape(512, 32, 1024, 128, 34, 9, 9)  # 16.8 million in dense1
         self.assertIn("weight bytes", mdl.within_budget(too_many_weights))

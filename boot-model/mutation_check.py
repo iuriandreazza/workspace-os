@@ -46,6 +46,9 @@ MUTATIONS = [
     ("mdl.py", "if shape.macs() > MAX_MACS:", "if shape.macs() >= MAX_MACS:", "MAC limit exclusive"),
     ("mdl.py", "return d1 + d2 + d3", "return d1 + d2", "heads not counted in the MACs"),
     ("mdl.py", "if tensor and not (-128 <= min(tensor) and max(tensor) <= 127):", "if False:", "int8 range not checked"),
+    ("mdl.py", "if count * 128 * 128 >= INT32:", "if count * 128 * 128 > INT32:", "overflow limit off by one"),
+    ("mdl.py", "if not 0 <= shift < 32:", "if not 0 <= shift <= 32:", "shift 32 accepted"),
+    ("mdl.py", "refused = _shift_problem(shape)\n    if refused:\n        raise ValueError(refused)\n    if length", "if length", "shift not checked when reading"),
     # metrics.py
     ("metrics.py", "matrix[t][p] += 1", "matrix[p][t] += 1", "confusion transposed"),
     ("metrics.py", "true_positive / predicted if predicted else None", "true_positive / actual if actual else None", "precision uses the recall's denominator"),
