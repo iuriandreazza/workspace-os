@@ -1,7 +1,7 @@
 ---
 title: "ADR 0031: Local speech: whisper.cpp to listen, Piper to speak, one voice per personality"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-23
 updated: 2026-11-23
 tags: [speech, voice, asr, tts, personality, licence, shell, security]
@@ -11,7 +11,7 @@ tags: [speech, voice, asr, tts, personality, licence, shell, security]
 
 ## Status
 
-**Proposed.** It answers the open question of ADR 0006 ("which local speech
+**Accepted (2026-11-23).** It answers the open question of ADR 0006 ("which local speech
 models to use, and their licences") and gives ADR 0028 the spoken-voice key
 that format 1 left out. The evidence is in `docs/s11-speech-research.md`; this
 ADR does not repeat it. It extends ADR 0028 (the personality file gains format
