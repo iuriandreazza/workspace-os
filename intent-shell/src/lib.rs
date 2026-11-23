@@ -9,6 +9,7 @@ pub mod action;
 pub mod broker;
 pub mod command;
 pub mod host;
+pub mod interview;
 pub mod label;
 pub mod log;
 pub mod model;
@@ -43,6 +44,9 @@ mod resolution_tests;
 
 #[cfg(test)]
 mod soul_tests;
+
+#[cfg(test)]
+mod interview_tests;
 
 #[cfg(test)]
 mod directories_tests;
