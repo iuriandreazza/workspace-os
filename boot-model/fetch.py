@@ -28,7 +28,7 @@ PINS = HERE / "corpus" / "pins.json"
 CACHE = Path(os.environ.get("WSOS_CORPUS_CACHE") or Path.home() / ".cache" / "workspace-os" / "boot-model")
 # A generic client name: nothing about the user or the project goes to the mirrors.
 AGENT = "corpus-fetch/1"
-LIMIT_FULL = 100 * 1024 * 1024  # an archive larger than this is never downloaded whole
+LIMIT_FULL = 100 * 1024 * 1024  # an archive larger than this is never downloaded whole (checked in `http`)
 
 ALPINE = "https://dl-cdn.alpinelinux.org/alpine"
 ALPINE_RELEASES = ("3.18.12", "3.19.0", "3.19.9", "3.20.0", "3.20.10", "3.21.0", "3.21.10", "3.22.0", "3.22.8",
@@ -63,7 +63,7 @@ OPENBSD = (  # (release, mirror); 7.6 is no longer on the main CDN
 )
 
 
-def http(url, byte_range=None):
+def http(url, byte_range=None, limit=None):
     request = urllib.request.Request(url, headers={"User-Agent": AGENT})
     if byte_range:
         request.add_header("Range", f"bytes={byte_range[0]}-{byte_range[1]}")
@@ -71,7 +71,12 @@ def http(url, byte_range=None):
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 total = response.headers.get("Content-Range", "").rpartition("/")[2] or response.headers.get("Content-Length")
-                return response.read(), int(total) if total and total.isdigit() else None
+                size = int(total) if total and total.isdigit() else None
+                if limit is not None and (size is None or size > limit):
+                    raise SystemExit(f"{url}: {size} bytes, more than the {limit} this download may take")
+                # one byte more than asked for, so a server that ignores Range is noticed without reading its whole body
+                want = byte_range[1] - byte_range[0] + 2 if byte_range else limit
+                return response.read(want), size
         except OSError:  # URLError and timeouts: a mirror that is slow once is not a failed corpus
             if attempt == 3:
                 raise
@@ -131,7 +136,7 @@ def prefix_pin(pins, system, release, url, licence):
 def archive_pin(pins, system, release, url, checksum_url, checksum_name, licence):
     published = checksum_line(checksum_url, checksum_name)
     cached = cache_path(published) if published else None
-    data = cached.read_bytes() if cached and cached.is_file() else http(url)[0]
+    data = cached.read_bytes() if cached and cached.is_file() else http(url, limit=LIMIT_FULL)[0]
     digest = sha256(data)
     if published != digest:
         raise SystemExit(f"{url}: SHA-256 {digest} is not the published {published}")
@@ -203,7 +208,7 @@ def fetch():
                 bad += 1
                 continue
         else:
-            data = http(pin_["url"])[0]
+            data = http(pin_["url"], limit=LIMIT_FULL)[0]
         if sha256(data) != pin_["sha256"]:
             print(f"MISMATCH {pin_['url']}: {sha256(data)} != {pin_['sha256']}", file=sys.stderr)
             bad += 1

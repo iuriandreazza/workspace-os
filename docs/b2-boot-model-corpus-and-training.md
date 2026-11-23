@@ -49,7 +49,7 @@ the main thing this report has to say.
 |---|---:|---:|---:|
 | test, ordinary names | 95.11 % | 0 / 14,434 | 0 / 294 |
 | test-renamed: every file of an entry has a random name | 87.87 % | 9 / 6,043 | 1 / 129 |
-| test-decoy: files that are not kernels sit under the names of one (`\vmlinuz`, `\KERNEL.ELF`, `\EFI\BOOT\BOOTAA64.EFI`) | 91.34 % | 131 / 6,826 (1.9 % of the non-kernels; about 12.8 % of the 1,023 decoys) | 0 / 129 |
+| test-decoy: files that are not kernels sit under the names of one (`\vmlinuz`, `\KERNEL.ELF`, `\EFI\BOOT\BOOTAA64.EFI`) | 91.32 % | 131 / 6,826 (1.9 % of the non-kernels; about 12.8 % of the 1,023 decoys) | 0 / 129 |
 | distributions never seen in training (Fedora, Rocky, AlmaLinux, openSUSE all left out) | 69.54 % | 407 / 8,507 (4.8 %) | n/a |
 
 What the numbers do not say:
@@ -86,7 +86,7 @@ No other role has a recall below 100 %. Most errors of the other outputs follow 
   format check (ADR 0027, section 4) is what stops a false kernel from being started; the model
   does not.
 - **It reads names.** Trained on the name alone it gets 95.98 % on the test set, on the bytes alone
-  94.76 %, both together 95.11 %. On bytes alone the protocol is 100 % and the role 94.8 % (only the accuracies of the ablation were stored; a look at its errors, not kept, found kernels called "other" and no initrd taken for another file). The easy part is that the negatives are easy: the junk files are made by `synthetic.py` and a generated gzip file is not a real initrd, and partitions and Alpine rootfs files fill most of the 14,434 non-kernels. The "0 false kernels" of the headline is against those negatives, and a harder set of real compressed files was not built. The name carries the rest of the decision, and a file with a kernel's name and no kernel's header is called a kernel about 13 % of the time: 131 false kernels among 1,023 decoy files of the decoy set (the 1.9 % in the table is the share of all 6,826 non-kernel candidates of that set). The decoy figures were recomputed with the stored weights after a review found decoys that shared a path with a real file (fixed in `layouts.make_disk`); the other sets do not use decoys and are unchanged.
+  94.76 %, both together 95.11 %. On bytes alone the protocol is 100 % and the role 94.8 % (only the accuracies of the ablation were stored; a look at its errors, not kept, found kernels called "other" and no initrd taken for another file). The easy part is that the negatives are easy: the junk files are made by `synthetic.py` and a generated gzip file is not a real initrd, and partitions and Alpine rootfs files fill most of the 14,434 non-kernels. The "0 false kernels" of the headline is against those negatives, and a harder set of real compressed files was not built. The name carries the rest of the decision, and a file with a kernel's name and no kernel's header is called a kernel about 13 % of the time: 131 false kernels among 1,023 decoy files of the decoy set (the 1.9 % in the table is the share of all 6,826 non-kernel candidates of that set). The decoy figures were recomputed with the stored weights after a review found decoys that shared a path with a real file (fixed in `layouts.make_disk`); `python boot-model/evaluate_model.py target/boot-model/WSOS.MDL` regenerates them (and shows that the ordinary test set gives the same 95.11 % and 829 and 1,219 disks); `results.json` of the run still holds the pre-fix decoy figures (90.64 %, 145 / 6,794). The other sets do not use decoys and are unchanged.
 
 ## Label set
 
@@ -158,7 +158,7 @@ tarball, 56 MB; total for the corpus about 208 MB.
 templates that follow the packaging of each system (`layouts.py`): where Debian, Fedora, Alpine,
 openSUSE, OpenBSD and our image put a kernel, an initrd, a loader. They are the author's reading of
 those conventions. Entry text in the Boot Loader Specification format is written from the specification,
-not copied from a machine, and the text a generated disk carries does not name that disk's files (random machine id and version), so a rule that reads those lines was not exercised, because no image carrying `loader/entries` was downloaded. A disk is the list
+not copied from a machine, and the text a generated disk carries does not name that disk's files (random machine id and version), so a rule that reads those lines was not exercised, because no image carrying `loader/entries` was downloaded. When two entries want the same path (two systems that both use `\vmlinuz`), the later entry is dropped, which makes disks with one system slightly more common than the draw alone would. A disk is the list
 of candidates the enumeration of ADR 0027 will produce, with the window function of this report; the
 enumeration itself does not exist before B3. The first 64 bytes of a path are the model's most useful
 input and they come from templates the model was also trained on, which is why validation is perfect and
@@ -177,12 +177,12 @@ Releases are held out whole, in two sets fixed at different times:
   network from memorising a compressed stream). Hyperparameters were not otherwise tuned: 12 epochs, batch
   128, Adam at 1e-3.
 - **test**: releases pinned only **after** those choices were frozen. Nothing in the method was chosen
-  looking at them, with two disclosed exceptions, both after the first full run on it:
+  looking at them, with three disclosed exceptions, after the first full run on it:
   (1) the generator drew two entries with the same path on one disk, a bug in the generator
-  that does not depend on the model, fixed and the run repeated; (2) the first run labelled a Linux kernel
+  that does not depend on the model, fixed and the run repeated; (2) the decoy generator, below; (3) the first run labelled a Linux kernel
   that is a bare gzip stream as `linux`, and reading the errors showed those labels disagree with ADR 0027,
   section 4 (the loader refuses a non-PE Linux image). They became protocol `none` (`catalogue.refine`) and
-  the run was repeated. The test set was run three times: 96.96 % (before the generator fix), 98.28 % (after it) and 95.11 % (with the corrected labels, the number reported here); the corrected labels make the task harder. Nothing else was changed after the test set was first read.
+  the run was repeated. The test set was run three times: 96.96 % (before the generator fix), 98.28 % (after it) and 95.11 % (with the corrected labels, the number reported here), and a fourth time for the reproducibility check (95.03 %); the corrected labels make the task harder. The decoy generator was also fixed after the test set was read (a decoy could share a path with a real file; it touches only the decoy sets, which are evaluation-only). The renamed and decoy sets, the ablations and the leave-distributions-out fold were in the first runs. Nothing else was changed after the test set was first read.
 
 **How leakage was prevented.** No release is in two splits (`test_corpus.py` checks it). Junk files are
 generated from different seeds for each split. The same bytes can still occur in two releases, because a
@@ -274,7 +274,7 @@ python3 -I boot-model/build_ours.py                         # builds our kernel 
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 uv run --no-project --with numpy==2.5.5 --with scikit-learn==1.9.1 python boot-model/run_b2.py --out target/boot-model
 python3 -I boot-model/render_report.py target/boot-model/results.json
-python3 -I boot-model/mutation_check.py                     # the tests notice each of 62 breakages
+python3 -I boot-model/mutation_check.py                     # the tests notice each of 63 breakages
 uv run --no-project --with numpy==2.5.5 python boot-model/test_training.py   # the numpy path equals the pure Python reference
 ```
 

@@ -98,7 +98,6 @@ def tree_comparison(x_train, y_train, x_test, y_test, seed):
                                                random_state=seed)
         model.fit(x_train, y_train[:, head])
         nodes = sum(len(p.nodes) for stage in model._predictors for p in stage)
-        depth = sum(max(p.get_max_depth() for p in stage) for stage in model._predictors)
         out[name] = {"accuracy": float((model.predict(x_test) == y_test[:, head]).mean()),
                      "nodes": int(nodes), "comparisons_per_candidate": int(sum(
                          p.get_max_depth() for stage in model._predictors for p in stage))}
