@@ -1344,3 +1344,15 @@ fn a_block_that_starts_before_the_window_is_not_judged_by_it() {
         (1, Some(HEAP_BASE))
     );
 }
+
+#[test]
+fn a_hostile_device_length_is_a_full_window_not_an_overflow() {
+    let mut arena = Arena::new(16);
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    let mut window = DeviceWindow::new();
+    assert_eq!(
+        window.map(&mut mapper, 0x0900_0000, 0xffff_ffff_f000_0000),
+        Err(MapError::WindowFull)
+    );
+    assert_eq!(window.next(), DEVICE_BASE);
+}

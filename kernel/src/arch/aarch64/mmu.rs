@@ -630,9 +630,12 @@ fn verify_lower_half_is_empty(
     let mut probes = [0u64; MAX_PROBES];
     let mut count = 0;
     let mut add = |address: u64| {
-        assert!(count < MAX_PROBES, "mmu: too many addresses to probe");
-        probes[count] = address;
-        count += 1;
+        // More regions than probes: the rest are not probed (the report says
+        // how many were), rather than stopping a boot over a diagnostic.
+        if count < MAX_PROBES {
+            probes[count] = address;
+            count += 1;
+        }
     };
     add(board.uart.base);
     add(layout.text.start);

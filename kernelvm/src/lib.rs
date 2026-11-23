@@ -954,7 +954,10 @@ impl DeviceWindow {
             .ok_or(MapError::NotCanonical)?
             & !(PAGE_SIZE - 1);
         let bytes = end - start;
-        if self.next + bytes + PAGE_SIZE > DEVICE_BASE + DEVICE_WINDOW {
+        if bytes
+            .checked_add(PAGE_SIZE)
+            .is_none_or(|room| room > DEVICE_BASE + DEVICE_WINDOW - self.next)
+        {
             return Err(MapError::WindowFull);
         }
         mapper.map_range(self.next, start, bytes, Permissions::Device)?;

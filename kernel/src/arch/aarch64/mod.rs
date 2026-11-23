@@ -60,7 +60,7 @@ pub fn pointer_to(address: u64) -> usize {
 
 /// From now on physical addresses are read through the linear map.
 fn read_physical_through_the_linear_map() {
-    POINTER_OFFSET.store(kernelvm::LINEAR_BASE, Ordering::Relaxed);
+    POINTER_OFFSET.store(kernelvm::linear_of(0), Ordering::Relaxed);
 }
 
 /// Physical addresses of the loaded kernel: code, data and `.bss`.

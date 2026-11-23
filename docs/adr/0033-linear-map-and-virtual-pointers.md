@@ -200,8 +200,9 @@ keeps no pointer into reclaimable memory, and "which pages are still live"
 stops being a question.
 
 Frames to hand over: each BootloaderReclaimable entry, minus the device tree's
-`/memreserve/` regions and `/reserved-memory` (`Board::for_each_reserved_region`
-yields them from the owned copy), clipped to the allocator's window (the 4 GiB
+`/memreserve/` regions and `/reserved-memory` (`Board::for_each_tree_reservation`
+yields them from the owned copy; `for_each_reserved_region` would also yield the
+reclaimable entries themselves), clipped to the allocator's window (the 4 GiB
 that its bitmaps manage: the rest is counted as dropped, as it already is).
 Other kinds are untouched: Reserved, AcpiNvs, ReservedMapped (runtime services)
 and AcpiReclaimable (ACPI tables, no reader yet) stay reserved. Direct load has
