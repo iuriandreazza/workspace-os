@@ -25,6 +25,16 @@ and from ADR 0007, and is listed with the clause it follows from.
 ./scripts/intent-shell-live-test.sh                                    # the live tests, including the interview
 ```
 
+**First use.** A shell started on a terminal on a machine with no SOUL builds one
+before the session, with the same interview (ADR 0032, proposed). Only a user with
+root authority (`--administrator`) is interviewed; anyone else starts with
+`direct-technical` and is told once who can set it. It is skipped when a script
+feeds the input, with `--no-model` or `--no-reply` (nothing reads the SOUL), when
+a SOUL exists (the S8a file counts), and when `--soul FILE` named a file. If it
+is declined, cancelled or fails, the session starts with the default and the
+interview is offered again next time. At installation the installer (S12) runs
+the same interview as root.
+
 `--setup-soul` replaces the session: it asks, writes, and exits (or, in the
 interface, stays open until Ctrl-D). The preset path and the interview start
 from the same first question.
@@ -84,10 +94,28 @@ The interview's questions and what each fills in:
 | `tests/soul_interview.rs` (real binary, `--plain`) | preset path with `--no-model` writes the file, the shell started afterwards logs `voice_profile` from that file, a second run fails and changes nothing; no root authority writes nothing; declining and the end of input write nothing; a fake `llama-server` that answers with extra lines is understood and a named `--soul` path is used |
 | `live_model.rs`: `the_interview_understands_words_with_the_real_model_...` | with the real model (below) |
 
+## First use: tests
+
+| Test | What it pins |
+|---|---|
+| `a_shell_with_no_soul_builds_one_only_where_someone_can_answer_...` | the table of (named, replies, interactive, administrator) |
+| `a_shell_that_finds_a_soul_does_not_ask_for_one` | an existing SOUL, the S8a file, a broken link to it, a broken link at the SOUL path |
+| `a_shell_started_on_a_terminal_with_no_soul_builds_one_and_goes_on_with_it` | the real binary on a pseudo-terminal: the interview, the file, and the session after it reads that SOUL (`voice_profile`, `source: file`, the name) |
+| `a_shell_started_on_a_terminal_by_a_user_without_root_authority_...` | the notice, no interview, no file |
+| `a_shell_that_reads_a_script_never_takes_it_for_the_answers_...` | piped input starts the shell as before and writes nothing |
+| `a_terminal_shell_that_would_not_read_the_soul_or_has_one_asks_nothing` | `--no-reply`, `--no-model`, a named `--soul`, an existing SOUL on a terminal: no interview, the SOUL untouched |
+| `a_transcript_without_the_interface_is_refused_before_anything_is_asked` | `--transcript` with `--plain` fails before the interview |
+| `the_conversational_interface_runs_the_interview_and_then_the_session` | the interface on a pseudo-terminal: the interview screen, the file, then the session screen reading that SOUL |
+| `a_hangup_during_the_interview_ends_the_shell_...` | SIGHUP during the interview exits with status 1 and opens no second screen |
+| `what_cannot_be_looked_up_is_not_taken_for_a_machine_with_no_soul` | a path below a regular file is not first use |
+
+Fifteen mutations of `first_run` and its wiring (named not excluded, replies and
+interactive not required, `--no-reply` and `--no-model` ignored, an existing SOUL ignored, any lookup error taken as absent, a non-administrator interviewed, the call removed, the notice not printed, the transcript checked late, the hangup check removed), all killed.
+
 ## Mutations
 
 Each applied alone to `interview.rs` or `soul.rs`, the interview tests run, then
-undone (29 mutations, all killed in the end; 17 of the first 18 on the first run; the survivor was a defensive
+undone (31 mutations, all killed in the end; 17 of the first 18 on the first run; the survivor was a defensive
 re-read of the file that no input can reach, which is removed because the
 round-trip test pins the same property):
 
@@ -132,6 +160,9 @@ round-trip test pins the same property):
 | 5 | Low: the directory sync I added after round 3 could report a failure after the SOUL was in place (no `soul_written` event, a rerun refused); a path ending in `/`, `..` or empty passed the gate and failed after the questions; the closing message said "next time it starts" for a file the shell reads only with `--soul` | Fixed: the directory sync is best effort; the gate refuses a path with no file name (`a_path_that_names_no_file_...`); the message names the default path and `--soul` |
 | 6 | Low: `--soul dir/.` passed the gate (std drops a trailing `.`). Rebutted: a capitalised `Yes` cancels (the shell's convention is that only an explicit `y` or `yes` confirms, and a cancel writes nothing); `+1` or a fullwidth digit goes to the model (its output is still one word of the list and the person reads the file) | Fixed: the gate also refuses a path ending in `/.` |
 | 7 | None. Cosmetic notes only (the closing message says `--soul` also for `--voice-profile`; a refused run still creates an empty log) | Round closed: seven rounds, 21 confirmed low-to-medium findings across rounds 1 to 6 fixed, 4 rebutted or accepted and listed above or under Limits |
+| 8 (first use, ADR 0032) | Medium-low: a hangup during the interview opened a second screen on a dead terminal. Low: `--transcript` with `--plain` failed only after the interview; any lookup error counted as "no SOUL"; the wiring was untested; no way to defer the question | Fixed: the shell ends on a termination signal, the transcript is checked first, only "not found" is absent, pseudo-terminal tests for each path including the interface; the missing opt-out is listed in the ADR's consequences |
+| 9 (first use, second look) | Low: a vacuous test for the named `--soul` case, a prompt marker that ignored the prompt, an escape sequence split between two reads, `--setup-soul` saying "a SOUL exists" when the lookup had failed, the ADR saying "told once" for a notice shown at every start. Not fixed: a forced quit (second Ctrl-C) while the write is running can let the first screen's worker outlive the screen | Fixed: each one, with a mutation-confirmed test for the message; the forced quit during a write is listed under Limits |
+| 10 (first use, third and fourth look) | Low-medium: a named `--personality` that cannot be used failed only after the interview had written the SOUL. Low: the ADR said Ctrl-C declines the interview in `--plain` (it ends the shell), and the exit status for a signal differs between the interview and the session; an error arm for reopening the log that cannot be reached | Fixed: a named personality skips the interview (test with a missing file, mutation-confirmed), the ADR says what each key does in each adapter, the log error is propagated. Not fixed: a signal in the milliseconds between the two screens makes the session screen exit at once | 
 
 ## Live run with the real model
 
@@ -178,6 +209,7 @@ The live test is by hand like its neighbours; CI has no model.
 - The model understands only the three closed questions. Languages and the name
   are typed: a model could suggest tags, but code would have to check them the
   same way, and the typed form already works.
+- On the first-use path, a forced quit (a second Ctrl-C) while the SOUL is being written lets that worker outlive the interview screen, so the session can start before the file lands. It needs a stuck write and a forced quit.
 - The file is created 0644 whatever the umask; directories the interview creates follow the umask, so under `umask 077` a fresh config directory hides the SOUL from other users. The installer (S12) runs with a normal umask.
 - A directory that cannot be created, or is not writable, is found when the file is written, after the questions.
 - `hard_link` needs a filesystem that supports links; the SOUL directory on the

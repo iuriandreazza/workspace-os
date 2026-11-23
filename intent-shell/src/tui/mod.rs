@@ -245,6 +245,11 @@ fn discard_pending_keys() -> std::io::Result<bool> {
 /// restore the screen instead of leaving the terminal in raw mode.
 static TERMINATIONS: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether a termination signal (a closed terminal, `kill`) arrived: the next screen must not be opened.
+pub fn terminated() -> bool {
+    TERMINATIONS.load(Ordering::Relaxed) > 0
+}
+
 extern "C" fn on_terminate(_signal: libc::c_int) {
     TERMINATIONS.fetch_add(1, Ordering::Relaxed);
 }
@@ -392,7 +397,12 @@ impl Dialog for ChannelDialog {
 /// Runs the SOUL interview for the interface (S9). It ends with a message,
 /// and the worker then waits, because the interface owns the screen until the
 /// person leaves.
-fn serve_interview(mut task: interview::Task, requests: Receiver<String>, events: Sender<Event>) {
+fn serve_interview(
+    mut task: interview::Task,
+    requests: Receiver<String>,
+    events: Sender<Event>,
+    leave: &str,
+) {
     let mut dialog = ChannelDialog { requests, events };
     let ended = match task.run(&mut dialog) {
         Ok(done) => done.message(),
@@ -400,12 +410,12 @@ fn serve_interview(mut task: interview::Task, requests: Receiver<String>, events
     };
     let _ = dialog
         .events
-        .send(Event::Outcome(format!("{ended}\n\nCtrl-D leaves.")));
+        .send(Event::Outcome(format!("{ended}\n\n{leave}")));
     // A line typed after the end must not leave the interface waiting for an answer.
     while dialog.requests.recv().is_ok() {
-        let _ = dialog.events.send(Event::Outcome(
-            "The interview is over. Ctrl-D leaves.".to_owned(),
-        ));
+        let _ = dialog
+            .events
+            .send(Event::Outcome(format!("The interview is over. {leave}")));
     }
 }
 
@@ -417,12 +427,17 @@ fn interview_state() -> State {
 }
 
 /// The SOUL interview in the conversational interface (S9).
-pub fn interview(task: interview::Task, transcript: Option<&Path>) -> Result<(), String> {
+/// `leave` tells the person how to go on: `Ctrl-D leaves.`, or what follows.
+pub fn interview(
+    task: interview::Task,
+    transcript: Option<&Path>,
+    leave: &'static str,
+) -> Result<(), String> {
     run_with(
         interview_state(),
         transcript,
         move |requests, events, _replies| {
-            serve_interview(task, requests, events);
+            serve_interview(task, requests, events, leave);
         },
     )
 }
@@ -842,6 +857,7 @@ mod tests {
             },
             requests,
             events_tx,
+            "Ctrl-D leaves.",
         );
         // Leaving while the file is written waits for it, so it is announced as work.
         let all: Vec<Event> = events.try_iter().collect();
@@ -893,6 +909,7 @@ mod tests {
             },
             requests,
             events_tx,
+            "Ctrl-D leaves.",
         );
         let shown: Vec<Event> = events.try_iter().collect();
         assert!(

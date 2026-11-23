@@ -102,21 +102,75 @@ fn gate(path: &Path, named: bool, administrator: bool) -> Result<(), String> {
     if path.file_name().is_none() || raw.ends_with(b"/") || raw.ends_with(b"/.") {
         return Err(format!("{} is not a file name", soul::shown_path(path)));
     }
-    // A broken link is a file that is there. The S8a file beside the default
-    // counts only when the shell would read it (`main::soul_path`), so a broken
-    // link to it is not a SOUL.
-    let legacy = soul::legacy_path(path);
-    let found = if path.symlink_metadata().is_ok() {
-        Some(path)
-    } else {
-        (!named && legacy.exists()).then_some(legacy.as_path())
-    };
-    match found {
-        Some(found) => Err(format!(
+    match existing(path, named) {
+        Lookup::Found(found) => Err(format!(
             "a SOUL already exists at {}. It is fixed at installation (ADR 0006); changing it later is a proposal a user with root authority approves (roadmap S10, not built yet). Nothing was changed",
-            soul::shown_path(found)
+            soul::shown_path(&found)
         )),
-        None => Ok(()),
+        Lookup::Unknown(why) => Err(format!(
+            "cannot tell whether a SOUL exists at {}: {why}. Nothing was changed",
+            soul::shown_path(path)
+        )),
+        Lookup::Absent => Ok(()),
+    }
+}
+
+/// What looking for the SOUL found.
+enum Lookup {
+    Absent,
+    Found(PathBuf),
+    /// The lookup failed for a reason other than "not found": a directory the
+    /// user cannot read, or a path below a file, may hide a SOUL.
+    Unknown(String),
+}
+
+/// The SOUL the machine already has, if any. A broken link is a file that is
+/// there. The S8a file beside the default counts only when the shell would read
+/// it (`main::soul_path`), so a broken link to it is not a SOUL.
+fn existing(path: &Path, named: bool) -> Lookup {
+    match path.symlink_metadata() {
+        Ok(_) => Lookup::Found(path.to_owned()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let legacy = soul::legacy_path(path);
+            if !named && legacy.exists() {
+                Lookup::Found(legacy)
+            } else {
+                Lookup::Absent
+            }
+        }
+        Err(e) => Lookup::Unknown(e.to_string()),
+    }
+}
+
+/// What a shell that starts on a machine with no SOUL does about it (ADR 0032).
+#[derive(Debug, PartialEq, Eq)]
+pub enum FirstRun {
+    /// Nothing: there is a SOUL, nobody is there to answer, or it would not be read.
+    No,
+    /// Build the SOUL now, before the session.
+    Interview,
+    /// The person cannot write the SOUL: say who can.
+    Notice,
+}
+
+pub const NO_SOUL_NOTICE: &str = "This machine has no SOUL yet, so the assistant speaks as direct-technical. A user with root authority sets it up with: intent-shell --administrator --setup-soul";
+
+/// Only the default SOUL path is the machine's: one the person named and that is
+/// missing is an error of its own (`soul::load`). `replies` is whether the SOUL
+/// would be read at all, and `interactive` whether someone can answer questions:
+/// a script's input is never taken for answers.
+pub fn first_run(
+    (path, named): (&Path, bool),
+    replies: bool,
+    interactive: bool,
+    administrator: bool,
+) -> FirstRun {
+    if named || !replies || !interactive || !matches!(existing(path, false), Lookup::Absent) {
+        FirstRun::No
+    } else if administrator {
+        FirstRun::Interview
+    } else {
+        FirstRun::Notice
     }
 }
 

@@ -763,3 +763,91 @@ fn a_path_that_names_no_file_is_refused_before_any_question() {
     }
     assert!(!dir.join("sub").exists());
 }
+
+#[test]
+fn a_shell_with_no_soul_builds_one_only_where_someone_can_answer_and_the_soul_would_be_read() {
+    use crate::interview::{FirstRun, first_run};
+    let dir = folder("first");
+    let path = dir.join("soul");
+    // (named, replies, interactive, administrator) -> what happens.
+    for (named, replies, interactive, administrator, expected) in [
+        (false, true, true, true, FirstRun::Interview),
+        (false, true, true, false, FirstRun::Notice),
+        (false, true, false, true, FirstRun::No),
+        (false, true, false, false, FirstRun::No),
+        (false, false, true, true, FirstRun::No),
+        (false, false, true, false, FirstRun::No),
+        (true, true, true, true, FirstRun::No),
+    ] {
+        assert_eq!(
+            first_run((&path, named), replies, interactive, administrator),
+            expected,
+            "{named} {replies} {interactive} {administrator}"
+        );
+    }
+}
+
+#[test]
+fn a_shell_that_finds_a_soul_does_not_ask_for_one() {
+    use crate::interview::{FirstRun, first_run};
+    let dir = folder("first-exists");
+    std::fs::write(dir.join("soul"), "format: 1\npreset: formal-discreet\n").unwrap();
+    assert_eq!(
+        first_run((&dir.join("soul"), false), true, true, true),
+        FirstRun::No
+    );
+    // The S8a file counts for the default path, and a broken link to it does not.
+    let legacy = folder("first-legacy");
+    std::fs::write(legacy.join("voice-profile"), "warm-didactic\n").unwrap();
+    assert_eq!(
+        first_run((&legacy.join("soul"), false), true, true, true),
+        FirstRun::No
+    );
+    let broken = folder("first-broken");
+    std::os::unix::fs::symlink(broken.join("nowhere"), broken.join("voice-profile")).unwrap();
+    assert_eq!(
+        first_run((&broken.join("soul"), false), true, true, true),
+        FirstRun::Interview
+    );
+    // A dangling link at the SOUL path is a file that is there.
+    std::os::unix::fs::symlink(broken.join("nowhere"), broken.join("soul")).unwrap();
+    assert_eq!(
+        first_run((&broken.join("soul"), false), true, true, true),
+        FirstRun::No
+    );
+}
+
+#[test]
+fn what_cannot_be_looked_up_is_not_taken_for_a_machine_with_no_soul() {
+    use crate::interview::{FirstRun, first_run};
+    let dir = folder("first-enotdir");
+    std::fs::write(dir.join("file"), "x").unwrap();
+    // Below a regular file the lookup fails with something other than "not found".
+    assert_eq!(
+        first_run((&dir.join("file/soul"), false), true, true, true),
+        FirstRun::No
+    );
+    assert_eq!(
+        first_run((&dir.join("none/soul"), false), true, true, true),
+        FirstRun::Interview
+    );
+}
+
+#[test]
+fn a_lookup_that_fails_is_said_as_such_and_not_as_a_soul_that_exists() {
+    let dir = folder("unknown");
+    std::fs::write(dir.join("file"), "x").unwrap();
+    let run = go_at(
+        dir.join("file/soul"),
+        Script::new(&["2", "", "1", "y"]),
+        None,
+        true,
+    );
+    let error = run.done.unwrap_err();
+    assert!(
+        error.contains("cannot tell whether a SOUL exists"),
+        "{error}"
+    );
+    assert!(!error.contains("already exists"), "{error}");
+    assert!(run.script.shown.is_empty());
+}

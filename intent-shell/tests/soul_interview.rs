@@ -263,3 +263,398 @@ fn a_bare_file_name_is_written_in_the_current_directory() {
     let log = fs::read_to_string(home.join("decisions.jsonl")).unwrap();
     assert!(log.contains("soul_written"), "{log}");
 }
+
+/// A pseudo-terminal pair: what a person's terminal is to the shell.
+fn terminal() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let (mut master, mut slave) = (0, 0);
+    // SAFETY: both out-pointers are live; null name, termios and winsize are allowed.
+    let made = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(made, 0);
+    // A screen of no size draws nothing: a real terminal has one.
+    let size = libc::winsize {
+        ws_row: 40,
+        ws_col: 120,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `master` is the descriptor `openpty` just made and `size` is what this request reads.
+    assert_eq!(unsafe { libc::ioctl(master, libc::TIOCSWINSZ, &size) }, 0);
+    // SAFETY: `openpty` returned two new descriptors that nothing else owns.
+    unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
+}
+
+/// What a screen shows once the escape sequences that move the cursor and set colours are removed.
+fn without_escapes(text: &str) -> String {
+    let mut plain = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            plain.push(c);
+        } else if chars.next_if_eq(&'[').is_some() {
+            // A control sequence ends at its first byte in @ to ~.
+            for end in chars.by_ref() {
+                if ('@'..='~').contains(&end) {
+                    break;
+                }
+            }
+        }
+    }
+    plain
+}
+
+/// The shell on a terminal: the child, the keyboard, and what the screen showed.
+struct Terminal {
+    child: std::process::Child,
+    input: fs::File,
+    /// The bytes the screen was sent, kept whole so a sequence or a character split between two reads is not cut.
+    seen: Arc<Mutex<Vec<u8>>>,
+    reader: Option<thread::JoinHandle<()>>,
+    deadline: std::time::Instant,
+}
+
+fn on_a_terminal(home: &Path, args: &[&str], plain: bool) -> Terminal {
+    use std::os::fd::AsFd;
+    let (master, slave) = terminal();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_intent-shell"));
+    if plain {
+        command.arg("--plain");
+    }
+    let child = command
+        .arg("--log")
+        .arg(home.join("decisions.jsonl"))
+        .args(args)
+        .env("HOME", home)
+        .env("USER", "tester")
+        .env("TERM", "xterm-256color")
+        .stdin(slave.as_fd().try_clone_to_owned().unwrap())
+        .stdout(slave.as_fd().try_clone_to_owned().unwrap())
+        .stderr(slave.as_fd().try_clone_to_owned().unwrap())
+        .spawn()
+        .unwrap();
+    drop(command);
+    drop(slave);
+    let input = fs::File::from(master.as_fd().try_clone_to_owned().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let shown = Arc::clone(&seen);
+    let reader = thread::spawn(move || {
+        let mut output = fs::File::from(master);
+        let mut chunk = [0u8; 4096];
+        // Reading a terminal whose other side is closed fails: that is the end.
+        while let Ok(n) = output.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            shown.lock().unwrap().extend_from_slice(&chunk[..n]);
+        }
+    });
+    Terminal {
+        child,
+        input,
+        seen,
+        reader: Some(reader),
+        deadline: std::time::Instant::now() + Duration::from_secs(30),
+    }
+}
+
+impl Terminal {
+    /// What the screen shows: the bytes sent to it without the escape sequences.
+    fn screen(&self) -> String {
+        without_escapes(&String::from_utf8_lossy(&self.seen.lock().unwrap()))
+    }
+
+    /// Waits for `marker` to appear on the screen after what was already used.
+    /// With `compact`, spaces are not compared: the interface draws only the
+    /// cells that changed, so two words may arrive with nothing between them.
+    fn wait(&mut self, used: &mut usize, marker: &str, compact: bool) {
+        let squeeze = |text: &str| -> String {
+            if compact {
+                text.chars().filter(|c| !c.is_whitespace()).collect()
+            } else {
+                text.to_owned()
+            }
+        };
+        let marker = squeeze(marker);
+        loop {
+            let screen = squeeze(&self.screen());
+            if let Some(at) = screen[*used..].find(&marker) {
+                *used += at + marker.len();
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < self.deadline,
+                "never saw {marker:?} in the last of the screen: {}",
+                &screen[screen.len().saturating_sub(600)..]
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    fn wait_for(&mut self, used: &mut usize, marker: &str) {
+        self.wait(used, marker, true);
+    }
+
+    fn wait_for_prompt(&mut self, used: &mut usize) {
+        self.wait(used, "> ", false);
+    }
+
+    fn type_line(&mut self, line: &str) {
+        self.input
+            .write_all(format!("{line}\r").as_bytes())
+            .unwrap();
+    }
+
+    /// Ctrl-D until the shell ends; one that never ends is killed and fails the test.
+    fn leave(&mut self) -> (bool, String) {
+        let status = loop {
+            thread::sleep(Duration::from_millis(200));
+            let _ = self.input.write_all(&[4]);
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if std::time::Instant::now() > self.deadline {
+                self.child.kill().unwrap();
+                self.child.wait().unwrap();
+                break None;
+            }
+        };
+        if let Some(reader) = self.reader.take() {
+            reader.join().unwrap();
+        }
+        (status.is_some_and(|s| s.success()), self.screen())
+    }
+}
+
+impl Drop for Terminal {
+    /// A test that fails must not leave the shell running on its terminal.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Runs the line adapter on a terminal, typing `lines` (each once the question
+/// for it is shown), and then Ctrl-D; returns what the person saw.
+fn on_terminal(home: &Path, args: &[&str], lines: &str) -> (bool, String) {
+    let mut terminal = on_a_terminal(home, args, true);
+    let mut used = 0;
+    for line in lines.lines() {
+        // A question ends with a prompt: each line waits for the next "> ".
+        terminal.wait_for_prompt(&mut used);
+        terminal.type_line(line);
+    }
+    terminal.leave()
+}
+
+#[test]
+fn a_shell_started_on_a_terminal_with_no_soul_builds_one_and_goes_on_with_it() {
+    let home = home();
+    // A model nothing answers at: the person answers with numbers after one note.
+    let (ok, seen) = on_terminal(
+        &home,
+        &["--model", "127.0.0.1:1", "--administrator"],
+        "2\nDex\n2\ny\n",
+    );
+    assert!(ok, "{seen}");
+    assert!(
+        seen.contains("How do you want to set up the SOUL"),
+        "{seen}"
+    );
+    assert!(seen.contains("The SOUL was written to"), "{seen}");
+    assert_eq!(
+        fs::read_to_string(soul_file(&home)).unwrap(),
+        "format: 1\npreset: warm-didactic\nname: Dex\nlanguages: any\n"
+    );
+    // The session that followed read it.
+    let log = fs::read_to_string(home.join("decisions.jsonl")).unwrap();
+    assert!(
+        log.contains("\"event\":\"voice_profile\"") && log.contains("\"source\":\"file\""),
+        "{log}"
+    );
+    assert!(log.contains("\"name\":\"Dex\""), "{log}");
+}
+
+#[test]
+fn a_shell_started_on_a_terminal_by_a_user_without_root_authority_says_who_can_set_the_soul() {
+    let home = home();
+    let (ok, seen) = on_terminal(&home, &["--model", "127.0.0.1:1"], "");
+    assert!(ok, "{seen}");
+    assert!(
+        seen.contains("no SOUL yet") && seen.contains("--setup-soul"),
+        "{seen}"
+    );
+    assert!(!seen.contains("How do you want"), "{seen}");
+    assert!(!soul_file(&home).exists());
+}
+
+#[test]
+fn a_shell_that_reads_a_script_never_takes_it_for_the_answers_of_an_interview() {
+    let home = home();
+    let out = shell(
+        &home,
+        &["--model", "127.0.0.1:1", "--administrator"],
+        "list my downloads\n",
+    );
+    assert!(out.status.success());
+    assert!(
+        !text(&out.stdout).contains("How do you want"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert!(!soul_file(&home).exists());
+}
+
+#[test]
+fn a_terminal_shell_that_would_not_read_the_soul_or_has_one_asks_nothing() {
+    let home = home();
+    for args in [
+        vec!["--model", "127.0.0.1:1", "--administrator", "--no-reply"],
+        vec!["--no-model", "--administrator"],
+    ] {
+        let (ok, seen) = on_terminal(&home, &args, "");
+        assert!(ok, "{args:?}: {seen}");
+        assert!(!seen.contains("How do you want"), "{args:?}: {seen}");
+        assert!(!seen.contains("no SOUL yet"), "{args:?}: {seen}");
+        assert!(!soul_file(&home).exists());
+    }
+    let named = home.join("named-soul");
+    let (ok, seen) = on_terminal(
+        &home,
+        &[
+            "--model",
+            "127.0.0.1:1",
+            "--administrator",
+            "--soul",
+            named.to_str().unwrap(),
+        ],
+        "",
+    );
+    // A SOUL the person named and that is missing is the error it always was.
+    assert!(!ok, "{seen}");
+    assert!(seen.contains("does not exist"), "{seen}");
+    assert!(!seen.contains("How do you want"), "{seen}");
+    fs::create_dir_all(soul_file(&home).parent().unwrap()).unwrap();
+    fs::write(soul_file(&home), "format: 1\npreset: formal-discreet\n").unwrap();
+    let (ok, seen) = on_terminal(&home, &["--model", "127.0.0.1:1", "--administrator"], "");
+    assert!(ok, "{seen}");
+    assert!(!seen.contains("How do you want"), "{seen}");
+    assert_eq!(
+        fs::read_to_string(soul_file(&home)).unwrap(),
+        "format: 1\npreset: formal-discreet\n"
+    );
+}
+
+#[test]
+fn a_transcript_without_the_interface_is_refused_before_anything_is_asked() {
+    let home = home();
+    let transcript = home.join("t.txt");
+    let (ok, seen) = on_terminal(
+        &home,
+        &[
+            "--model",
+            "127.0.0.1:1",
+            "--administrator",
+            "--transcript",
+            transcript.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(!ok, "{seen}");
+    assert!(
+        seen.contains("--transcript needs the conversational interface"),
+        "{seen}"
+    );
+    assert!(!seen.contains("How do you want"), "{seen}");
+    assert!(!soul_file(&home).exists());
+}
+
+// Without the interface the interview runs on the line adapter, which these two are about not.
+#[cfg(feature = "tui")]
+#[test]
+fn the_conversational_interface_runs_the_interview_and_then_the_session() {
+    let home = home();
+    let mut terminal = on_a_terminal(&home, &["--model", "127.0.0.1:1", "--administrator"], false);
+    let mut used = 0;
+    for (marker, line) in [
+        ("How do you want to set up the SOUL", "2"),
+        ("call itself", "Dex"),
+        ("How should it sound", "2"),
+        ("Write it?", "y"),
+        ("starts the shell", ""),
+    ] {
+        terminal.wait_for(&mut used, marker);
+        // A line is typed only after its question was drawn; the last one only ends the screen.
+        if marker == "starts the shell" {
+            terminal.input.write_all(&[4]).unwrap();
+        } else {
+            terminal.type_line(line);
+        }
+    }
+    // The session screen opens with the header, after the interview.
+    terminal.wait_for(&mut used, "intent shell");
+    let (ok, seen) = terminal.leave();
+    assert!(ok, "{seen}");
+    assert_eq!(
+        fs::read_to_string(soul_file(&home)).unwrap(),
+        "format: 1\npreset: warm-didactic\nname: Dex\nlanguages: any\n"
+    );
+    let log = fs::read_to_string(home.join("decisions.jsonl")).unwrap();
+    assert!(
+        log.contains("\"event\":\"voice_profile\"") && log.contains("\"name\":\"Dex\""),
+        "{log}"
+    );
+}
+
+// Without the interface the interview runs on the line adapter, which these two are about not.
+#[cfg(feature = "tui")]
+#[test]
+fn a_hangup_during_the_interview_ends_the_shell_instead_of_opening_the_session_screen() {
+    let home = home();
+    let mut terminal = on_a_terminal(&home, &["--model", "127.0.0.1:1", "--administrator"], false);
+    let mut used = 0;
+    terminal.wait_for(&mut used, "How do you want to set up the SOUL");
+    // SAFETY: the pid is that of the child this test started and has not waited for.
+    unsafe { libc::kill(terminal.child.id() as libc::pid_t, libc::SIGHUP) };
+    let status = loop {
+        if let Some(status) = terminal.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < terminal.deadline,
+            "the shell never ended"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(1), "{status:?}");
+    assert!(!soul_file(&home).exists());
+}
+
+#[test]
+fn a_named_personality_that_cannot_be_used_fails_before_any_question() {
+    let home = home();
+    let missing = home.join("no-personality");
+    let (ok, seen) = on_terminal(
+        &home,
+        &[
+            "--model",
+            "127.0.0.1:1",
+            "--administrator",
+            "--personality",
+            missing.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(!ok, "{seen}");
+    assert!(seen.contains("does not exist"), "{seen}");
+    assert!(!seen.contains("How do you want"), "{seen}");
+    assert!(!soul_file(&home).exists());
+}
