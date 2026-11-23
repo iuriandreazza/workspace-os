@@ -163,6 +163,7 @@ round-trip test pins the same property):
 | 8 (first use, ADR 0032) | Medium-low: a hangup during the interview opened a second screen on a dead terminal. Low: `--transcript` with `--plain` failed only after the interview; any lookup error counted as "no SOUL"; the wiring was untested; no way to defer the question | Fixed: the shell ends on a termination signal, the transcript is checked first, only "not found" is absent, pseudo-terminal tests for each path including the interface; the missing opt-out is listed in the ADR's consequences |
 | 9 (first use, second look) | Low: a vacuous test for the named `--soul` case, a prompt marker that ignored the prompt, an escape sequence split between two reads, `--setup-soul` saying "a SOUL exists" when the lookup had failed, the ADR saying "told once" for a notice shown at every start. Not fixed: a forced quit (second Ctrl-C) while the write is running can let the first screen's worker outlive the screen | Fixed: each one, with a mutation-confirmed test for the message; the forced quit during a write is listed under Limits |
 | 10 (first use, third and fourth look) | Low-medium: a named `--personality` that cannot be used failed only after the interview had written the SOUL. Low: the ADR said Ctrl-C declines the interview in `--plain` (it ends the shell), and the exit status for a signal differs between the interview and the session; an error arm for reopening the log that cannot be reached | Fixed: a named personality skips the interview (test with a missing file, mutation-confirmed), the ADR says what each key does in each adapter, the log error is propagated. Not fixed: a signal in the milliseconds between the two screens makes the session screen exit at once | 
+| 11 (first use, last look) | Low: an unwritable `--transcript` path is found when the session ends, and an unwritable SOUL directory when the file is written (both before this item: the second is the "errors show after the questions" limit); the ADR claimed more than the code | The ADR now says exactly what is checked first; the two stay as limits. No correctness finding in the round |
 
 ## Live run with the real model
 
@@ -210,6 +211,7 @@ The live test is by hand like its neighbours; CI has no model.
   are typed: a model could suggest tags, but code would have to check them the
   same way, and the typed form already works.
 - On the first-use path, a forced quit (a second Ctrl-C) while the SOUL is being written lets that worker outlive the interview screen, so the session can start before the file lands. It needs a stuck write and a forced quit.
+- An unwritable `--transcript` path is reported when the session ends.
 - The file is created 0644 whatever the umask; directories the interview creates follow the umask, so under `umask 077` a fresh config directory hides the SOUL from other users. The installer (S12) runs with a normal umask.
 - A directory that cannot be created, or is not writable, is found when the file is written, after the questions.
 - `hard_link` needs a filesystem that supports links; the SOUL directory on the
