@@ -46,7 +46,7 @@ fn physical(address: usize) -> usize {
     kernelvm::physical_of(address as u64) as usize
 }
 
-/// What the kernel adds to a physical address to read it (ADR 0030): zero while
+/// What the kernel adds to a physical address to read it (ADR 0033): zero while
 /// the entry's identity map is the way in (the bootloader's, or the boot code's
 /// on the direct path), and the start of the linear map once that is live.
 static POINTER_OFFSET: AtomicU64 = AtomicU64::new(0);

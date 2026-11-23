@@ -12,7 +12,7 @@
 //! at the edges, 4 KiB pages. Where the regime has more than 39 bits the root
 //! is a level 0 table, and every further 512 GiB that holds memory gets a level
 //! 1 table of its own, made when the first region reaches it, likewise Device
-//! blocks first (ADR 0030): RAM above 512 GiB is described too, because the
+//! blocks first (ADR 0033): RAM above 512 GiB is described too, because the
 //! kernel reads what the bootloader put there through this map. The memory-type indexes are not chosen here: the
 //! caller passes the ones the live `MAIR_EL1` already holds, so the map can be
 //! installed without touching `MAIR_EL1` or `TCR_EL1`.

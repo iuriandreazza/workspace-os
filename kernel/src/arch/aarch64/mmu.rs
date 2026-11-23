@@ -1,4 +1,4 @@
-//! The kernel's own translation tables (ADR 0019, 0030): built from frames of
+//! The kernel's own translation tables (ADR 0019, 0033): built from frames of
 //! the allocator on top of the boot tables `boot.s` installed, and switched to:
 //! the image, a linear map of RAM and a window for device registers, all in the
 //! upper half. The lower half is dropped.
@@ -359,7 +359,7 @@ impl fmt::Display for Register {
 /// of RAM, minus the image, in the linear map; and the console's registers in
 /// the device window. Then every physical address is read through the linear
 /// map, the console is pointed at the device window, and the lower half is
-/// dropped (ADR 0030). A pointer the kernel still holds to a physical address
+/// dropped (ADR 0033). A pointer the kernel still holds to a physical address
 /// faults from here on.
 pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
     let types = memory_types()?;
@@ -405,7 +405,7 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
 /// Replaces `TTBR1_EL1`, with the code running from the upper half: the new
 /// tables map the image with the same page size, output address and
 /// attributes as the old ones, so no translation in use changes (ADR 0019).
-/// The regime is the same, set by `boot.s` (ADR 0030).
+/// The regime is the same, set by `boot.s` (ADR 0033).
 fn switch_upper_half(upper: u64) {
     // SAFETY: `upper` is a complete level 0 table `init` built and published,
     // mapping this very code and its stack with the translations the boot
@@ -426,7 +426,7 @@ fn switch_upper_half(upper: u64) {
 /// Drops the lower half: translation walks through `TTBR0_EL1` are disabled
 /// (`EPD0`), the register is pointed at a table with no entry, and the TLB is
 /// invalidated. From the first `isb` no address below the upper half
-/// translates, whatever the old tables held (ADR 0030). One block of register
+/// translates, whatever the old tables held (ADR 0033). One block of register
 /// operations, touching no memory.
 fn drop_lower_half(empty: u64) {
     let disabled = read_tcr() | kernelvm::TCR_EPD0;
@@ -460,7 +460,7 @@ fn read_ttbr0() -> u64 {
 const MAX_PROBES: usize = 64;
 
 /// Walks the tables the processor uses now and panics unless they hold what
-/// ADR 0019 and 0030 promise: no page that is writable and executable, none
+/// ADR 0019 and 0033 promise: no page that is writable and executable, none
 /// for EL0, the image mapped by section with the sizes the linker gave them, a
 /// guard page that translates to nothing, the linear map holding RAM read and
 /// write with no alias of the image, the device window holding only the
@@ -605,7 +605,7 @@ pub fn verify(mut out: impl Write, board: &Board, handoff_address: usize) {
     );
 }
 
-/// The lower half translates nothing (ADR 0030): walks through `TTBR0_EL1` are
+/// The lower half translates nothing (ADR 0033): walks through `TTBR0_EL1` are
 /// off, its root holds no entry, and the hardware, asked about every kind of
 /// address that was mapped there before (the console's registers, the image,
 /// the hand-over, the first page of each region of RAM), says the translation

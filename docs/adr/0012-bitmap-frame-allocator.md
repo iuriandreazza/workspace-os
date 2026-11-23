@@ -9,7 +9,7 @@ tags: [kernel, memory, safety]
 
 # ADR 0012: Physical frame allocator on a bitmap in the kernel image
 
-> **Amended by [ADR 0030](0030-linear-map-and-virtual-pointers.md):** `FrameAllocator::release` and `alloc_in` exist; boot memory is reclaimed.
+> **Amended by [ADR 0033](0033-linear-map-and-virtual-pointers.md):** `FrameAllocator::release` and `alloc_in` exist; boot memory is reclaimed.
 
 ## Context
 

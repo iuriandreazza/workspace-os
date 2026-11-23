@@ -951,7 +951,7 @@ fn heap_pages_added_to_the_live_tables_are_read_write_never_executable() {
     // The image's audit does not see the heap: its window is the image's own.
     assert!(audit(&arena, root, UPPER_BASE, &in_image(open())).is_clean());
     // The heap is a window of its own, where any frame is expected, and a root
-    // with the heap in it has a stray unless the heap is listed (ADR 0029, 0030).
+    // with the heap in it has a stray unless the heap is listed (ADR 0029, 0033).
     let heap = Window {
         virt: HEAP_BASE..HEAP_BASE + HEAP_WINDOW,
         offset: None,
@@ -1062,7 +1062,7 @@ fn mapping_pages_in_the_heap_window_takes_no_more_tables_than_the_formula_says()
     }
 }
 
-// ---- The linear map, the devices and the windows (ADR 0030) --------------
+// ---- The linear map, the devices and the windows (ADR 0033) --------------
 
 static LINEAR_WINDOW: Window = Window {
     virt: LINEAR_BASE..LINEAR_BASE + LINEAR_SPAN,

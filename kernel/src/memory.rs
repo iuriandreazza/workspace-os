@@ -246,7 +246,7 @@ pub fn selftest(frames: &mut FrameAllocator, board: &Board, mut out: impl Write)
     klog!(Ok, out, "frames: double free refused");
 }
 
-/// What to hand to the allocator (ADR 0030), worked out before the heap is
+/// What to hand to the allocator (ADR 0033), worked out before the heap is
 /// locked: both lists allocate.
 pub struct Reclaim {
     /// The BootloaderReclaimable regions.
@@ -330,7 +330,7 @@ fn pattern(frame: u64, word: usize) -> u64 {
 }
 
 /// Takes every frame that `reclaim` released, writes a pattern in each through
-/// the linear map, reads it back, and gives the frames back (ADR 0030). A frame
+/// the linear map, reads it back, and gives the frames back (ADR 0033). A frame
 /// that two owners shared, or that was handed out twice, or that the linear map
 /// does not reach, shows here; and the caller digests the hand-over again
 /// afterwards, which a board that still pointed into the memory would fail.
@@ -387,7 +387,7 @@ pub fn reclaim_selftest(frames: &mut FrameAllocator, reclaimed: &Reclaim, mut ou
 }
 
 /// RAM the allocator does not manage (the part of a big machine beyond its
-/// window) is still in the linear map (ADR 0030), and nothing else in a boot
+/// window) is still in the linear map (ADR 0033), and nothing else in a boot
 /// touches it. If the highest free frame of the machine lies outside the
 /// allocator's window, write a pattern in it through the linear map, read it
 /// back. On a machine of more than 512 GiB it is

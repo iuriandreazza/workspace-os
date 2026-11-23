@@ -5,7 +5,7 @@
 //! the host can build the maps the kernel builds and walk them. The unsafe part
 //! (frames, system registers) stays in the kernel.
 //!
-//! Layout: 4 KiB granule, 48-bit address spaces (`T1SZ = 16`, ADR 0030), so a
+//! Layout: 4 KiB granule, 48-bit address spaces (`T1SZ = 16`, ADR 0033), so a
 //! root is a level 0 table of 512 entries of 512 GiB each. Leaves are 4 KiB
 //! pages and 2 MiB and 1 GiB blocks.
 
@@ -17,7 +17,7 @@ pub const PAGE_SIZE: u64 = 4096;
 pub const BLOCK_SIZE: u64 = 2 << 20;
 const GIGABYTE: u64 = 1 << 30;
 const ENTRIES: usize = 512;
-/// Bits of virtual address each half translates (ADR 0030).
+/// Bits of virtual address each half translates (ADR 0033).
 pub const ADDRESS_BITS: u32 = 48;
 
 /// The first address of the upper half, `T1SZ = 16`.
@@ -28,7 +28,7 @@ pub const UPPER_BASE: u64 = 0xffff_0000_0000_0000;
 /// number (the boot smoke test compares them).
 pub const KERNEL_OFFSET: u64 = 0xffff_ff80_0000_0000;
 
-/// The linear map of RAM (ADR 0030): the virtual address of a byte of RAM is
+/// The linear map of RAM (ADR 0033): the virtual address of a byte of RAM is
 /// its physical address plus this. It cannot be `KERNEL_OFFSET`, which
 /// overflows 2^64 for physical addresses of 512 GiB or more.
 pub const LINEAR_BASE: u64 = UPPER_BASE;
@@ -36,7 +36,7 @@ pub const LINEAR_BASE: u64 = UPPER_BASE;
 /// above it is refused.
 pub const LINEAR_SPAN: u64 = 1 << 47;
 
-/// Where device registers are mapped (ADR 0030): 384 GiB into the last 512 GiB,
+/// Where device registers are mapped (ADR 0033): 384 GiB into the last 512 GiB,
 /// between the image and the heap, in a window of its own.
 pub const DEVICE_BASE: u64 = KERNEL_OFFSET + (384 << 30);
 /// The most device registers can take: 1 GiB, guard pages included.
@@ -540,7 +540,7 @@ pub fn walked_descriptors<M: TableRead>(
 }
 
 /// A part of the virtual address space a root is expected to map in one way
-/// (ADR 0030): the image, the linear map and the devices each have their own.
+/// (ADR 0033): the image, the linear map and the devices each have their own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Window {
     pub virt: Range<u64>,
@@ -896,7 +896,7 @@ pub fn map_ram_region<M: TableMemory>(
     Ok(())
 }
 
-/// Maps one region of RAM into the linear map (ADR 0030), refusing RAM the map
+/// Maps one region of RAM into the linear map (ADR 0033), refusing RAM the map
 /// does not reach.
 pub fn map_linear_region<M: TableMemory>(
     mapper: &mut Mapper<'_, M>,
@@ -909,7 +909,7 @@ pub fn map_linear_region<M: TableMemory>(
     map_ram_region(mapper, region, hole, LINEAR_BASE)
 }
 
-/// Where the next device registers go in the device window (ADR 0030): every
+/// Where the next device registers go in the device window (ADR 0033): every
 /// mapping takes the next free pages and leaves one unmapped page after it, so
 /// a run past the end of one device's registers faults instead of reaching the
 /// next.

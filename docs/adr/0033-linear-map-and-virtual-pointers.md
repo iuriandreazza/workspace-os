@@ -1,5 +1,5 @@
 ---
-title: "ADR 0030: A linear map, virtual pointers, no lower half, a 48-bit regime and reclaimed boot memory"
+title: "ADR 0033: A linear map, virtual pointers, no lower half, a 48-bit regime and reclaimed boot memory"
 type: adr
 status: proposed
 created: 2026-11-23
@@ -7,7 +7,7 @@ updated: 2026-11-23
 tags: [kernel, memory, mmu, aarch64, bootloader, security]
 ---
 
-# ADR 0030: A linear map and virtual pointers (K4c)
+# ADR 0033: A linear map and virtual pointers (K4c)
 
 ## Context
 

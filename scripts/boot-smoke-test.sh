@@ -363,7 +363,7 @@ check_mmu() {
     expect_once "$expected_extensions" "permission indirection registers"
     check_handoff_read_again
 
-    # The linear map (ADR 0030): at the start of the upper half, holding RAM
+    # The linear map (ADR 0033): at the start of the upper half, holding RAM
     # minus the image, read and write.
     line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: linear map at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of RAM, read write, never executed, the image left out$/\1 \2/p')"
     [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "linear map report not found exactly once"
@@ -379,7 +379,7 @@ check_mmu() {
     read -r base device_bytes console <<< "$line"
     [[ $((base)) -eq $((DEVICE_BASE)) && $((device_bytes)) -eq $FRAME_SIZE && $((console)) -eq $((DEVICE_BASE)) ]] \
         || fail "device window at $base holds $device_bytes bytes with the console at $console, expected one page at $(hex "$DEVICE_BASE")"
-    # The lower half is empty after the switch (ADR 0030): no leaf under its
+    # The lower half is empty after the switch (ADR 0033): no leaf under its
     # root, walks through it off, and the hardware refuses every address that
     # was mapped there before: the console's registers, the image, the
     # hand-over and the start of each region of RAM.
@@ -405,7 +405,7 @@ check_handoff_read_again() {
         || fail "the hand-over digest covers $bytes bytes, fewer than the $((blob_end - blob_start)) of the device tree"
     # The kernel copied what it keeps out of the bootloader's memory, gave that
     # memory to the allocator, used it, and the hand-over still digests the same
-    # (ADR 0030): all three lines carry one digest.
+    # (ADR 0033): all three lines carry one digest.
     expect_once "handoff: kept by the kernel, " "copy of the hand-over out of the bootloader's memory"
     expect_once "handoff: read again after the reclaimed memory was used, " "read of the hand-over after the reclaimed memory was used"
     digests="$(plain_log | sed -n 's/^  kernel  .\{4\}  handoff: .*, [0-9]* bytes, digest \(0x[0-9a-f]*\), as before it$/\1/p')"
@@ -414,7 +414,7 @@ check_handoff_read_again() {
 }
 
 # check_reclaim: what the kernel gave to the frame allocator from the
-# bootloader's memory (ADR 0030) is what the memory map says it owned: the
+# bootloader's memory (ADR 0033) is what the memory map says it owned: the
 # frames of every bootloader-reclaimable entry inside the allocator's window,
 # from the lowest RAM address up, and every one of them was allocated and used.
 # A direct load has nothing to give.
@@ -902,7 +902,7 @@ readonly KERNEL_OFFSET
 [[ "$(( $(symbol_address KERNEL_OFFSET) ))" -eq $((KERNEL_OFFSET)) ]] \
     || fail "link.ld defines KERNEL_OFFSET as $(symbol_address KERNEL_OFFSET), kernelvm as $KERNEL_OFFSET"
 
-# The other windows of the upper half (ADR 0030), read from kernelvm too: the
+# The other windows of the upper half (ADR 0033), read from kernelvm too: the
 # linear map starts at the start of the upper half, the device window is a
 # number of gigabytes into the last 512 GiB.
 UPPER_BASE="$(sed -n 's/^pub const UPPER_BASE: u64 = \(0x[0-9a-f_]*\);$/\1/p' kernelvm/src/lib.rs | tr -d '_')"
@@ -1011,7 +1011,7 @@ check_boot el2 -machine virtualization=on -kernel "$KERNEL_ELF"
 check_boot el3 -machine secure=on -kernel "$KERNEL_ELF"
 check_boot el3-el2 -machine secure=on,virtualization=on -kernel "$KERNEL_ELF"
 
-# ---- A machine with RAM above 512 GiB (ADR 0030) ---------------------------
+# ---- A machine with RAM above 512 GiB (ADR 0033) ---------------------------
 #
 # 520 GiB from 1 GiB ends at 521 GiB, above what a 39-bit regime reaches. QEMU
 # does not touch guest RAM it is not given work on, so the boot needs no such
@@ -1020,7 +1020,7 @@ check_boot el3-el2 -machine secure=on,virtualization=on -kernel "$KERNEL_ELF"
 # `memory-backend-ram,reserve=off` asks for it without the reservation. If
 # neither starts, the two boots are skipped with QEMU's own reason on the
 # screen, and the construction of such tables is covered by the host tests
-# alone (ADR 0030, Known limits).
+# alone (ADR 0033, Known limits).
 readonly HUGE_MIB=$((520 * 1024))
 HUGE_RAM=()
 
@@ -1113,11 +1113,11 @@ check_boot memreserve -dtb "$memreserve_dtb" -kernel "$KERNEL_ELF"
 extra_reserved_frames=0
 extra_reserved_ranges=0
 expected_blob_size=""
-# More than 512 GiB of RAM, directly loaded (ADR 0030).
+# More than 512 GiB of RAM, directly loaded (ADR 0033).
 if huge_machine_starts; then
     check_huge huge-direct no "${HUGE_RAM[@]}" -kernel "$KERNEL_ELF"
 else
-    echo "SKIP (huge-direct, huge-uefi): QEMU cannot start a guest with $((HUGE_MIB / 1024)) GiB of RAM on this machine; the tables for RAM above 512 GiB are covered by the host tests only (ADR 0030, Known limits)"
+    echo "SKIP (huge-direct, huge-uefi): QEMU cannot start a guest with $((HUGE_MIB / 1024)) GiB of RAM on this machine; the tables for RAM above 512 GiB are covered by the host tests only (ADR 0033, Known limits)"
 fi
 
 # Every frame below the image reserved: the allocator then hands the page tables
@@ -1172,7 +1172,7 @@ check_uefi_boot uefi-el2 256 2 normal 1 -machine virtualization=on
 check_uefi_boot uefi-el2-high 3584 2 normal enter -machine virtualization=on
 check_uefi_boot uefi-recovery 256 1 recovery 2
 check_uefi_boot uefi-recovery-arrows 256 1 recovery down,hold,enter
-# More than 512 GiB of RAM through the bootloader (ADR 0030): its identity map
+# More than 512 GiB of RAM through the bootloader (ADR 0033): its identity map
 # reaches the memory map's last page, where EDK2 puts what it allocates.
 if [[ "${#HUGE_RAM[@]}" -gt 0 ]]; then
     check_huge huge-uefi yes -machine virt,acpi=off "${HUGE_RAM[@]}" -bios "$uefi_firmware" \

@@ -314,7 +314,7 @@ _start:
     cmp  x1, #512
     b.lo 8b
 
-    // The upper half has 48 bits (T1SZ = 16, ADR 0030), so its root is a level
+    // The upper half has 48 bits (T1SZ = 16, ADR 0033), so its root is a level
     // 0 table: level 0 -> level 1 -> level 2 -> the table above, at the indexes
     // of the image's virtual address.
     ldr  x0, =__image_start

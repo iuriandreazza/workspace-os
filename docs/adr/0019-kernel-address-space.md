@@ -9,7 +9,7 @@ tags: [kernel, memory, mmu, aarch64, security]
 
 # ADR 0019: Kernel address space, higher-half and write-xor-execute
 
-> **Partly superseded by [ADR 0030](0030-linear-map-and-virtual-pointers.md):** the 39-bit regime, the kept lower window, the plan not to reclaim boot memory, the linear map at `KERNEL_OFFSET` and the limit on memory above 512 GiB.
+> **Partly superseded by [ADR 0033](0033-linear-map-and-virtual-pointers.md):** the 39-bit regime, the kept lower window, the plan not to reclaim boot memory, the linear map at `KERNEL_OFFSET` and the limit on memory above 512 GiB.
 
 ## Context
 

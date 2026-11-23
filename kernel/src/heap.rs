@@ -188,7 +188,7 @@ impl State {
     }
 }
 
-/// Runs `use_frames` with the frame allocator the heap owns (ADR 0030). The heap
+/// Runs `use_frames` with the frame allocator the heap owns (ADR 0033). The heap
 /// is locked meanwhile, so `use_frames` must not allocate.
 pub fn with_frames<R>(use_frames: impl FnOnce(&mut FrameAllocator<'static>) -> R) -> R {
     HEAP.state.with(|state| {
@@ -500,7 +500,7 @@ pub fn exhaust(mut out: impl Write) {
     const BLOCK: usize = 1 << 20;
     let layout = Layout::from_size_align(BLOCK, 4096).expect("a layout");
     // What the kernel already keeps in the heap: the copy of the hand-over
-    // (ADR 0030) on the bootloader path, nothing on a direct load.
+    // (ADR 0033) on the bootloader path, nothing on a direct load.
     let baseline = stats().used;
     // The list of blocks lives in the heap's own memory, so it is taken
     // before the heap fills and never grows.

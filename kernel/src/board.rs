@@ -23,7 +23,7 @@ const UART_COMPATIBLE: &str = "arm,pl011";
 
 /// Where the console UART's registers are read and written: the physical
 /// address from the moment the hand-over has been read, and an address in the
-/// device window once the kernel's tables are live (ADR 0030). Zero until the
+/// device window once the kernel's tables are live (ADR 0033). Zero until the
 /// hand-over has been read: output is dropped.
 static CONSOLE_BASE: AtomicUsize = AtomicUsize::new(0);
 
@@ -180,7 +180,7 @@ impl Board {
     /// the boot info, every entry of the memory map, every region the memory
     /// and reservation walks give, and all the bytes of the device tree blob.
     /// It is taken before the kernel switches to its own tables and again,
-    /// from a fresh read, after (ADR 0026, 0030): the second read goes through
+    /// from a fresh read, after (ADR 0026, 0033): the second read goes through
     /// the linear map, so a map that lost or misplaced a region differs. It is
     /// taken a third time from the copy the kernel makes before it gives the
     /// boot memory away, and a fourth after that memory has been used: a board
@@ -239,7 +239,7 @@ impl Board {
     }
 
     /// The same board with the memory map and the device tree copied into the
-    /// kernel's heap (ADR 0030), so that nothing points into memory the
+    /// kernel's heap (ADR 0033), so that nothing points into memory the
     /// bootloader owned and the kernel is about to give to the frame allocator.
     /// The copies live as long as the kernel. On the direct path the tree is
     /// ordinary RAM the kernel reserved and keeps, and there is no map: the
@@ -330,7 +330,7 @@ pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, Option<usi
     let handoff = bootinfo::check(parsed, |info| {
         // SAFETY: the structure comes from the bootloader, which keeps the map
         // unchanged and in memory the allocator never hands out until the
-        // kernel has copied it (ADR 0030); `pointer_to` is how that memory is
+        // kernel has copied it (ADR 0033); `pointer_to` is how that memory is
         // read.
         unsafe { info.memory_map(pointer_to) }
     })
@@ -344,7 +344,7 @@ pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, Option<usi
     } else {
         // SAFETY: the bootloader copied the blob to `device_tree` and reserves
         // that memory (BootloaderReclaimable) until the kernel has copied it
-        // (ADR 0030); it is read at `pointer_to(device_tree)`.
+        // (ADR 0033); it is read at `pointer_to(device_tree)`.
         let blob = unsafe { Fdt::from_address(pointer_to(info.device_tree)) }
             .map_err(|e| (HandoffError::BadDeviceTree(e), Some(handoff.console)))?;
         Some(blob)

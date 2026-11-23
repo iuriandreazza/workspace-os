@@ -47,7 +47,7 @@ pub extern "C" fn kernel_main(
     };
 
     // The console is at the physical address the hand-over names until the
-    // kernel's tables are live (ADR 0030).
+    // kernel's tables are live (ADR 0033).
     board::use_console_at(board.uart.base as usize);
     let mut console = board::console();
     log::banner(&mut console, arch::current_el());
@@ -137,7 +137,7 @@ pub extern "C" fn kernel_main(
         panic!("mmu: {error}");
     }
     // The lower half is gone: the hand-over is read again from its address
-    // through the linear map (ADR 0030), and from here on it is this board the
+    // through the linear map (ADR 0033), and from here on it is this board the
     // kernel uses, never the one read through the entry's map. A linear map
     // that lost a region faults here, one that maps another frame reads other
     // bytes.
@@ -181,7 +181,7 @@ pub extern "C" fn kernel_main(
     }
     heap::selftest(&mut console);
 
-    // The memory the bootloader owned goes to the frame allocator (ADR 0030):
+    // The memory the bootloader owned goes to the frame allocator (ADR 0033):
     // first everything the kernel keeps from it is copied into the heap, then
     // the frames are released and used, then the hand-over is digested again,
     // which a board still pointing into that memory would fail.

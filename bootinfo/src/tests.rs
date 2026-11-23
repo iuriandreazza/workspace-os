@@ -607,7 +607,7 @@ fn overlapping_or_out_of_range_memory_is_refused() {
 
 #[test]
 fn memory_above_512_gib_is_mapped_through_a_level_1_table_of_its_own() {
-    // The machine of the item (ADR 0030): RAM from 1 GiB to 521 GiB, with
+    // The machine of the item (ADR 0033): RAM from 1 GiB to 521 GiB, with
     // something at the very top, where a firmware allocates.
     let entries = std::vec![
         entry(0x0900_0000, 1, MemoryKind::Reserved),

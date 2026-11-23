@@ -290,7 +290,7 @@ impl FrameAllocator<'_> {
     /// Makes the reserved frames of `range` available, except those touched by
     /// a range of `keep`, and returns how many it released. This is for memory
     /// the boot protocol hands over once the kernel no longer reads it
-    /// (ADR 0030): everything built into the allocator as reserved stays
+    /// (ADR 0033): everything built into the allocator as reserved stays
     /// reserved until now.
     ///
     /// The allocator does not remember which frames are RAM, so the caller

@@ -336,7 +336,7 @@ impl BootInfo {
     /// The memory map this structure points at. `pointer_to` turns the physical
     /// address the structure holds into the address the kernel reads it at:
     /// itself while the entry's identity map is live, an address in the linear
-    /// map after (ADR 0030).
+    /// map after (ADR 0033).
     ///
     /// # Safety
     ///

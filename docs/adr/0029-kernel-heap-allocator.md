@@ -9,7 +9,7 @@ tags: [kernel, memory, heap, safety]
 
 # ADR 0029: Kernel heap
 
-> **Amended by [ADR 0030](0030-linear-map-and-virtual-pointers.md):** growth reaches table frames through the linear map; the allocator is reachable through `heap::with_frames`.
+> **Amended by [ADR 0033](0033-linear-map-and-virtual-pointers.md):** growth reaches table frames through the linear map; the allocator is reachable through `heap::with_frames`.
 
 ## Context
 
