@@ -48,7 +48,8 @@ MUTATIONS = [
     ("mdl.py", "if tensor and not (-128 <= min(tensor) and max(tensor) <= 127):", "if False:", "int8 range not checked"),
     ("mdl.py", "if count * 128 * 128 >= INT32:", "if count * 128 * 128 > INT32:", "overflow limit off by one"),
     ("mdl.py", "if not 0 <= shift < 32:", "if not 0 <= shift <= 32:", "shift 32 accepted"),
-    ("mdl.py", "refused = _shift_problem(shape)\n    if refused:\n        raise ValueError(refused)\n    if length", "if length", "shift not checked when reading"),
+    ("mdl.py", "refused = _shift_problem(shape) or sum_overflow(shape)\n    if refused:\n        raise ValueError(refused)\n    if length", "if length", "shape not checked when reading"),
+    ("mdl.py", "refused = _shift_problem(shape) or sum_overflow(shape)\n    if refused:\n        raise ValueError(refused)\n    if length", "refused = _shift_problem(shape)\n    if refused:\n        raise ValueError(refused)\n    if length", "overflow not checked when reading"),
     # metrics.py
     ("metrics.py", "matrix[t][p] += 1", "matrix[p][t] += 1", "confusion transposed"),
     ("metrics.py", "true_positive / predicted if predicted else None", "true_positive / actual if actual else None", "precision uses the recall's denominator"),

@@ -145,7 +145,7 @@ def read(data):
         raise ValueError(f"unsupported version {version}")
     window, embedding, hidden1, hidden2, heads, shift1, shift2, length = fields
     shape = Shape(window, embedding, hidden1, hidden2, heads, shift1, shift2)
-    refused = _shift_problem(shape)
+    refused = _shift_problem(shape) or sum_overflow(shape)
     if refused:
         raise ValueError(refused)
     if length != shape.weight_bytes():

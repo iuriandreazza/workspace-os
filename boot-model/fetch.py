@@ -19,6 +19,8 @@ import os
 import re
 import sys
 import time
+import http.client
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -77,7 +79,13 @@ def http(url, byte_range=None, limit=None):
                 # one byte more than asked for, so a server that ignores Range is noticed without reading its whole body
                 want = byte_range[1] - byte_range[0] + 2 if byte_range else limit
                 return response.read(want), size
-        except OSError:  # URLError and timeouts: a mirror that is slow once is not a failed corpus
+        except urllib.error.HTTPError as error:
+            if error.code < 500 and error.code != 429:  # a missing file stays missing
+                raise
+            if attempt == 3:
+                raise
+            time.sleep(5 * (attempt + 1))
+        except (OSError, http.client.HTTPException):  # timeouts and cut bodies: a slow mirror is not a failed corpus
             if attempt == 3:
                 raise
             time.sleep(5 * (attempt + 1))
@@ -201,14 +209,17 @@ def fetch():
         path = cache_path(pin_["sha256"])
         if path.is_file() and sha256(path.read_bytes()) == pin_["sha256"]:
             continue
-        if pin_["mode"] == "prefix":
-            data = http(pin_["url"], (0, pin_["bytes"] - 1))[0]
-            if len(data) > pin_["bytes"]:
-                print(f"{pin_['url']}: the server ignored the Range request", file=sys.stderr)
-                bad += 1
-                continue
-        else:
-            data = http(pin_["url"], limit=LIMIT_FULL)[0]
+        try:
+            data = (http(pin_["url"], (0, pin_["bytes"] - 1))[0] if pin_["mode"] == "prefix"
+                    else http(pin_["url"], limit=LIMIT_FULL)[0])
+        except (OSError, http.client.HTTPException) as error:
+            print(f"UNREACHABLE {pin_['url']}: {error}", file=sys.stderr)
+            bad += 1
+            continue
+        if pin_["mode"] == "prefix" and len(data) > pin_["bytes"]:
+            print(f"{pin_['url']}: the server ignored the Range request", file=sys.stderr)
+            bad += 1
+            continue
         if sha256(data) != pin_["sha256"]:
             print(f"MISMATCH {pin_['url']}: {sha256(data)} != {pin_['sha256']}", file=sys.stderr)
             bad += 1

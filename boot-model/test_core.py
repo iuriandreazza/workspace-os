@@ -241,6 +241,15 @@ class Mdl(unittest.TestCase):
         self.assertIsNone(mdl.sum_overflow(below))
         self.assertIn("dense1", mdl.sum_overflow(at))
 
+    def test_read_refuses_a_header_whose_sums_can_overflow(self):
+        # a small payload with a shape that makes dense1 sum 131072 products: the file would be untrusted input
+        shape = mdl.Shape(131072, 1, 1, 1, 1, 0, 0)
+        payload = bytes(sum(shape.sizes()))
+        body = mdl.HEADER.pack(mdl.MAGIC, mdl.VERSION, 131072, 1, 1, 1, 1, 0, 0, len(payload)) + payload
+        data = body + zlib.crc32(body).to_bytes(4, "little")
+        with self.assertRaisesRegex(ValueError, "overflow"):
+            mdl.read(data)
+
     def test_shifts_must_be_between_0_and_31(self):
         for bad in (-1, 32):
             shape = mdl.Shape(2, 2, 3, 2, 2, bad, 0)
