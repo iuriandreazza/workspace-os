@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 bootinfo = { path = "../bootinfo" }
 devicetree = { path = "../devicetree" }
+kernelheap = { path = "../kernelheap" }
 kernelvm = { path = "../kernelvm" }
 physmem = { path = "../physmem" }
 
@@ -32,6 +33,9 @@ selftest-nested-exception = []
 # Sets `TCR2_EL1.PIE` just before the code that clears it, which stands for
 # firmware that left it set (ADR 0026).
 selftest-dirty-tcr2 = []
+# Takes memory from the heap until it refuses, then frees it all: the refusal
+# must be reported and the heap must work again (ADR 0029).
+selftest-heap-exhaustion = []
 
 [[bin]]
 name = "kernel"

@@ -205,10 +205,9 @@ fn worker(
         &mut log,
         wires,
         &header,
-        speaker.as_ref().map(|(speaker, profile)| Voice {
-            speaker,
-            profile: *profile,
-        }),
+        speaker
+            .as_ref()
+            .map(|(speaker, persona)| Voice { speaker, persona }),
     );
 }
 
@@ -347,7 +346,7 @@ fn write_transcript(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// The state a session opens with: the header, and the notice the person must
-/// see first (a voice profile that could not be used) as the first note.
+/// see first (a SOUL or a personality that could not be used) as the first note.
 fn opening_state(header: String, entry: Entry, notice: Option<String>) -> State {
     let mut state = State::for_entry(header, entry);
     state.blocks.extend(notice.map(state::Block::Note));
@@ -620,6 +619,7 @@ mod tests {
         use crate::pipeline_tests::{LARGEST, files};
         use crate::testing::{MemoryLog, ScriptedPlanner, user};
 
+        let persona = crate::soul::Persona::of(crate::soul::Profile::WarmDidactic);
         let (request_tx, requests) = channel();
         let (events_tx, events) = channel();
         let (reply_tx, replies) = channel();
@@ -640,7 +640,7 @@ mod tests {
             &|cwd| format!("header in {cwd}"),
             speaker.map(|speaker| Voice {
                 speaker,
-                profile: crate::reply::Profile::WarmDidactic,
+                persona: &persona,
             }),
         );
         (events.try_iter().collect(), log)
@@ -716,6 +716,7 @@ mod tests {
         use crate::pipeline_tests::{DELETE_LARGEST, files};
         use crate::testing::{MemoryLog, ScriptedPlanner, ScriptedSpeaker, user};
 
+        let persona = crate::soul::Persona::of(crate::soul::Profile::DirectTechnical);
         let (request_tx, requests) = channel();
         let (events_tx, events) = channel();
         let (reply_tx, replies) = channel();
@@ -736,7 +737,7 @@ mod tests {
             &|cwd| format!("header in {cwd}"),
             Some(Voice {
                 speaker: &speaker,
-                profile: crate::reply::Profile::DirectTechnical,
+                persona: &persona,
             }),
         );
         assert!(speaker.asked.borrow().is_empty());

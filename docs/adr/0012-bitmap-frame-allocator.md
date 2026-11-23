@@ -38,7 +38,8 @@ A bitmap allocator in the host-testable crate `physmem`, with no allocation.
 - Lowest address first, with a cursor that `free` rewinds, so allocation is
   deterministic and a freed frame is reused at once.
 - The allocator is an owned value passed to whoever needs it, not a global.
-  K4 receives `&mut FrameAllocator`.
+  K4 receives `&mut FrameAllocator`. Amended by ADR 0029: after the MMU is
+  built, the allocator moves behind the kernel heap's lock.
 
 Alternatives: a free list threaded through the free frames needs the frames
 mapped and writable and trusts their contents; it also cannot refuse a double
@@ -49,7 +50,8 @@ same `alloc` and `free`.
 ## Consequences
 
 - Allocation is a word scan: constant per frame when memory is fresh, linear in
-  the window after heavy fragmentation. Acceptable until K5.
+  the window after heavy fragmentation. Acceptable through K5, which asks for one frame at a
+  time and does not fragment the bitmap; revisit with K8.
 - A frame is handed out with whatever it held; page tables must be zeroed by
   the caller.
 - Not covered yet: frames that need contiguity or alignment above 4 KiB (DMA
