@@ -62,6 +62,8 @@ pub enum Error {
     /// The tables `boot.s` built do not describe the image as `ImageLayout`
     /// does: the report says how.
     BootTables(kernelvm::Audit),
+    /// The new upper half does not translate a part of the image to its frames.
+    NewTables(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -71,6 +73,7 @@ impl fmt::Display for Error {
             Self::Layout(error) => write!(f, "{error}"),
             Self::Map(error) => write!(f, "{error}"),
             Self::BootTables(report) => write!(f, "the boot tables are wrong: {report:?}"),
+            Self::NewTables(what) => write!(f, "the new tables are wrong: {what}"),
         }
     }
 }
@@ -394,11 +397,30 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
     };
     // The root the lower half is pointed at when it is dropped: all zeros.
     let empty = tables.allocate().ok_or(MapError::OutOfFrames)?;
+    // The first exception after the switch needs its stack and its vectors in
+    // the new root: a root that lacks them hangs the boot with no report.
+    check_new_root(upper, &layout)?;
     tables.publish();
     switch_upper_half(upper);
     super::read_physical_through_the_linear_map();
     crate::board::use_console_at(console as usize);
     drop_lower_half(empty);
+    Ok(())
+}
+
+/// Asks the new root, before it is used, whether the first and the last page
+/// of every part of the image translate to that part's own frames.
+fn check_new_root(root: u64, layout: &ImageLayout) -> Result<(), Error> {
+    for (range, _) in layout.parts() {
+        for physical in [range.start, range.end - kernelvm::PAGE_SIZE] {
+            let found = kernelvm::translate(&PhysicalTables, root, kernelvm::virtual_of(physical));
+            if found.is_none_or(|leaf| leaf.output != physical) {
+                return Err(Error::NewTables(
+                    "a part of the image is not mapped to its frames",
+                ));
+            }
+        }
+    }
     Ok(())
 }
 

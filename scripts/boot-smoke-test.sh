@@ -369,9 +369,13 @@ check_mmu() {
     [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "linear map report not found exactly once"
     read -r base bytes <<< "$line"
     [[ $((base)) -eq $((UPPER_BASE)) ]] || fail "the linear map starts at $base, expected $(hex "$UPPER_BASE")"
-    if [[ -n "${1:-}" ]]; then
-        [[ $((bytes)) -eq $(($1 * 1024 * 1024 - image_span_bytes)) ]] \
-            || fail "linear map holds $bytes bytes of RAM, expected $(($1 * 1024 * 1024 - image_span_bytes))"
+    # The expected size: MiB of RAM as the first argument, or a byte count as
+    # the second (what a memory map adds up to).
+    local expected=""
+    [[ -z "${1:-}" ]] || expected=$(($1 * 1024 * 1024 - image_span_bytes))
+    [[ -z "${2:-}" ]] || expected=$(($2))
+    if [[ -n "$expected" ]]; then
+        [[ $((bytes)) -eq "$expected" ]] || fail "linear map holds $bytes bytes of RAM, expected $expected"
     fi
     # The device window: the console's page, at the window's start.
     line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: device window at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of registers, console at \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
@@ -830,7 +834,15 @@ check_uefi_boot() {
     expect_once "frames: exhausted after $free allocations, next request refused" "exhaustion report"
     expect_once "frames: returned $free, $free free again" "return of every frame"
     expect_once "frames: double free refused" "double free refusal"
-    check_mmu
+    # The linear map holds all the RAM of the memory map (usable, kernel,
+    # reclaimable, as the kernel counts it) minus the image and its guard pages.
+    local ram_bytes=0
+    while read -r start end kind; do
+        case "$kind" in
+            usable | kernel | bootloader-reclaimable | acpi-reclaimable) ram_bytes=$((ram_bytes + end - start)) ;;
+        esac
+    done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    check_mmu "" "$((ram_bytes - image_span_bytes))"
     check_reclaim
     check_heap
 

@@ -953,6 +953,10 @@ impl DeviceWindow {
             .and_then(|end| end.checked_add(PAGE_SIZE - 1))
             .ok_or(MapError::NotCanonical)?
             & !(PAGE_SIZE - 1);
+        // Physical addresses have 48 bits: a leaf drops the rest silently.
+        if end > 1 << 48 {
+            return Err(MapError::NotCanonical);
+        }
         let bytes = end - start;
         if bytes
             .checked_add(PAGE_SIZE)

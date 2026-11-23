@@ -1168,3 +1168,12 @@ fn the_acpi_root_pointer_is_handed_over_as_the_firmware_has_it() {
     );
     assert_eq!(result.expect("accepted").1.rsdp, 0x4fff_0000);
 }
+
+#[test]
+fn a_small_entry_across_512_gib_fits_the_pool_the_bound_gives() {
+    // 2 MiB around the 512 GiB line: a level 1 table of the second span, two
+    // level 2 tables and two level 3 tables beyond the root and the first level 1.
+    let entries = std::vec![entry((1 << 39) - 0x10_0000, 0x200, MemoryKind::Usable)];
+    let mut tables = pool(tables_needed(&entries));
+    assert!(build_identity_map(&mut tables, &entries, attributes(48)).is_ok());
+}

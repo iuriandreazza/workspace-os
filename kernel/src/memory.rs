@@ -321,9 +321,19 @@ impl Reclaim {
     }
 }
 
-/// The words of a frame the self-test writes: a few across the page, so a
-/// frame that something else still uses shows in at least one.
-const PATTERN_OFFSETS: [usize; 9] = [0, 512, 1024, 1536, 2048, 2560, 3072, 3584, 4088];
+/// The words of a frame the self-test writes, so a frame that something else
+/// still uses shows in at least one.
+/// One 8-byte word in every 16 bytes: any 24-byte memory map entry holds one,
+/// so a frame that still keeps the map shows.
+const PATTERN_OFFSETS: [usize; 256] = {
+    let mut offsets = [0; 256];
+    let mut i = 0;
+    while i < 256 {
+        offsets[i] = i * 16;
+        i += 1;
+    }
+    offsets
+};
 
 fn pattern(frame: u64, word: usize) -> u64 {
     frame.rotate_left(17) ^ 0x5eed_0000_0000_0000 ^ word as u64
