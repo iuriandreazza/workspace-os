@@ -81,6 +81,7 @@ MUTATIONS = [
     ("layouts.py", "if len(set(paths)) == len(paths) and not used & set(paths):", "if True:", "repeated paths kept"),
     ("layouts.py", "paths = [path.lower() for path, _ in entry.files]", "paths = [path for path, _ in entry.files]", "paths compared case-sensitively"),
     ("layouts.py", "if path.lower() not in used:\n            used.add(path.lower())", "if True:\n            used.add(path.lower())", "a file may reuse an entry's path"),
+    ("layouts.py", "if c.path.lower() not in taken]", "if True]", "a decoy may take a real file's path"),
     # fetch.py
     ("fetch.py", "if gnu and gnu.group(2) == name:", "if gnu and name in gnu.group(2):", "checksum name matched by substring"),
     ("fetch.py", "if sha256(data) != pin_[\"sha256\"]:\n        raise ValueError", "if False:\n        raise ValueError", "cache entry not re-checked"),

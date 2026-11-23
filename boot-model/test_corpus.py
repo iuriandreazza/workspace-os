@@ -208,12 +208,17 @@ class Layouts(unittest.TestCase):
         for c in decoys:
             self.assertEqual((c.family, c.protocol, c.role), ("none", "none", "other"))
 
+    def test_a_decoy_never_shares_a_path_with_a_real_file(self):
+        for disk in self.disks(300, mode="decoy"):
+            paths = [c.path.lower() for c in disk if c.system != "partition"]
+            self.assertEqual(len(paths), len(set(paths)))
+
     def test_partitions_are_candidates_too(self):
         parts = [c for disk in self.disks(40) for c in disk if c.system == "partition"]
         self.assertTrue(parts)
         for c in parts:
-            self.assertEqual(c.window[64:80], c.window[64:80])
             self.assertEqual(len(c.window), 512)
+            self.assertIn(c.window[64:80], [guid for _, guid, _ in synthetic.PARTITIONS])  # the GUID sits at 64..80
             self.assertEqual((c.family, c.protocol, c.role), ("none", "none", "other"))
 
     def test_a_disk_holds_one_file_per_path(self):

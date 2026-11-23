@@ -49,7 +49,7 @@ the main thing this report has to say.
 |---|---:|---:|---:|
 | test, ordinary names | 95.11 % | 0 / 14,434 | 0 / 294 |
 | test-renamed: every file of an entry has a random name | 87.87 % | 9 / 6,043 | 1 / 129 |
-| test-decoy: files that are not kernels sit under the names of one (`\vmlinuz`, `\KERNEL.ELF`, `\EFI\BOOT\BOOTAA64.EFI`) | 90.64 % | 145 / 6,794 (2.1 % of the non-kernels; about 12 % of the 1,209 decoys) | 0 / 129 |
+| test-decoy: files that are not kernels sit under the names of one (`\vmlinuz`, `\KERNEL.ELF`, `\EFI\BOOT\BOOTAA64.EFI`) | 91.34 % | 131 / 6,826 (1.9 % of the non-kernels; about 12.8 % of the 1,023 decoys) | 0 / 129 |
 | distributions never seen in training (Fedora, Rocky, AlmaLinux, openSUSE all left out) | 69.54 % | 407 / 8,507 (4.8 %) | n/a |
 
 What the numbers do not say:
@@ -67,8 +67,8 @@ What the numbers do not say:
 ## What the model gets wrong
 
 On the test set, kernel recall is 76.9 %: 342 kernels called "other" and 296 called "initrd".
-No other role has a recall below 100 %, and every error of the other outputs follows from
-those (the second table of the report lists the confusion matrices).
+No other role has a recall below 100 %. Most errors of the other outputs follow from those; not all:
+74 `none` candidates (Rocky's `mmaa64.efi` among them) are called Linux, and 489 candidates that are not Linux-stub kernels get protocol `linux`, which includes bare-gzip kernels and other files.
 
 - **Kernels in a format the training set has once.** Alpine 3.18 and older ship the `virt`
   and `lts` kernels, and Rocky and AlmaLinux ship every kernel, as a bare gzip stream, not
@@ -80,13 +80,13 @@ those (the second table of the report lists the confusion matrices).
   are called an initrd.
 - **A distribution it has not seen is much worse** (last table above): on Fedora, Rocky,
   AlmaLinux and openSUSE after training without any of them, initrd recall is 0.0 % (their
-  initrds are xz streams and the training set holds only gzip ones), kernel recall 55.9 % and 406 data files are called kernels. (Entry text recall is also 0.0 % there, but that is by construction: the only generator of entry text
+  initrds are xz streams and the training set holds only gzip ones, the likely cause; format, system and name were not separated by an experiment), kernel recall 55.9 % and 407 candidates that are not kernels are called kernels (406 data files and one initrd). (Entry text recall is also 0.0 % there, but that is by construction: the only generator of entry text
   is the Fedora family, which the fold removes, so the training set had none.) A boot model that meets a new
   distribution will be wrong, and wrong in the direction the safety rule fears. The loader's
   format check (ADR 0027, section 4) is what stops a false kernel from being started; the model
   does not.
 - **It reads names.** Trained on the name alone it gets 95.98 % on the test set, on the bytes alone
-  94.76 %, both together 95.11 %. On bytes alone the protocol is 100 % and the role 94.8 % (only the accuracies of the ablation were stored; a look at its errors, not kept, found kernels called "other" and no initrd taken for another file). The easy part is that the negatives are easy: the junk files are made by `synthetic.py` and a generated gzip file is not a real initrd, and partitions and Alpine rootfs files fill most of the 14,434 non-kernels. The "0 false kernels" of the headline is against those negatives, and a harder set of real compressed files was not built. The name carries the rest of the decision, and a file with a kernel's name and no kernel's header is called a kernel about 12 % of the time: 145 false kernels among about 1,209 decoy files of the decoy set (the 2.1 % in the table is the share of all 6,794 non-kernel candidates of that set).
+  94.76 %, both together 95.11 %. On bytes alone the protocol is 100 % and the role 94.8 % (only the accuracies of the ablation were stored; a look at its errors, not kept, found kernels called "other" and no initrd taken for another file). The easy part is that the negatives are easy: the junk files are made by `synthetic.py` and a generated gzip file is not a real initrd, and partitions and Alpine rootfs files fill most of the 14,434 non-kernels. The "0 false kernels" of the headline is against those negatives, and a harder set of real compressed files was not built. The name carries the rest of the decision, and a file with a kernel's name and no kernel's header is called a kernel about 13 % of the time: 131 false kernels among 1,023 decoy files of the decoy set (the 1.9 % in the table is the share of all 6,826 non-kernel candidates of that set). The decoy figures were recomputed with the stored weights after a review found decoys that shared a path with a real file (fixed in `layouts.make_disk`); the other sets do not use decoys and are unchanged.
 
 ## Label set
 
@@ -170,7 +170,7 @@ Releases are held out whole, in two sets fixed at different times:
 
 - **validation**: held out from the start (the newest release of each distribution, the K4 and K5 kernels,
   the Cortex-A72 trees), and **used while developing the method**. The first full run, trained
-  without regularisation, got about 71 % on a held-out set of those releases and showed the network memorising the compressed bytes of an
+  without regularisation, got about 71 % on the validation releases (that run predates the pins of the test releases: it could not have read them) and showed the network memorising the compressed bytes of an
   initrd. Three choices answer that and were made looking at validation: a cosine learning rate, a small
   weight (0.05) on the group head, and two augmentations (zero the content of a quarter of the windows and
   the name of 15 %, and replace the tail of high-entropy windows by fresh random bytes, which keeps the
@@ -182,8 +182,7 @@ Releases are held out whole, in two sets fixed at different times:
   that does not depend on the model, fixed and the run repeated; (2) the first run labelled a Linux kernel
   that is a bare gzip stream as `linux`, and reading the errors showed those labels disagree with ADR 0027,
   section 4 (the loader refuses a non-PE Linux image). They became protocol `none` (`catalogue.refine`) and
-  the run was repeated. The first run had 98.28 % on the test set; the corrected labels make the task harder
-  and the result 95.11 %. Nothing else was changed after the test set was first read.
+  the run was repeated. The test set was run three times: 96.96 % (before the generator fix), 98.28 % (after it) and 95.11 % (with the corrected labels, the number reported here); the corrected labels make the task harder. Nothing else was changed after the test set was first read.
 
 **How leakage was prevented.** No release is in two splits (`test_corpus.py` checks it). Junk files are
 generated from different seeds for each split. The same bytes can still occur in two releases, because a
@@ -285,7 +284,7 @@ the training 145 s. The corpus fingerprint of the numbers here is `9f3c19ee…` 
 
 - **The weights are not byte-reproducible.** Two runs with the same seeds, the same data and single-threaded BLAS gave
   models with different SHA-256 (`cbcf1168…`, the one evaluated here, and `37996262…`) and test accuracies of 95.11 % and 95.03 %.
-  The cause was not isolated (a numerical library on macOS is the suspect). Expect a spread of about a tenth of a point, not identical weights.
+  The cause was not isolated (a numerical library on macOS is the suspect). Expect a spread of about a tenth of a point on the all-three accuracy, not identical weights; counts that depend on a few errors move more: the disks with no strict safety error were 1,219 of 1,500 here and 1,343 in the second run (and 829 and 834 disks with every candidate exact).
 - **Our own binaries depend on the compiler.** `build_ours.py` rebuilds the kernels and bootloaders at the commits it lists
   and pins their first 4 KiB; with another `rustc` the pins change, and so does the fingerprint.
 

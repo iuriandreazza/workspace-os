@@ -1,5 +1,5 @@
 ---
-title: "ADR 0034: The boot model's group output cannot be learned one candidate at a time"
+title: "ADR 0034: The boot model's group output is a property of the disk, not of a candidate"
 type: adr
 status: proposed
 created: 2026-11-23
@@ -7,7 +7,7 @@ updated: 2026-11-23
 tags: [boot, bootloader, model, amendment, entries]
 ---
 
-# ADR 0034: The boot model's group output cannot be learned one candidate at a time
+# ADR 0034: The boot model's group output is a property of the disk, not of a candidate
 
 ## Context
 

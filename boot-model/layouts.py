@@ -287,7 +287,8 @@ def make_disk(rng, corpus, disk_id, split, mode="normal"):
     for path, asset in extras:
         candidates.append(_candidate(path, asset, NO_ENTRY, None, disk_id, split))
     if mode == "decoy":
-        candidates += decoys(rng, corpus, disk_id, split)
+        taken = {c.path.lower() for c in candidates}
+        candidates += [c for c in decoys(rng, corpus, disk_id, split) if c.path.lower() not in taken]
     for name, guid, start in rng.sample(__import__("synthetic").PARTITIONS, rng.randrange(1, 4)):
         label = rng.choice(name)
         content = start(rng)
