@@ -132,6 +132,8 @@ readonly MAX_RESERVED_FRAMES=1024
 # kernel, and set a longer wait for their own duration.
 BOOT_TIMEOUT_SECONDS=10
 readonly UEFI_BOOT_TIMEOUT_SECONDS=90
+# The big machine's firmware and kernel take longer (page tables for 520 GiB).
+readonly HUGE_BOOT_TIMEOUT_SECONDS=240
 readonly SETTLE_SECONDS=1
 # Fixed target directory: with CARGO_TARGET_DIR set, cargo would build
 # elsewhere and the test would boot a stale binary from here.
@@ -346,7 +348,7 @@ check_frames() {
 # MEMORY_MIB (a machine with one region of RAM) the lower half must also hold
 # exactly that RAM less the image and its guard page.
 check_mmu() {
-    local upper lower text read_only read_write lower_rw device lower_text
+    local upper text read_only read_write line base bytes device_bytes console count
     expect_once "mmu: write xor execute holds: no page is writable and executable, WXN is set" \
         "write xor execute report"
     upper="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: upper half at 0x[0-9a-f]*: text \(0x[0-9a-f]*\) bytes, read only \(0x[0-9a-f]*\), read write \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
@@ -360,15 +362,36 @@ check_mmu() {
     expect_once "mmu: every leaf maps its own frame with its own memory type" "audit of addresses and memory types"
     expect_once "$expected_extensions" "permission indirection registers"
     check_handoff_read_again
-    lower="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: lower half at 0x[0-9a-f]*: read write \(0x[0-9a-f]*\) bytes, device \(0x[0-9a-f]*\), text \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
-    [[ "$(echo "$lower" | wc -l)" -eq 1 && -n "$lower" ]] || fail "lower half report not found exactly once"
-    read -r lower_rw device lower_text <<< "$lower"
-    [[ $((device)) -eq $FRAME_SIZE && $((lower_text)) -eq 0 ]] \
-        || fail "lower half maps $device bytes of devices and $lower_text of code, expected one page and none"
-    if [[ -n "${1:-}" ]]; then
-        [[ $((lower_rw)) -eq $(($1 * 1024 * 1024 - image_span_bytes)) ]] \
-            || fail "lower half maps $lower_rw bytes of RAM, expected $(($1 * 1024 * 1024 - image_span_bytes))"
+
+    # The linear map (ADR 0033): at the start of the upper half, holding RAM
+    # minus the image, read and write.
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: linear map at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of RAM, read write, never executed, the image left out$/\1 \2/p')"
+    [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "linear map report not found exactly once"
+    read -r base bytes <<< "$line"
+    [[ $((base)) -eq $((UPPER_BASE)) ]] || fail "the linear map starts at $base, expected $(hex "$UPPER_BASE")"
+    # The expected size: MiB of RAM as the first argument, or a byte count as
+    # the second (what a memory map adds up to).
+    local expected=""
+    [[ -z "${1:-}" ]] || expected=$(($1 * 1024 * 1024 - image_span_bytes))
+    [[ -z "${2:-}" ]] || expected=$(($2))
+    if [[ -n "$expected" ]]; then
+        [[ $((bytes)) -eq "$expected" ]] || fail "linear map holds $bytes bytes of RAM, expected $expected"
     fi
+    # The device window: the console's page, at the window's start.
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: device window at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of registers, console at \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
+    [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "device window report not found exactly once"
+    read -r base device_bytes console <<< "$line"
+    [[ $((base)) -eq $((DEVICE_BASE)) && $((device_bytes)) -eq $FRAME_SIZE && $((console)) -eq $((DEVICE_BASE)) ]] \
+        || fail "device window at $base holds $device_bytes bytes with the console at $console, expected one page at $(hex "$DEVICE_BASE")"
+    # The lower half is empty after the switch (ADR 0033): no leaf under its
+    # root, walks through it off, and the hardware refuses every address that
+    # was mapped there before: the console's registers, the image, the
+    # hand-over and the start of each region of RAM. (Once walks are off the
+    # probes fault whatever the tables hold; the kernel also asserts the empty
+    # root and the EPD0 bit, and a control probe shows a probe can succeed.)
+    count="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: lower half dropped: TCR_EL1.EPD0 set, root at 0x[0-9a-f]* holds 0 leaves, \([0-9]*\) addresses translate to nothing$/\1/p')"
+    [[ "$(echo "$count" | wc -l)" -eq 1 && -n "$count" ]] || fail "lower half report not found exactly once, or it holds leaves"
+    [[ "$count" -ge 5 ]] || fail "only $count addresses were probed in the lower half, expected at least 5"
 }
 
 # check_handoff_read_again: the kernel read the boot info, the memory map and the
@@ -376,7 +399,7 @@ check_mmu() {
 # got what it had read before. The digest must cover at least the device tree
 # blob the kernel reserved, or it would not show a window that lost it.
 check_handoff_read_again() {
-    local line bytes blob blob_start blob_end
+    local line bytes blob blob_start blob_end digests
     expect_once "handoff: read again after the switch, " "read of the hand-over after the switch"
     line="$(plain_log | sed -n 's/^  kernel  .\{4\}  handoff: read again after the switch, \([0-9]*\) bytes, digest 0x[0-9a-f]*, as before it$/\1/p')"
     bytes="$line"
@@ -386,6 +409,45 @@ check_handoff_read_again() {
     read -r blob_start blob_end <<< "$blob"
     [[ "$bytes" -gt $((blob_end - blob_start)) ]] \
         || fail "the hand-over digest covers $bytes bytes, fewer than the $((blob_end - blob_start)) of the device tree"
+    # The kernel copied what it keeps out of the bootloader's memory, gave that
+    # memory to the allocator, used it, and the hand-over still digests the same
+    # (ADR 0033): all three lines carry one digest.
+    expect_once "handoff: kept by the kernel, " "copy of the hand-over out of the bootloader's memory"
+    expect_once "handoff: read again after the reclaimed memory was used, " "read of the hand-over after the reclaimed memory was used"
+    digests="$(plain_log | sed -n 's/^  kernel  .\{4\}  handoff: .*, [0-9]* bytes, digest \(0x[0-9a-f]*\), as before it$/\1/p')"
+    [[ "$(echo "$digests" | wc -l)" -eq 3 && "$(echo "$digests" | sort -u | wc -l)" -eq 1 ]] \
+        || fail "the three digests of the hand-over are not one value: $(echo "$digests" | tr '\n' ' ')"
+}
+
+# check_reclaim: what the kernel gave to the frame allocator from the
+# bootloader's memory (ADR 0033) is what the memory map says it owned: the
+# frames of every bootloader-reclaimable entry inside the allocator's window,
+# from the lowest RAM address up, and every one of them was allocated and used.
+# A direct load has nothing to give.
+check_reclaim() {
+    local start end kind low high expected=0 regions=0 line released used region_count
+    local window_end=$((RAM_BASE + 4 * 1024 * 1024 * 1024))
+    if [[ "${1:-}" == direct ]]; then
+        expect_once "frames: no bootloader memory to reclaim (direct load)" "reclaim report of a direct load"
+        return
+    fi
+    while read -r start end kind; do
+        [[ "$kind" == bootloader-reclaimable ]] || continue
+        regions=$((regions + 1))
+        low=$((start))
+        high=$((end))
+        [[ "$high" -le "$window_end" ]] || high=$window_end
+        [[ "$low" -ge "$high" ]] || expected=$((expected + (high - low) / FRAME_SIZE))
+    done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    [[ "$regions" -gt 0 && "$expected" -gt 0 ]] || fail "the memory map holds no bootloader-reclaimable memory inside the window"
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: reclaimed \([0-9]*\) frames ([0-9]* KiB) of \([0-9]*\) bootloader memory regions, [0-9]* free now$/\1 \2/p')"
+    [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "reclaim report not found exactly once"
+    read -r released region_count <<< "$line"
+    [[ "$released" -eq "$expected" && "$region_count" -eq "$regions" ]] \
+        || fail "the kernel reclaimed $released frames of $region_count regions; the memory map has $expected frames in $regions regions"
+    used="$(plain_log | sed -n 's/^  kernel  .\{4\}  frames: reclaimed memory used: \([0-9]*\) frames allocated, written and read back through the linear map, then freed$/\1/p')"
+    [[ "$(echo "$used" | wc -l)" -eq 1 && "$used" == "$released" ]] \
+        || fail "the kernel used '$used' of the $released reclaimed frames"
 }
 
 # check_heap: the kernel heap (ADR 0029) ran its stress test and reported it:
@@ -440,6 +502,7 @@ check_boot() {
     expect_once "$RESUME_MARKER" "resume after the breakpoint"
     check_frames "$(memory_mib_of "$@")"
     check_mmu "$(memory_mib_of "$@")"
+    check_reclaim direct
     check_heap
 
     stop_qemu
@@ -773,7 +836,16 @@ check_uefi_boot() {
     expect_once "frames: exhausted after $free allocations, next request refused" "exhaustion report"
     expect_once "frames: returned $free, $free free again" "return of every frame"
     expect_once "frames: double free refused" "double free refusal"
-    check_mmu
+    # The linear map holds all the RAM of the memory map (usable, kernel,
+    # reclaimable, as the kernel counts it) minus the image and its guard pages.
+    local ram_bytes=0
+    while read -r start end kind; do
+        case "$kind" in
+            usable | kernel | bootloader-reclaimable | acpi-reclaimable) ram_bytes=$((ram_bytes + end - start)) ;;
+        esac
+    done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    check_mmu "" "$((ram_bytes - image_span_bytes))"
+    check_reclaim
     check_heap
 
     BOOT_TIMEOUT_SECONDS=10
@@ -843,6 +915,17 @@ readonly KERNEL_OFFSET
 [[ -n "$KERNEL_OFFSET" ]] || fail "KERNEL_OFFSET not found in kernelvm/src/lib.rs"
 [[ "$(( $(symbol_address KERNEL_OFFSET) ))" -eq $((KERNEL_OFFSET)) ]] \
     || fail "link.ld defines KERNEL_OFFSET as $(symbol_address KERNEL_OFFSET), kernelvm as $KERNEL_OFFSET"
+
+# The other windows of the upper half (ADR 0033), read from kernelvm too: the
+# linear map starts at the start of the upper half, the device window is a
+# number of gigabytes into the last 512 GiB.
+UPPER_BASE="$(sed -n 's/^pub const UPPER_BASE: u64 = \(0x[0-9a-f_]*\);$/\1/p' kernelvm/src/lib.rs | tr -d '_')"
+readonly UPPER_BASE
+[[ -n "$UPPER_BASE" ]] || fail "UPPER_BASE not found in kernelvm/src/lib.rs"
+device_gigabytes="$(sed -n 's/^pub const DEVICE_BASE: u64 = KERNEL_OFFSET + (\([0-9]*\) << 30);$/\1/p' kernelvm/src/lib.rs)"
+[[ -n "$device_gigabytes" ]] || fail "DEVICE_BASE not found in kernelvm/src/lib.rs"
+DEVICE_BASE=$((KERNEL_OFFSET + (device_gigabytes << 30)))
+readonly DEVICE_BASE
 
 # physical_symbol NAME: the physical address of a symbol, as a number.
 physical_symbol() {
@@ -941,10 +1024,126 @@ check_boot smp -machine secure=on -smp 4 -kernel "$KERNEL_ELF"
 check_boot el2 -machine virtualization=on -kernel "$KERNEL_ELF"
 check_boot el3 -machine secure=on -kernel "$KERNEL_ELF"
 check_boot el3-el2 -machine secure=on,virtualization=on -kernel "$KERNEL_ELF"
+
+# ---- A machine with RAM above 512 GiB (ADR 0033) ---------------------------
+#
+# 520 GiB from 1 GiB ends at 521 GiB, above what a 39-bit regime reaches. QEMU
+# does not touch guest RAM it is not given work on, so the boot needs no such
+# amount of host memory, but the host must let QEMU reserve the address space:
+# macOS does, Linux with the default overcommit heuristic may not, and then
+# `memory-backend-ram,reserve=off` asks for it without the reservation. If
+# neither starts, the two boots are skipped with QEMU's own reason on the
+# screen, and the construction of such tables is covered by the host tests
+# alone (ADR 0033, Known limits).
+readonly HUGE_MIB=$((520 * 1024))
+HUGE_RAM=()
+
+# huge_machine_starts: finds the QEMU arguments that start the big machine and
+# leaves them in HUGE_RAM. The machine is only started and stopped.
+huge_machine_starts() {
+    local attempt
+    for attempt in plain backend; do
+        case "$attempt" in
+            plain) HUGE_RAM=(-m "${HUGE_MIB}M") ;;
+            backend) HUGE_RAM=(-m "${HUGE_MIB}M" -object "memory-backend-ram,id=huge,size=${HUGE_MIB}M,reserve=off" -machine "virt,memory-backend=huge") ;;
+        esac
+        start_qemu "huge-probe-$attempt" "${HUGE_RAM[@]}" -S
+        sleep 2
+        if qemu_is_running; then
+            stop_qemu
+            return 0
+        fi
+        echo "huge machine: QEMU did not start with ${HUGE_RAM[*]}: $(head -c 300 "$work_dir/$boot_name.qemu" | tr '\n' ' ')" >&2
+    done
+    HUGE_RAM=()
+    return 1
+}
+
+# check_high_frame: the kernel wrote to a frame of RAM beyond what the allocator
+# manages, through the linear map, and read it back. On the big machine that
+# frame is above 512 GiB, where a 39-bit map has nothing.
+check_high_frame() {
+    local line frame gigabytes at
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  linear map: frame \(0x[0-9a-f]*\) (\([0-9]*\) GiB up), outside the allocator.s window, written and read back at \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
+    [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "the test of the linear map beyond the allocator's window not found exactly once"
+    read -r frame gigabytes at <<< "$line"
+    [[ "$gigabytes" -ge 512 && "$gigabytes" -lt "$((HUGE_MIB / 1024 + 1))" ]] \
+        || fail "the frame tested lies $gigabytes GiB up, expected above 512 GiB on this machine"
+    [[ $((at)) -eq $((UPPER_BASE + frame)) ]] || fail "frame $frame was read at $at, not at the linear map's $(hex $((UPPER_BASE + frame)))"
+}
+
+# check_huge NAME UEFI QEMU_ARGS...: boots the big machine and checks what only
+# it shows: the memory map reaches past 512 GiB, the linear map holds all of it,
+# and a frame up there reads back what was written to it. UEFI is yes or no.
+check_huge() {
+    local name="$1" uefi="$2" line mib_reported base bytes end_of_ram=0 start end kind
+    shift 2
+    BOOT_TIMEOUT_SECONDS=$HUGE_BOOT_TIMEOUT_SECONDS
+    start_qemu "$name" "$@"
+    wait_for_banner
+    wait_for_line "$RESUME_MARKER"
+    sleep "$SETTLE_SECONDS"
+    qemu_is_running || fail "QEMU exited after the boot banner"
+    if grep -qF "$PANIC_MARKER" "$serial_log"; then
+        fail "kernel panicked after the boot banner"
+    fi
+    expect_once "$EXPECTED_BANNER" "boot banner"
+    expect_once "$UART_REPORT" "UART report"
+    expect_once "$RESUME_MARKER" "resume after the breakpoint"
+    mib_reported="$(plain_log | sed -n 's/^  kernel  .\{4\}  memory \([0-9]*\) MiB at 0x40000000$/\1/p')"
+    [[ "$(echo "$mib_reported" | wc -l)" -eq 1 && -n "$mib_reported" ]] || fail "memory report not found exactly once"
+    [[ "$mib_reported" -le "$HUGE_MIB" && "$mib_reported" -ge $((HUGE_MIB * 99 / 100)) ]] \
+        || fail "kernel reports $mib_reported MiB, expected most of $HUGE_MIB"
+    # RAM reaches beyond 512 GiB in the memory the kernel was given, and the
+    # linear map holds it all (less the image and, through the bootloader, what
+    # the firmware keeps out of RAM).
+    while read -r start end kind; do
+        [[ "$kind" == reserved || "$kind" == reserved-mapped ]] || end_of_ram=$(( $((end)) > end_of_ram ? $((end)) : end_of_ram ))
+    done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+    if [[ "$uefi" == yes ]]; then
+        [[ "$end_of_ram" -gt $((512 * 1024 * 1024 * 1024)) ]] || fail "the memory map ends at $(hex "$end_of_ram"), not above 512 GiB"
+        expect_once "entry: bootloader, boot info 1.0, mode 0 (normal)," "entry through the bootloader"
+        check_mmu
+        check_reclaim
+    else
+        expect_once "entry: direct load" "direct entry"
+        check_mmu "$HUGE_MIB"
+        check_reclaim direct
+    fi
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: linear map at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of RAM, .*$/\1 \2/p')"
+    read -r base bytes <<< "$line"
+    [[ "$bytes" -gt $((512 * 1024 * 1024 * 1024)) ]] || fail "the linear map holds $bytes bytes, not more than 512 GiB"
+    if [[ "$uefi" == yes ]]; then
+        # ... and all of the RAM of the memory map, less the image.
+        local ram_bytes=0
+        while read -r start end kind; do
+            case "$kind" in
+                usable | kernel | bootloader-reclaimable | acpi-reclaimable) ram_bytes=$((ram_bytes + end - start)) ;;
+            esac
+        done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+        [[ "$bytes" -eq $((ram_bytes - image_span_bytes)) ]] \
+            || fail "the linear map holds $bytes bytes, the memory map's RAM less the image is $((ram_bytes - image_span_bytes))"
+    fi
+    check_high_frame
+    check_heap
+    BOOT_TIMEOUT_SECONDS=10
+    stop_qemu
+    echo "PASS ($boot_name): a machine with $((HUGE_MIB / 1024)) GiB of RAM booted, the linear map reached above 512 GiB"
+}
+
 extra_reserved_frames=$MEMRESERVE_FRAMES
 extra_reserved_ranges=2
 expected_blob_size=""
 check_boot memreserve -dtb "$memreserve_dtb" -kernel "$KERNEL_ELF"
+extra_reserved_frames=0
+extra_reserved_ranges=0
+expected_blob_size=""
+# More than 512 GiB of RAM, directly loaded (ADR 0033).
+if huge_machine_starts; then
+    check_huge huge-direct no "${HUGE_RAM[@]}" -kernel "$KERNEL_ELF"
+else
+    echo "SKIP (huge-direct, huge-uefi): QEMU cannot start a guest with $((HUGE_MIB / 1024)) GiB of RAM on this machine; the tables for RAM above 512 GiB are covered by the host tests only (ADR 0033, Known limits)"
+fi
 
 # Every frame below the image reserved: the allocator then hands the page tables
 # frames from the tail of the image's own 2 MiB, which the boot tables must map.
@@ -998,6 +1197,12 @@ check_uefi_boot uefi-el2 256 2 normal 1 -machine virtualization=on
 check_uefi_boot uefi-el2-high 3584 2 normal enter -machine virtualization=on
 check_uefi_boot uefi-recovery 256 1 recovery 2
 check_uefi_boot uefi-recovery-arrows 256 1 recovery down,hold,enter
+# More than 512 GiB of RAM through the bootloader (ADR 0033): its identity map
+# reaches the memory map's last page, where EDK2 puts what it allocates.
+if [[ "${#HUGE_RAM[@]}" -gt 0 ]]; then
+    check_huge huge-uefi yes -machine virt,acpi=off "${HUGE_RAM[@]}" -bios "$uefi_firmware" \
+        -drive "file=$disk_image,format=raw,if=virtio"
+fi
 check_uefi_retry uefi-retry "$retry_image"
 check_uefi_refusal uefi-acpi-only "$disk_image" "the firmware offers ACPI only (rsdp 0x" -machine virt
 # The root pointer is the one non-zero `rsdp` any boot here can show: QEMU's

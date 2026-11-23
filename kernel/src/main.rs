@@ -30,8 +30,9 @@ pub extern "C" fn kernel_main(
     let board = if entered_by_bootloader == 1 {
         match board::from_boot_info(handoff_address) {
             Ok(board) => board,
-            Err((error, console_usable)) => {
-                if console_usable {
+            Err((error, console)) => {
+                if let Some(base) = console {
+                    board::use_console_at(base);
                     klog!(Error, board::console(), "{error}");
                 }
                 arch::halt()
@@ -45,6 +46,9 @@ pub extern "C" fn kernel_main(
         }
     };
 
+    // The console is at the physical address the hand-over names until the
+    // kernel's tables are live (ADR 0033).
+    board::use_console_at(board.uart.base as usize);
     let mut console = board::console();
     log::banner(&mut console, arch::current_el());
     klog!(Ok, console, "booted on aarch64 in EL{}", arch::current_el());
@@ -132,15 +136,16 @@ pub extern "C" fn kernel_main(
     if let Err(error) = arch::mmu::init(&mut frames, &board) {
         panic!("mmu: {error}");
     }
-    arch::mmu::verify(&mut console, &board);
-
-    // The hand-over is read again from its address, now through the window the
-    // kernel built (ADR 0026): a window that lost a region faults here, one
-    // that maps another frame reads other bytes.
-    let after = match board.read_again(handoff_address) {
-        Ok(again) => again.handoff_digest(),
+    // The lower half is gone: the hand-over is read again from its address
+    // through the linear map (ADR 0033), and from here on it is this board the
+    // kernel uses, never the one read through the entry's map. A linear map
+    // that lost a region faults here, one that maps another frame reads other
+    // bytes.
+    let board = match board.read_again(handoff_address) {
+        Ok(again) => again,
         Err(error) => panic!("handoff read again after the switch: {error}"),
     };
+    let after = board.handoff_digest();
     assert!(
         before == after,
         "handoff read after the switch differs from the one before it"
@@ -152,6 +157,8 @@ pub extern "C" fn kernel_main(
         after.bytes,
         after.value
     );
+    arch::mmu::verify(&mut console, &board, handoff_address);
+    memory::linear_map_selftest(&board, frames.window(), &mut console);
 
     let entry = match board.entry {
         board::Entry::Direct => "direct load by the QEMU loader",
@@ -173,6 +180,41 @@ pub extern "C" fn kernel_main(
         panic!("heap: {error}");
     }
     heap::selftest(&mut console);
+
+    // The memory the bootloader owned goes to the frame allocator (ADR 0033):
+    // first everything the kernel keeps from it is copied into the heap, then
+    // the frames are released and used, then the hand-over is digested again,
+    // which a board still pointing into that memory would fail.
+    let board = board.into_owned();
+    let copied = board.handoff_digest();
+    assert!(
+        before == copied,
+        "the hand-over copied into the heap differs from the one read"
+    );
+    klog!(
+        Ok,
+        console,
+        "handoff: kept by the kernel, {} bytes, digest {:#x}, as before it",
+        copied.bytes,
+        copied.value
+    );
+    let mut reclaim = memory::Reclaim::plan(&board);
+    heap::with_frames(|frames| reclaim.release(frames, &mut console));
+    heap::with_frames(|frames| memory::reclaim_selftest(frames, &reclaim, &mut console));
+    // Its lists are heap memory that has done its job.
+    drop(reclaim);
+    let used = board.handoff_digest();
+    assert!(
+        before == used,
+        "the hand-over changed after the reclaimed memory was used"
+    );
+    klog!(
+        Ok,
+        console,
+        "handoff: read again after the reclaimed memory was used, {} bytes, digest {:#x}, as before it",
+        used.bytes,
+        used.value
+    );
     #[cfg(feature = "selftest-heap-exhaustion")]
     heap::exhaust(&mut console);
 
