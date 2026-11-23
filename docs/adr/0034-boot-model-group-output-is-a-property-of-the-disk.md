@@ -26,7 +26,7 @@ on a disk where three others sort before it, and nothing in its 512 bytes says w
 entries in a random order, so the measurements below show the consequence of that, **not an empirical property of real
 disks**; the argument rests on the structure, and a deterministic numbering was not trained.
 
-This ADR changes no decision of ADR 0027 except that one output and what depends on it: section 3 ("an entry is assembled from one group") and section 4.1 ("a group with two kernels" is rejected) would be read as applying to the entries the loader assembles, not to a model output. If accepted, ADR 0027 is amended by this ADR, as it is by ADR 0030. It is `proposed`: it
+This ADR changes no decision of ADR 0027 except that one output and what depends on it: section 3 ("an entry is assembled from one group") and section 4, item 1 ("a group with two kernels" is rejected) would be read as applying to the entries the loader assembles, not to a model output. If accepted, ADR 0027 is amended by this ADR, as it is by ADR 0030. It is `proposed`: it
 changes how entries are assembled, which touches ADR 0009 ("no rule based scanner runs
 beside the model to overrule it"), and that is the project owner's call.
 
