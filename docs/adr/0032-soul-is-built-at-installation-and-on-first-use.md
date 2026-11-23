@@ -1,7 +1,7 @@
 ---
 title: "ADR 0032: The SOUL is built at installation, and at the first use of a machine that has none"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-23
 updated: 2026-11-23
 tags: [soul, interview, installer, shell, first-run]
@@ -11,11 +11,7 @@ tags: [soul, interview, installer, shell, first-run]
 
 ## Status
 
-**Proposed.** The two rules in "Decision" are the user's, given in chat on
-2026-11-23 ("during installation it must go through the guide, and if one
-enters the intent shell and there is none, it must go through the process of
-building a SOUL"). The details in "Decisions that are mine" are not yet
-accepted by the user. It adds to ADR 0006 (the interview and the presets, and
+**Accepted by the project owner on 2026-11-23.** The two rules in "Decision" are the user's, given in chat on 2026-11-23 ("during installation it must go through the guide, and if one enters the intent shell and there is none, it must go through the process of building a SOUL"); the details in "Decisions that are mine" were accepted in the same session. It adds to ADR 0006 (the interview and the presets, and
 that a SOUL is defined at installation) and ADR 0028 (the file the interview
 writes). It supersedes nothing.
 

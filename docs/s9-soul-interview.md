@@ -26,7 +26,7 @@ and from ADR 0007, and is listed with the clause it follows from.
 ```
 
 **First use.** A shell started on a terminal on a machine with no SOUL builds one
-before the session, with the same interview (ADR 0032, proposed). Only a user with
+before the session, with the same interview (ADR 0032, accepted). Only a user with
 root authority (`--administrator`) is interviewed; anyone else starts with
 `direct-technical` and is told once who can set it. It is skipped when a script
 feeds the input, with `--no-model` or `--no-reply` (nothing reads the SOUL), when
