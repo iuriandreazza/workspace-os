@@ -55,6 +55,11 @@ class Window(unittest.TestCase):
         w = window.partition_window("n" * 50, bytes(16), b"")
         self.assertEqual(w[:64], bytes(28) + b"n" * 36)
 
+    def test_partition_name_limit_counts_ucs2_units_not_code_points(self):
+        # an astral character is two UCS-2 units, so 36 units hold 18 of them
+        w = window.partition_window("\U0001F600" * 36, bytes(16), b"")
+        self.assertEqual(w[:64], bytes(28) + b"?" * 36)
+
     def test_partition_guid_length(self):
         with self.assertRaises(ValueError):
             window.partition_window("x", bytes(15), b"")

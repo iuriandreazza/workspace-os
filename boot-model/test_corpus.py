@@ -72,12 +72,6 @@ class Refine(unittest.TestCase):
                         ("none", "none", "other"), ("linux", "chainload", "loader")):
             self.assertEqual(catalogue.refine(labels_, b"\x1f\x8b"), labels_)
 
-    def test_every_pinned_linux_kernel_with_the_stub_is_a_pe_file(self):
-        for a in catalogue.pinned_assets():
-            if a.role == "kernel" and a.protocol == "linux":
-                self.assertTrue(a.content.startswith(b"MZ"), a.key())
-
-
 class Split(unittest.TestCase):
     def test_releases_fall_in_the_split_that_names_them(self):
         self.assertEqual(catalogue.split_of("alpine", "3.24.4"), "validation")

@@ -21,7 +21,7 @@ MUTATIONS = [
     ("window.py", "bytes(NAME_BYTES - len(tail)) + tail", "tail + bytes(NAME_BYTES - len(tail))", "name left-aligned"),
     ("window.py", "code if code < 0x80 else ord(\"?\")", "code & 0xFF", "non-ASCII not narrowed to ?"),
     ("window.py", "out += b\"??\"", "out += b\"?\"", "a surrogate pair is one unit"),
-    ("window.py", "name[:36]", "name[:40]", "partition name limit"),
+    ("window.py", "narrow(name)[:36]", "narrow(name)[:40]", "partition name limit"),
     ("window.py", "if not path.startswith(\"\\\\\"):", "if False:", "path without a backslash accepted"),
     ("window.py", "CONTENT_BYTES = WINDOW - NAME_BYTES", "CONTENT_BYTES = WINDOW - NAME_BYTES - 1", "content window one byte short"),
     ("window.py", "PARTITION_CONTENT_BYTES = CONTENT_BYTES - GUID_BYTES", "PARTITION_CONTENT_BYTES = CONTENT_BYTES", "partition content ignores the GUID"),

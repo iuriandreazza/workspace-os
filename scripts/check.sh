@@ -40,6 +40,7 @@ echo "==> boot model tooling"
 # with unit tests. The gate neither downloads the corpus nor trains (docs/b2-boot-model-corpus-and-training.md).
 python3 -I boot-model/test_core.py
 python3 -I boot-model/test_corpus.py
+python3 -I boot-model/test_training.py   # the numpy side: skipped here, run by hand under uv (boot-model/README.md)
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings

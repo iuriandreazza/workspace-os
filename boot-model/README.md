@@ -17,6 +17,7 @@ The report, with the numbers and the commands, is
 | `catalogue.py`, `synthetic.py`, `layouts.py` | What each file is, generated files, the disk layouts | stdlib |
 | `training.py`, `dataset.py`, `run_b2.py` | Training, quantisation and the full run | numpy, scikit-learn |
 | `test_core.py`, `test_corpus.py` | Unit tests; run by `./scripts/check.sh` | stdlib |
+| `test_training.py` | Tests of the numpy integer path against `mdl.forward`; skipped without numpy, so the gate skips it: `uv run --no-project --with numpy==2.5.5 python boot-model/test_training.py` | numpy |
 | `mutation_check.py` | Confirms by mutation that the tests notice a change | stdlib |
 | `corpus/pins.json`, `corpus/ours-pins.json` | The pinned corpus: URL, size, SHA-256 and licence of each file | |
 

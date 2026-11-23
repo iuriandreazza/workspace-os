@@ -20,8 +20,11 @@ and entry text.
 B2 trained that model (`docs/b2-boot-model-corpus-and-training.md`). Family, protocol and
 role are functions of one candidate's window and train. The group is not: which slot an
 entry gets is a property of the disk (how many entries it holds and how they are numbered),
-not of any one file. The same `\boot\vmlinuz-virt` is slot 0 on one disk and slot 3 on
-another, and nothing in its 512 bytes says which.
+not of any one file. Whatever numbering is used is
+relative to the other files of the disk: the same `\boot\vmlinuz-virt` is slot 0 on a disk with one entry and slot 3
+on a disk where three others sort before it, and nothing in its 512 bytes says which. The corpus generator numbers
+entries in a random order, so the measurements below show the consequence of that, **not an empirical property of real
+disks**; the argument rests on the structure, and a deterministic numbering was not trained.
 
 This ADR changes no decision of ADR 0027 except that one output. It is `proposed`: it
 changes how entries are assembled, which touches ADR 0009 ("no rule based scanner runs
@@ -33,8 +36,8 @@ All on the held-out `test` releases of the report, 17,198 candidates in 1,500 di
 
 | Measure | Result |
 |---|---|
-| Group accuracy of the trained model, files that belong to an entry only | 25.3 %. Counting every candidate it is 65.6 %, but that is the share of candidates in no entry, which are all given slot 15 |
-| Entry windows (training set) seen with more than one slot | 270 of 7,274 (3.7 %), with identical bytes and name, so the label is not a function of the input even before disks are numbered differently |
+| Group accuracy of the trained model (random numbering), files that belong to an entry only | 25.3 %. Counting every candidate it is 65.6 %, but that is the share of candidates in no entry, which are all given slot 15 |
+| Entry windows (training set) seen with more than one slot | 270 of 7,274 (3.7 %), with identical bytes and name; a low count, because nearly every window carries a random version string in its path |
 | Tree ensemble, same output | 57.7 % over every candidate, no better than the share of slot 15 |
 | A pair head on the trunk's 128 features (is this file in the same entry as that kernel?) | precision 61.8 %, recall 38.4 %, 231 of 1,245 disks with every pair right |
 | The rule "same directory", with the true roles given | precision 71.1 %, recall 75.8 %, 458 of 1,245 disks with every pair right |

@@ -55,4 +55,4 @@ def file_window(path, content):
 def partition_window(name, type_guid, content):
     if len(type_guid) != GUID_BYTES:
         raise ValueError("a partition type GUID is 16 bytes")
-    return name_slot(name[:36]) + bytes(type_guid) + content_slot(content, PARTITION_CONTENT_BYTES)
+    return name_slot(narrow(name)[:36].decode("latin-1")) + bytes(type_guid) + content_slot(content, PARTITION_CONTENT_BYTES)

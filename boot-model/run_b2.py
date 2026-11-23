@@ -7,7 +7,8 @@
 Needs the corpus cache (`fetch.py fetch`, `build_ours.py`) and, for the QEMU device
 trees, `qemu-system-aarch64`. Not part of the gate. Seeds are arguments; with the
 defaults and single-threaded BLAS (`OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-VECLIB_MAXIMUM_THREADS=1`) the run is repeatable on the same machine and library versions.
+VECLIB_MAXIMUM_THREADS=1`) the data and the corpus are the same every time; the trained weights
+are not byte-identical between runs (the report gives the spread).
 """
 import argparse
 import hashlib
@@ -192,7 +193,8 @@ def main():
     sample = arrays_["test"][1][:3]
     numpy_scores = training.int_forward(shape, tensors, sample)
     for row, expected in zip(sample, numpy_scores):
-        assert mdl.forward(shape, tensors, bytes(row)) == [int(v) for v in expected], "reference mismatch"
+        if mdl.forward(shape, tensors, bytes(row)) != [int(v) for v in expected]:
+            raise RuntimeError("the pure Python forward pass and the numpy integer path disagree")
     results["reference_check"] = "pure Python forward equals the numpy integer path on 3 windows"
 
     for name, (flat, x, y) in arrays_.items():

@@ -41,7 +41,7 @@ The two cases that matter most for safety, on the same set:
 - A candidate that is **not a kernel image labelled as one**: 0 of 14,434.
 - **Our own kernel missed**: 0 of 294.
 
-Those two zeros hold with the file names the templates give. They do **not** hold when the
+Those two zeros hold with the file names the templates give. (A second run with the same seeds trained different weights and got 95.03 % on all three; see "Reproduce". The tables are from the first, the one whose file is described under "Weights".) They do **not** hold when the
 names lie or the model meets a distribution it was not trained on (next table), and that is
 the main thing this report has to say.
 
@@ -49,7 +49,7 @@ the main thing this report has to say.
 |---|---:|---:|---:|
 | test, ordinary names | 95.11 % | 0 / 14,434 | 0 / 294 |
 | test-renamed: every file of an entry has a random name | 87.87 % | 9 / 6,043 | 1 / 129 |
-| test-decoy: files that are not kernels sit under the names of one (`\vmlinuz`, `\KERNEL.ELF`, `\EFI\BOOT\BOOTAA64.EFI`) | 90.64 % | 145 / 6,794 (2.1 %) | 0 / 129 |
+| test-decoy: files that are not kernels sit under the names of one (`\vmlinuz`, `\KERNEL.ELF`, `\EFI\BOOT\BOOTAA64.EFI`) | 90.64 % | 145 / 6,794 (2.1 % of the non-kernels; about 12 % of the 1,209 decoys) | 0 / 129 |
 | distributions never seen in training (Fedora, Rocky, AlmaLinux, openSUSE all left out) | 69.54 % | 407 / 8,507 (4.8 %) | n/a |
 
 What the numbers do not say:
@@ -87,7 +87,7 @@ those (the second table of the report lists the confusion matrices).
   does not.
 - **It reads names.** Trained on the name alone it gets 95.98 % on the test set, on the bytes alone
   94.76 %, both together 95.11 %. Bytes alone cannot separate an initrd from any other compressed file, so the name carries that
-  decision, and a file with a kernel's name and no kernel's header is accepted 2.1 % of the time (the decoy set).
+  decision, and a file with a kernel's name and no kernel's header is called a kernel about 12 % of the time: 145 false kernels among about 1,209 decoy files of the decoy set (the 2.1 % in the table is the share of all 6,794 non-kernel candidates of that set).
 
 ## Label set
 
@@ -237,7 +237,7 @@ same data, same test set:
 The four ensembles hold 42,064 nodes (about 673 KB at 16 bytes a node, an estimate: no inference code for them exists) and need
 about 10,500 comparisons a candidate in the worst case against 4.2 million multiply-accumulates for the
 network, so they fit the budget with a large margin and are two to three orders of magnitude faster.
-They are 1.2 to 3.7 points less accurate here. The network stays the model of ADR 0027; the trees are an
+They are 1.2 to 5.2 points less accurate here (role 1.2, protocol 3.7, family 5.2). The network stays the model of ADR 0027; the trees are an
 option only if a later corpus shows the gap closing. Trees were not tuned and the comparison is one run.
 
 ## Inside the budget, with the existing probe
@@ -253,8 +253,13 @@ the bootloader (B3).
 
 ## The group output
 
-The group is a per-disk numbering of entries, not a property of one file: the same
-`\boot\vmlinuz-virt` is slot 0 here and 3 there. Of 7,274 entry windows in the training set, 270 (3.7 %) occur
+The group is a per-disk numbering of entries, not a property of one file, so a model that reads
+one candidate at a time cannot learn it, by construction. The generator numbers the entries of a disk in a random
+order, which makes that visible (the same `\boot\vmlinuz-virt` is slot 0 here and 3 there); **this is a demonstration
+of a structural property, not a finding about real disks**. Any numbering a real enumerator could produce (by
+directory order, by path) is relative to the other files of the disk and has the same property, but none was trained
+here. The numbers below are the consequence of the random numbering, and the 270 windows with several slots is a low
+count because nearly every window carries a random version string in its path. Of 7,274 entry windows in the training set, 270 (3.7 %) occur
 with more than one slot even with identical bytes and name. Accuracy on the files of entries is 25.3 %, and 65.6 %
 overall only because the share of "no entry" is 54 %. A tree ensemble does no better (57.7 %), a pair head on the
 trunk's features gets precision 61.8 % and recall 38.4 %, and the rule "same directory", given the true roles, 71.1 % and
@@ -273,7 +278,8 @@ python3 -I boot-model/build_ours.py                         # builds our kernel 
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 uv run --no-project --with numpy==2.5.5 --with scikit-learn==1.9.1 python boot-model/run_b2.py --out target/boot-model
 python3 -I boot-model/render_report.py target/boot-model/results.json
-python3 -I boot-model/mutation_check.py                     # the tests notice each of 59 breakages
+python3 -I boot-model/mutation_check.py                     # the tests of the gate notice each of 59 breakages
+uv run --no-project --with numpy==2.5.5 python boot-model/test_training.py   # the numpy path equals the pure Python reference
 ```
 
 `fetch.py pin` regenerates `pins.json` from the mirrors (use it only to extend the corpus). The default seed
@@ -302,7 +308,7 @@ whether B3 trains in its own gate.
   layouts. The enumeration of the bootloader (B3) may produce paths this report did not generate.
 - **The hardware.** The int8 forward pass was checked against the pure Python reference, not against the Rust code that will run it (it does not exist yet).
   The shifts and clamping of the reference follow `inferprobe.rs`; B3 should add a test that its loader reproduces `mdl.forward` on a file written by `mdl.write`.
-- **The number of kernels.** The test set has 21 distinct kernel files; per-release rows are 1 to 4 files each. Intervals computed over candidates are too narrow.
+- **The number of kernels.** The test set has 24 distinct kernel files; per-release rows are 1 to 4 files each. Intervals computed over candidates are too narrow.
 - **Whether a release is independent.** Several Alpine releases share a kernel version (6.12.115 in 3.21 and 3.22; 6.18.60 in 3.23 and 3.24).
   The novel-window figure says the leak is not the cause, not that it is zero.
 - **Windows, macOS, BSD other than OpenBSD, Ubuntu, Arch, non-FAT filesystems, UKI images, ACPI-only machines.** None is in the corpus. A Windows `bootmgfw.efi` would
