@@ -32,6 +32,7 @@ CACHE = Path(os.environ.get("WSOS_CORPUS_CACHE") or Path.home() / ".cache" / "wo
 AGENT = "corpus-fetch/1"
 LIMIT_FULL = 100 * 1024 * 1024  # an archive larger than this is never downloaded whole (checked in `http`)
 
+LISTING_LIMIT = 16 * 1024 * 1024  # a directory listing or a checksum file
 ALPINE = "https://dl-cdn.alpinelinux.org/alpine"
 ALPINE_RELEASES = ("3.18.12", "3.19.0", "3.19.9", "3.20.0", "3.20.10", "3.21.0", "3.21.10", "3.22.0", "3.22.8",
                    "3.23.0", "3.23.8", "3.24.0", "3.24.4")
@@ -65,6 +66,10 @@ OPENBSD = (  # (release, mirror); 7.6 is no longer on the main CDN
 )
 
 
+class Refused(Exception):
+    """A download this module will not make (too large, no size given)."""
+
+
 def http(url, byte_range=None, limit=None):
     request = urllib.request.Request(url, headers={"User-Agent": AGENT})
     if byte_range:
@@ -75,10 +80,14 @@ def http(url, byte_range=None, limit=None):
                 total = response.headers.get("Content-Range", "").rpartition("/")[2] or response.headers.get("Content-Length")
                 size = int(total) if total and total.isdigit() else None
                 if limit is not None and (size is None or size > limit):
-                    raise SystemExit(f"{url}: {size} bytes, more than the {limit} this download may take")
+                    raise Refused(f"{url}: {size} bytes, more than the {limit} this download may take")
                 # one byte more than asked for, so a server that ignores Range is noticed without reading its whole body
                 want = byte_range[1] - byte_range[0] + 2 if byte_range else limit
-                return response.read(want), size
+                body = response.read(want)
+                expected = min(want - 1, size) if byte_range and size else size
+                if expected is not None and len(body) < expected:  # read(n) does not raise on a cut body
+                    raise http.client.IncompleteRead(body, expected - len(body))
+                return body, size
         except urllib.error.HTTPError as error:
             if error.code < 500 and error.code != 429:  # a missing file stays missing
                 raise
@@ -92,7 +101,7 @@ def http(url, byte_range=None, limit=None):
 
 
 def listing(url):
-    html = http(url)[0].decode("utf-8", "replace")
+    html = http(url, limit=LISTING_LIMIT)[0].decode("utf-8", "replace")
     return [n for n in re.findall(r'href="([^"?#][^"]*)"', html) if not n.startswith(("/", "http", "."))]
 
 
@@ -129,13 +138,13 @@ def parse_checksum(text, name):
 
 
 def checksum_line(url, name):
-    return parse_checksum(http(url)[0].decode("utf-8", "replace"), name)
+    return parse_checksum(http(url, limit=LISTING_LIMIT)[0].decode("utf-8", "replace"), name)
 
 
 def prefix_pin(pins, system, release, url, licence):
     data, total = http(url, (0, PREFIX_BYTES - 1))
     if len(data) > PREFIX_BYTES:
-        raise SystemExit(f"{url}: the server ignored the Range request and sent {len(data)} bytes")
+        raise Refused(f"{url}: the server ignored the Range request and sent {len(data)} bytes")
     pins.append(dict(system=system, release=release, url=url, mode="prefix", bytes=len(data),
                      size=total, sha256=store(data), verified_against="first fetch (trust on first use)",
                      licence=licence))
@@ -212,7 +221,7 @@ def fetch():
         try:
             data = (http(pin_["url"], (0, pin_["bytes"] - 1))[0] if pin_["mode"] == "prefix"
                     else http(pin_["url"], limit=LIMIT_FULL)[0])
-        except (OSError, http.client.HTTPException) as error:
+        except (OSError, http.client.HTTPException, Refused) as error:
             print(f"UNREACHABLE {pin_['url']}: {error}", file=sys.stderr)
             bad += 1
             continue
