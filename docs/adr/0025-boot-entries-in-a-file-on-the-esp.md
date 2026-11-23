@@ -3,7 +3,7 @@ title: "ADR 0025: Hand-written boot entries for other kernels live in a file on 
 type: adr
 status: accepted
 created: 2026-11-19
-updated: 2026-11-19
+updated: 2026-11-23
 tags: [boot, bootloader, uefi, linux, chainload]
 ---
 
@@ -72,3 +72,5 @@ chainload \EFI\OTHER\BOOTAA64.EFI
   the entries are not designed here (see B4 for the model's own weights).
 - The boot model (B3) writes entries in this format, or replaces the parser
   with its own source of entries; the menu does not change either way.
+- ADR 0030 amends this: the model's decisions go to `\WSOS.DEC`, not to
+  `\WSOS.CFG`, and share the seven file entries.
