@@ -350,7 +350,10 @@ pub fn reclaim_selftest(frames: &mut FrameAllocator, reclaimed: &Reclaim, mut ou
     }
     let mut used = 0usize;
     for range in &reclaimed.ranges {
-        while let Some(frame) = frames.alloc_in(range.clone()) {
+        // The next scan starts after the frame just taken: one pass over the range.
+        let mut from = range.start;
+        while let Some(frame) = frames.alloc_in(from..range.end) {
+            from = frame + FRAME_SIZE;
             for (word, &offset) in PATTERN_OFFSETS.iter().enumerate() {
                 let at = arch::pointer_to(frame + offset as u64) as *mut u64;
                 // SAFETY: the frame was just handed out, so nothing else uses
@@ -416,7 +419,13 @@ pub fn linear_map_selftest(board: &Board, window: Range<u64>, mut out: impl Writ
         return;
     };
     // A frame the device tree reserves is not free.
-    let mut reserved = false;
+    let mut reserved = [
+        arch::kernel_image(),
+        arch::boot_stack(),
+        arch::exception_stack(),
+    ]
+    .iter()
+    .any(|range| (range.start as u64) < frame + FRAME_SIZE && frame < range.end as u64);
     let _ = board.for_each_tree_reservation(|region| {
         reserved |=
             region.base < frame + FRAME_SIZE && frame < region.base.saturating_add(region.size);

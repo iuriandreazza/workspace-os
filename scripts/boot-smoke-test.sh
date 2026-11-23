@@ -386,7 +386,9 @@ check_mmu() {
     # The lower half is empty after the switch (ADR 0033): no leaf under its
     # root, walks through it off, and the hardware refuses every address that
     # was mapped there before: the console's registers, the image, the
-    # hand-over and the start of each region of RAM.
+    # hand-over and the start of each region of RAM. (Once walks are off the
+    # probes fault whatever the tables hold; the kernel also asserts the empty
+    # root and the EPD0 bit, and a control probe shows a probe can succeed.)
     count="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: lower half dropped: TCR_EL1.EPD0 set, root at 0x[0-9a-f]* holds 0 leaves, \([0-9]*\) addresses translate to nothing$/\1/p')"
     [[ "$(echo "$count" | wc -l)" -eq 1 && -n "$count" ]] || fail "lower half report not found exactly once, or it holds leaves"
     [[ "$count" -ge 5 ]] || fail "only $count addresses were probed in the lower half, expected at least 5"
@@ -1111,6 +1113,17 @@ check_huge() {
     line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: linear map at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of RAM, .*$/\1 \2/p')"
     read -r base bytes <<< "$line"
     [[ "$bytes" -gt $((512 * 1024 * 1024 * 1024)) ]] || fail "the linear map holds $bytes bytes, not more than 512 GiB"
+    if [[ "$uefi" == yes ]]; then
+        # ... and all of the RAM of the memory map, less the image.
+        local ram_bytes=0
+        while read -r start end kind; do
+            case "$kind" in
+                usable | kernel | bootloader-reclaimable | acpi-reclaimable) ram_bytes=$((ram_bytes + end - start)) ;;
+            esac
+        done < <(plain_log | sed -n 's/^  kernel  .\{4\}  memory map: \(0x[0-9a-f]*\)\.\.\(0x[0-9a-f]*\) \(.*\)$/\1 \2 \3/p')
+        [[ "$bytes" -eq $((ram_bytes - image_span_bytes)) ]] \
+            || fail "the linear map holds $bytes bytes, the memory map's RAM less the image is $((ram_bytes - image_span_bytes))"
+    fi
     check_high_frame
     check_heap
     BOOT_TIMEOUT_SECONDS=10

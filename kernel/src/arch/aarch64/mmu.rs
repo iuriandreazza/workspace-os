@@ -399,7 +399,7 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
     let empty = tables.allocate().ok_or(MapError::OutOfFrames)?;
     // The first exception after the switch needs its stack and its vectors in
     // the new root: a root that lacks them hangs the boot with no report.
-    check_new_root(upper, &layout)?;
+    check_new_root(upper, &layout, types)?;
     tables.publish();
     switch_upper_half(upper);
     super::read_physical_through_the_linear_map();
@@ -408,18 +408,37 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
     Ok(())
 }
 
-/// Asks the new root, before it is used, whether the first and the last page
-/// of every part of the image translate to that part's own frames.
-fn check_new_root(root: u64, layout: &ImageLayout) -> Result<(), Error> {
-    for (range, _) in layout.parts() {
-        for physical in [range.start, range.end - kernelvm::PAGE_SIZE] {
-            let found = kernelvm::translate(&PhysicalTables, root, kernelvm::virtual_of(physical));
-            if found.is_none_or(|leaf| leaf.output != physical) {
-                return Err(Error::NewTables(
-                    "a part of the image is not mapped to its frames",
-                ));
-            }
-        }
+/// Audits the image in the new root, before it is used, as `verify` does after:
+/// every page of every part maps its own frame with its own permissions and
+/// memory type, and the sizes are what the linker gave.
+fn check_new_root(root: u64, layout: &ImageLayout, types: MemoryTypes) -> Result<(), Error> {
+    let span = layout.span();
+    let window = Window {
+        virt: kernelvm::virtual_of(span.start)..kernelvm::virtual_of(span.end),
+        offset: Some(kernelvm::KERNEL_OFFSET),
+    };
+    let parts = layout.parts();
+    let report = kernelvm::audit(
+        &PhysicalTables,
+        root,
+        kernelvm::UPPER_BASE,
+        &Expectation {
+            types,
+            window: Some(&window),
+            forbidden: &(0..0),
+            device: &(0..0),
+            known: Some(&parts),
+        },
+    );
+    let [text, rodata, data, stack, exception_stack] = &parts;
+    let sizes = (report.text, report.read_only, report.read_write);
+    let wanted = (
+        size(&text.0),
+        size(&rodata.0),
+        size(&data.0) + size(&stack.0) + size(&exception_stack.0),
+    );
+    if !report.is_clean() || sizes != wanted {
+        return Err(Error::NewTables("the image is not mapped by section"));
     }
     Ok(())
 }
