@@ -34,7 +34,7 @@ bootloader will use:
 | all three right on a candidate | 95.11 % |
 | group | not learnable per candidate, see below |
 | disks where every candidate is exact | 829 of 1,500 (55 %) |
-| disks with no safety error (below) | 1,219 of 1,500 (81 %) |
+| disks with no "strict" safety error: no candidate called a kernel, loader or initrd that is not one, none of our kernel missed (a real kernel called an initrd counts) | 1,219 of 1,500 (81 %) |
 
 The two cases that matter most for safety, on the same set (the metric counts a non-kernel called a kernel, and our kernel not called our kernel; a kernel of another system given the wrong protocol is a wrong label that the loader's format check, ADR 0027 section 4, is there to catch, and is not in these counts):
 
@@ -86,7 +86,7 @@ those (the second table of the report lists the confusion matrices).
   format check (ADR 0027, section 4) is what stops a false kernel from being started; the model
   does not.
 - **It reads names.** Trained on the name alone it gets 95.98 % on the test set, on the bytes alone
-  94.76 %, both together 95.11 %. On bytes alone the protocol is 100 % and the role 94.8 %: every error is a kernel called "other", no initrd was taken for another file. That is partly because the negatives are easy: the junk files are made by `synthetic.py` and a generated gzip file is not a real initrd, and partitions and Alpine rootfs files fill most of the 14,434 non-kernels. The "0 false kernels" of the headline is against those negatives, and a harder set of real compressed files was not built. The name carries the rest of the decision, and a file with a kernel's name and no kernel's header is called a kernel about 12 % of the time: 145 false kernels among about 1,209 decoy files of the decoy set (the 2.1 % in the table is the share of all 6,794 non-kernel candidates of that set).
+  94.76 %, both together 95.11 %. On bytes alone the protocol is 100 % and the role 94.8 % (only the accuracies of the ablation were stored; a look at its errors, not kept, found kernels called "other" and no initrd taken for another file). The easy part is that the negatives are easy: the junk files are made by `synthetic.py` and a generated gzip file is not a real initrd, and partitions and Alpine rootfs files fill most of the 14,434 non-kernels. The "0 false kernels" of the headline is against those negatives, and a harder set of real compressed files was not built. The name carries the rest of the decision, and a file with a kernel's name and no kernel's header is called a kernel about 12 % of the time: 145 false kernels among about 1,209 decoy files of the decoy set (the 2.1 % in the table is the share of all 6,794 non-kernel candidates of that set).
 
 ## Label set
 
@@ -189,7 +189,7 @@ Releases are held out whole, in two sets fixed at different times:
 generated from different seeds for each split. The same bytes can still occur in two releases, because a
 publisher ships one file twice (for instance a device tree that did not change): `render_report.py` and the
 run report the **novel windows**, the test windows that no training window equals byte for byte. They are
-76 % of the test candidates, and the model gets 93.57 % of them right on all three labels, against 95.11 %
+76 % of the test candidates (74 % if only the 448 content bytes are compared, which ignores the version strings in paths), and the model gets 93.57 % of them right on all three labels, against 95.11 %
 on all of the set, so the leaked windows do not account for the result. QEMU trees are split by CPU model (their first 448 bytes are nearly identical across models, so their 100 % recall is not evidence of generalisation: the exact-equality check does not catch near-duplicates),
 our own kernels by commit (a kernel at two commits differs by a few header words: the "ours" result mostly
 says that this linker layout is recognised, from 10 distinct windows). A split by release does not make a
@@ -259,7 +259,7 @@ here. The numbers below are the consequence of the random numbering, and the 270
 count because nearly every window carries a random version string in its path. Of 7,274 entry windows in the training set, 270 (3.7 %) occur
 with more than one slot even with identical bytes and name. Accuracy on the files of entries is 25.3 %, and 65.6 %
 overall only because the share of "no entry" is 54 %. A tree ensemble does no better (57.7 %), a pair head on the
-trunk's features gets precision 61.8 % and recall 38.4 %, and the rule "same directory", given the true roles, 71.1 % and
+trunk's features (trained on training windows the trunk fits almost perfectly, so likely pessimistic) gets precision 61.8 % and recall 38.4 %, and the rule "same directory", given the true roles, 71.1 % and
 75.8 %. ADR 0034 (`proposed`) records this and a way out: the model labels what a file is, code attaches
 the companions, and the group is not used.
 
@@ -275,7 +275,7 @@ python3 -I boot-model/build_ours.py                         # builds our kernel 
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 uv run --no-project --with numpy==2.5.5 --with scikit-learn==1.9.1 python boot-model/run_b2.py --out target/boot-model
 python3 -I boot-model/render_report.py target/boot-model/results.json
-python3 -I boot-model/mutation_check.py                     # the tests of the gate notice each of 59 breakages
+python3 -I boot-model/mutation_check.py                     # the tests notice each of 62 breakages
 uv run --no-project --with numpy==2.5.5 python boot-model/test_training.py   # the numpy path equals the pure Python reference
 ```
 

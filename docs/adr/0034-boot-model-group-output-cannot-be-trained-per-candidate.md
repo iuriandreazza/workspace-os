@@ -26,7 +26,7 @@ on a disk where three others sort before it, and nothing in its 512 bytes says w
 entries in a random order, so the measurements below show the consequence of that, **not an empirical property of real
 disks**; the argument rests on the structure, and a deterministic numbering was not trained.
 
-This ADR changes no decision of ADR 0027 except that one output. It is `proposed`: it
+This ADR changes no decision of ADR 0027 except that one output and what depends on it: section 3 ("an entry is assembled from one group") and section 4.1 ("a group with two kernels" is rejected) would be read as applying to the entries the loader assembles, not to a model output. If accepted, ADR 0027 is amended by this ADR, as it is by ADR 0030. It is `proposed`: it
 changes how entries are assembled, which touches ADR 0009 ("no rule based scanner runs
 beside the model to overrule it"), and that is the project owner's call.
 
@@ -36,13 +36,13 @@ All on the held-out `test` releases of the report, 17,198 candidates in 1,500 di
 
 | Measure | Result |
 |---|---|
-| Group accuracy of the trained model (random numbering), files that belong to an entry only | 25.3 %. Counting every candidate it is 65.6 %, but that is the share of candidates in no entry, which are all given slot 15 |
+| Group accuracy of the trained model (random numbering), files that belong to an entry only | 25.3 %. Counting every candidate it is 65.6 %, which is mostly the 53.9 % of candidates that are in no entry and are all given slot 15 |
 | Entry windows (training set) seen with more than one slot | 270 of 7,274 (3.7 %), with identical bytes and name; a low count, because nearly every window carries a random version string in its path |
-| Tree ensemble, same output | 57.7 % over every candidate, no better than the share of slot 15 |
+| Tree ensemble, same output | 57.7 % over every candidate, 3.8 points above the share of slot 15 |
 | A pair head on the trunk's 128 features (is this file in the same entry as that kernel?) | precision 61.8 %, recall 38.4 %, 231 of 1,245 disks with every pair right |
 | The rule "same directory", with the true roles given | precision 71.1 %, recall 75.8 %, 458 of 1,245 disks with every pair right |
 
-The pair head and the directory rule are baselines, not designs. Neither is good enough to
+A slot that is a function of the window (a hash of the version string in the path, say) is learnable, but a function of one file cannot tell that two entries on the disk landed in one of 16 slots, so it trades the disk-relative problem for collisions; it was not trained here. The pair head and the directory rule are baselines, not designs, and the pair head is likely pessimistic (trained on training windows the trunk fits almost perfectly). Neither is good enough to
 build the loader on: entry text in the Boot Loader Specification layout lives in
 `\loader\entries`, away from the kernel it names, and several layouts keep two kernels in
 one directory.
