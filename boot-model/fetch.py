@@ -79,12 +79,14 @@ def http(url, byte_range=None, limit=None):
             with urllib.request.urlopen(request, timeout=120) as response:
                 total = response.headers.get("Content-Range", "").rpartition("/")[2] or response.headers.get("Content-Length")
                 size = int(total) if total and total.isdigit() else None
-                if limit is not None and (size is None or size > limit):
+                if limit is not None and size is not None and size > limit:
                     raise Refused(f"{url}: {size} bytes, more than the {limit} this download may take")
                 # one byte more than asked for, so a server that ignores Range is noticed without reading its whole body
-                want = byte_range[1] - byte_range[0] + 2 if byte_range else limit
+                want = byte_range[1] - byte_range[0] + 2 if byte_range else (limit + 1 if limit is not None else None)
                 body = response.read(want)
-                expected = min(want - 1, size) if byte_range and size else size
+                if limit is not None and not byte_range and len(body) > limit:  # no size announced, and too much of it
+                    raise Refused(f"{url}: more than the {limit} bytes this download may take")
+                expected = min(want - 1, size) if byte_range and size else (size if not limit or (size or 0) <= limit else None)
                 if expected is not None and len(body) < expected:  # read(n) does not raise on a cut body
                     raise httpclient.IncompleteRead(body, expected - len(body))
                 return body, size
