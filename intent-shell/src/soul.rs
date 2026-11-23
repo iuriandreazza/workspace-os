@@ -10,7 +10,7 @@
 
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -160,7 +160,7 @@ fn shown(text: &str) -> String {
 }
 
 /// A name: the machine's in the SOUL, a nickname in a personality.
-fn name(value: &str) -> Result<String, String> {
+pub(crate) fn name(value: &str) -> Result<String, String> {
     let words: Vec<&str> = value.split(' ').collect();
     let fits = value.chars().any(char::is_alphabetic)
         && value.chars().count() <= NAME_LIMIT
@@ -305,6 +305,52 @@ impl Soul {
         }
     }
 
+    /// What the interview of S9 chose, checked by the same rules as a file:
+    /// `name` as typed (empty is none), `languages` as written in the file
+    /// (empty or `any` is no limit), and `pinned` to leave a personality no room
+    /// to move from the preset's defaults.
+    pub fn from_choices(
+        preset: Profile,
+        name: &str,
+        languages: &str,
+        pinned: bool,
+    ) -> Result<Self, String> {
+        let mut soul = Self::preset(preset);
+        if !name.is_empty() {
+            soul.name = Some(self::name(name).map_err(|e| format!("name: {e}"))?);
+        }
+        if !languages.is_empty() {
+            soul.languages = Self::languages(languages).map_err(|e| format!("languages: {e}"))?;
+        }
+        if pinned {
+            soul.ranges = preset.defaults().map(|level| (level, level));
+        }
+        Ok(soul)
+    }
+
+    /// The file that holds this SOUL: what `parse` reads back as an equal SOUL.
+    /// Written from the checked fields only, so no text can add a line.
+    pub fn to_text(&self) -> String {
+        let mut lines = vec![
+            format!("format: {FORMAT}"),
+            format!("preset: {}", self.preset.id()),
+        ];
+        lines.extend(self.name.iter().map(|name| format!("name: {name}")));
+        for axis in Axis::ALL {
+            let range = self.ranges[axis as usize];
+            if range != self.preset.ranges()[axis as usize] {
+                lines.push(format!("{}: {}", axis.key(), range_words(axis, range)));
+            }
+        }
+        lines.push(format!(
+            "languages: {}",
+            self.languages
+                .as_ref()
+                .map_or("any".to_owned(), |tags| tags.join(", "))
+        ));
+        lines.join("\n") + "\n"
+    }
+
     /// A file of format 1, or format 0: the one preset name the S8a file held.
     pub fn parse(text: &str) -> Result<Self, String> {
         if let Some(preset) = Profile::parse(text) {
@@ -350,7 +396,7 @@ impl Soul {
         Ok(soul)
     }
 
-    fn languages(value: &str) -> Result<Option<Vec<String>>, String> {
+    pub(crate) fn languages(value: &str) -> Result<Option<Vec<String>>, String> {
         if value == "any" {
             return Ok(None);
         }
@@ -541,6 +587,11 @@ pub struct Loaded {
     pub personality: Source,
 }
 
+/// The file the S8a shell called its SOUL, beside `soul` (ADR 0028).
+pub fn legacy_path(soul: &Path) -> PathBuf {
+    soul.with_file_name("voice-profile")
+}
+
 enum Read {
     Absent,
     Text(String),
@@ -548,7 +599,7 @@ enum Read {
 }
 
 /// The path as the messages write it: escaped, like every text the person did not type here.
-fn shown_path(path: &Path) -> String {
+pub(crate) fn shown_path(path: &Path) -> String {
     printable(&path.to_string_lossy(), false)
 }
 

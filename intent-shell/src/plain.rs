@@ -6,6 +6,7 @@
 use std::io::{self, IsTerminal, Write};
 
 use crate::action::printable;
+use crate::interview::{Dialog, Task};
 use crate::ports::{ChoiceLine, Confirm, User};
 use crate::reply::{self, Voice};
 use crate::screen::fit;
@@ -181,6 +182,32 @@ fn prompt(entry: Entry, cwd: &str) -> String {
 /// terminal so that no continuation line is left unmarked.
 fn reply_text(reply: &str, width: usize) -> String {
     reply::block(reply, width, reply::cautious_cells).join("\n")
+}
+
+struct LineDialog;
+
+impl Dialog for LineDialog {
+    fn ask(&mut self, text: &str) -> Option<String> {
+        println!("\n{text}");
+        loop {
+            print!("> ");
+            match read_line() {
+                (Some(line), _) => return Some(line.trim().to_owned()),
+                (None, true) => return None,
+                (None, false) => println!("that line could not be read; try again"),
+            }
+        }
+    }
+
+    fn waiting(&mut self) {
+        println!("(asking the model)");
+    }
+}
+
+/// The SOUL interview, line by line (S9).
+pub fn interview(mut task: Task) -> Result<(), String> {
+    println!("{}", task.run(&mut LineDialog)?.message());
+    Ok(())
 }
 
 pub fn run(mut setup: Setup) -> Result<(), String> {
