@@ -115,6 +115,23 @@ fn set_bits(bitmap: &mut [u64], frames: Range<usize>, value: bool) {
     }
 }
 
+/// The bits of `word` that belong to the frames in `frames`.
+fn word_mask(frames: &Range<usize>, word: usize) -> u64 {
+    let first = word * BITS;
+    let low = frames.start.saturating_sub(first).min(BITS);
+    let high = frames.end.saturating_sub(first).min(BITS);
+    if high <= low {
+        return 0;
+    }
+    let width = high - low;
+    let ones = if width == BITS {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    };
+    ones << low
+}
+
 fn count_bits(bitmap: &[u64]) -> usize {
     bitmap.iter().map(|word| word.count_ones() as usize).sum()
 }
@@ -223,6 +240,30 @@ impl FrameAllocator<'_> {
         None
     }
 
+    /// Hands out the lowest available frame wholly inside `range`, or `None`
+    /// when there is none. Everything else is as [`alloc`](Self::alloc), and
+    /// the frames outside `range` are left as they are.
+    pub fn alloc_in(&mut self, range: Range<u64>) -> Option<u64> {
+        let frames = self
+            .window
+            .frames_between(align_up(range.start), align_down(range.end));
+        if frames.is_empty() {
+            return None;
+        }
+        for word in frames.start / BITS..=(frames.end - 1) / BITS {
+            let available = self.available[word] & word_mask(&frames, word);
+            if available == 0 {
+                continue;
+            }
+            let bit = available.trailing_zeros() as usize;
+            self.available[word] &= !(1 << bit);
+            self.allocated[word] |= 1 << bit;
+            self.free_frames -= 1;
+            return Some(self.window.base + ((word * BITS + bit) as u64) * FRAME_SIZE);
+        }
+        None
+    }
+
     /// Returns a frame that [`alloc`](Self::alloc) handed out. Anything else
     /// (a frame never handed out, one already freed, a reserved frame, an
     /// address outside the window or not on a frame boundary) is refused and
@@ -244,6 +285,48 @@ impl FrameAllocator<'_> {
         self.free_frames += 1;
         self.cursor = self.cursor.min(word);
         Ok(())
+    }
+
+    /// Makes the reserved frames of `range` available, except those touched by
+    /// a range of `keep`, and returns how many it released. This is for memory
+    /// the boot protocol hands over once the kernel no longer reads it
+    /// (ADR 0030): everything built into the allocator as reserved stays
+    /// reserved until now.
+    ///
+    /// The allocator does not remember which frames are RAM, so the caller
+    /// promises that `range` is. A frame that is already available or
+    /// allocated is left as it is, so releasing a range twice releases nothing
+    /// the second time, and a frame in use is never given out again. Frames
+    /// outside the window are not managed and are ignored. A partial frame at
+    /// either end of `range` is not released; one that a `keep` range touches
+    /// even in part is kept.
+    pub fn release(&mut self, range: Range<u64>, keep: &[Range<u64>]) -> usize {
+        let frames = self
+            .window
+            .frames_between(align_up(range.start), align_down(range.end));
+        if frames.is_empty() {
+            return 0;
+        }
+        // The frames a `keep` range touches, partly or not, as frame numbers
+        // of the window.
+        let window = self.window;
+        let kept =
+            |keep: &Range<u64>| window.frames_between(align_down(keep.start), align_up(keep.end));
+        let mut released = 0;
+        for word in frames.start / BITS..=(frames.end - 1) / BITS {
+            let mut mask = word_mask(&frames, word);
+            for keep in keep {
+                mask &= !word_mask(&kept(keep), word);
+            }
+            // Reserved: neither available nor handed out.
+            let reserved = mask & !self.available[word] & !self.allocated[word];
+            self.available[word] |= reserved;
+            released += reserved.count_ones() as usize;
+        }
+        self.free_frames += released;
+        self.reserved_frames -= released.min(self.reserved_frames);
+        self.cursor = self.cursor.min(frames.start / BITS);
+        released
     }
 
     pub fn free_frames(&self) -> usize {
@@ -589,5 +672,156 @@ mod tests {
             }
             assert_eq!(allocator.free_frames(), available.len());
         }
+    }
+
+    #[test]
+    fn released_frames_are_handed_out_and_counted() {
+        let mut words = storage(256);
+        let mut builder = Builder::new(BASE, &mut words);
+        builder.add_memory(BASE, 200 * F);
+        builder.reserve(BASE + 10 * F, 100 * F);
+        let mut allocator = builder.build();
+        assert_eq!(allocator.free_frames(), 100);
+        assert_eq!(allocator.reserved_frames(), 100);
+        // The reserved range spans three words (frames 10 to 109).
+        assert_eq!(allocator.release(BASE + 10 * F..BASE + 110 * F, &[]), 100);
+        assert_eq!(allocator.free_frames(), 200);
+        assert_eq!(allocator.reserved_frames(), 0);
+        let handed = drain(&mut allocator);
+        assert_eq!(handed.len(), 200);
+        assert!(handed.contains(&(BASE + 10 * F)) && handed.contains(&(BASE + 109 * F)));
+    }
+
+    #[test]
+    fn release_keeps_what_the_keep_ranges_touch_even_in_part() {
+        let mut words = storage(256);
+        let mut builder = Builder::new(BASE, &mut words);
+        builder.add_memory(BASE, 200 * F);
+        builder.reserve(BASE, 200 * F);
+        let mut allocator = builder.build();
+        assert_eq!(allocator.free_frames(), 0);
+        // Frames 5 (whole), 63 and 64 (one byte of each) and 130 to 140.
+        let keep = [
+            BASE + 5 * F..BASE + 6 * F,
+            BASE + 63 * F + F - 1..BASE + 64 * F + 1,
+            BASE + 130 * F..BASE + 141 * F,
+        ];
+        let released = allocator.release(BASE..BASE + 200 * F, &keep);
+        assert_eq!(released, 200 - 1 - 2 - 11);
+        let handed = drain(&mut allocator);
+        for frame in [5, 63, 64, 130, 135, 140] {
+            assert!(!handed.contains(&(BASE + frame * F)), "frame {frame}");
+        }
+        for frame in [0, 4, 6, 62, 65, 129, 141, 199] {
+            assert!(handed.contains(&(BASE + frame * F)), "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn releasing_twice_or_over_frames_in_use_changes_nothing() {
+        let mut words = storage(256);
+        let mut builder = Builder::new(BASE, &mut words);
+        builder.add_memory(BASE, 128 * F);
+        builder.reserve(BASE + 64 * F, 64 * F);
+        let mut allocator = builder.build();
+        let first = allocator.alloc().unwrap();
+        // Over free frames, an allocated one and reserved ones.
+        assert_eq!(allocator.release(BASE..BASE + 128 * F, &[]), 64);
+        assert_eq!(allocator.release(BASE..BASE + 128 * F, &[]), 0);
+        assert_eq!(
+            allocator.free(first),
+            Ok(()),
+            "the frame in use was still in use"
+        );
+        assert_eq!(allocator.free(first), Err(FreeError::NotAllocated));
+        assert_eq!(allocator.free_frames(), 128);
+    }
+
+    #[test]
+    fn release_ignores_what_is_outside_the_window_or_partial() {
+        // A window of 64 frames from BASE.
+        let mut words = storage(64);
+        let mut builder = Builder::new(BASE, &mut words);
+        builder.add_memory(BASE, 64 * F);
+        builder.reserve(BASE, 64 * F);
+        let mut allocator = builder.build();
+        // Entirely outside the window; empty; a partial frame at both ends.
+        assert_eq!(allocator.release(BASE - 8 * F..BASE, &[]), 0);
+        assert_eq!(allocator.release(BASE + 64 * F..BASE + 80 * F, &[]), 0);
+        assert_eq!(allocator.release(BASE + 5 * F..BASE + 5 * F, &[]), 0);
+        assert_eq!(allocator.release(BASE + 20..BASE + F + 20, &[]), 0);
+        assert_eq!(allocator.release(BASE + F + 1..BASE + 3 * F, &[]), 1);
+        // Starts below the window and ends inside: frames 0 to 3, frame 1
+        // already released.
+        assert_eq!(allocator.release(BASE - 8 * F..BASE + 4 * F, &[]), 3);
+        // Starts inside and ends past the window: the rest.
+        assert_eq!(allocator.release(BASE + 4 * F..BASE + 100 * F, &[]), 60);
+        assert_eq!(allocator.free_frames(), 64);
+    }
+
+    #[test]
+    fn release_lowers_the_cursor_so_the_lowest_frame_comes_first() {
+        let mut words = storage(256);
+        let mut builder = Builder::new(BASE, &mut words);
+        builder.add_memory(BASE, 200 * F);
+        builder.reserve(BASE, 10 * F);
+        let mut allocator = builder.build();
+        drain(&mut allocator);
+        assert_eq!(allocator.alloc(), None);
+        assert_eq!(allocator.release(BASE..BASE + 10 * F, &[]), 10);
+        assert_eq!(allocator.alloc(), Some(BASE));
+    }
+
+    #[test]
+    fn a_hostile_release_cannot_wrap_or_overflow() {
+        let mut words = storage(64);
+        let mut builder = Builder::new(BASE, &mut words);
+        builder.add_memory(BASE, 64 * F);
+        builder.reserve(BASE, 64 * F);
+        let mut allocator = builder.build();
+        assert_eq!(allocator.release(u64::MAX - F..u64::MAX, &[]), 0);
+        let everything = 0..u64::MAX;
+        assert_eq!(
+            allocator.release(0..u64::MAX, core::slice::from_ref(&everything)),
+            0
+        );
+        assert_eq!(allocator.free_frames(), 0);
+        assert_eq!(allocator.release(0..u64::MAX, &[]), 64);
+    }
+
+    #[test]
+    fn alloc_in_takes_the_lowest_frame_of_the_range_and_nothing_else() {
+        let mut words = storage(256);
+        let mut builder = Builder::new(BASE, &mut words);
+        builder.add_memory(BASE, 200 * F);
+        builder.reserve(BASE + 70 * F, 2 * F);
+        let mut allocator = builder.build();
+        let range = BASE + 68 * F..BASE + 140 * F;
+        // Frames 68, 69, then 72 on: 70 and 71 are reserved.
+        assert_eq!(allocator.alloc_in(range.clone()), Some(BASE + 68 * F));
+        assert_eq!(allocator.alloc_in(range.clone()), Some(BASE + 69 * F));
+        assert_eq!(allocator.alloc_in(range.clone()), Some(BASE + 72 * F));
+        assert_eq!(allocator.free_frames(), 200 - 2 - 3);
+        // The lowest frame overall is still the lowest of the allocator.
+        assert_eq!(allocator.alloc(), Some(BASE));
+        let mut taken = 3;
+        while allocator.alloc_in(range.clone()).is_some() {
+            taken += 1;
+        }
+        assert_eq!(taken, 72 - 2);
+        assert_eq!(allocator.alloc_in(range), None);
+        // Partial frames at the ends are not in the range; an empty or
+        // reversed range, or one outside the window, has no frame.
+        assert_eq!(allocator.alloc_in(BASE + 1..BASE + F), None);
+        assert_eq!(allocator.alloc_in(BASE + 5 * F..BASE + 5 * F), None);
+        let (high, low) = (BASE + 9 * F, BASE + 3 * F);
+        assert_eq!(allocator.alloc_in(high..low), None);
+        assert_eq!(allocator.alloc_in(0..F), None);
+        // What it handed out can be returned like any frame.
+        assert_eq!(allocator.free(BASE + 69 * F), Ok(()));
+        assert_eq!(
+            allocator.alloc_in(BASE + 68 * F..BASE + 100 * F),
+            Some(BASE + 69 * F)
+        );
     }
 }

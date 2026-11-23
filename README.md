@@ -19,7 +19,10 @@ tree and manages physical memory in 4 KiB frames. A UEFI bootloader loads it fro
 disk image (QEMU and VirtualBox on Apple silicon) and hands over the memory map.
 
 The kernel runs in the upper half of the address space on its own page tables,
-with no page both writable and executable (ADR 0019, `kernelvm/`). It has a heap
+with no page both writable and executable (ADR 0019, `kernelvm/`). It reads RAM
+through a linear map, devices through a window of their own, and has no lower
+half; the address space is 48 bits, so a machine with RAM above 512 GiB boots,
+and the memory the bootloader owned goes to the frame allocator (ADR 0030). It has a heap
 (`Box`, `Vec`) that grows on demand in a window of its own (ADR 0029,
 `kernelheap/`).
 
@@ -90,6 +93,7 @@ passing.
 - [ADR 0013: Boot handoff structure between the bootloader and the kernel](docs/adr/0013-boot-handoff-structure.md)
 - [ADR 0017: MPL-2.0 dependencies in a GPL-2.0-only system](docs/adr/0017-mpl2-dependencies.md)
 - [ADR 0029: Kernel heap: a first-fit free list in its own window](docs/adr/0029-kernel-heap-allocator.md)
+- [ADR 0030: A linear map, virtual pointers, no lower half, a 48-bit regime and reclaimed boot memory](docs/adr/0030-linear-map-and-virtual-pointers.md)
 
 ## Licence
 

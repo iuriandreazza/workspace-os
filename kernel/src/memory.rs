@@ -1,6 +1,7 @@
 //! Physical memory: the frame allocator, built from the device tree memory map
 //! minus everything that is already in use.
 
+use alloc::vec::Vec;
 use core::fmt::{self, Write};
 use core::ops::Range;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -243,4 +244,199 @@ pub fn selftest(frames: &mut FrameAllocator, board: &Board, mut out: impl Write)
     assert_eq!(frames.free(first), Ok(()));
     assert_eq!(frames.free_frames(), free_at_start, "frames were lost");
     klog!(Ok, out, "frames: double free refused");
+}
+
+/// What to hand to the allocator (ADR 0030), worked out before the heap is
+/// locked: both lists allocate.
+pub struct Reclaim {
+    /// The BootloaderReclaimable regions.
+    ranges: Vec<Range<u64>>,
+    /// What stays reserved inside them: the kernel itself and whatever the
+    /// device tree reserves.
+    keep: Vec<Range<u64>>,
+    released: usize,
+}
+
+impl Reclaim {
+    /// The BootloaderReclaimable memory (boot info, memory map, device tree
+    /// copy, the bootloader's tables, former boot services memory), which
+    /// nothing may read any more. The caller has copied what it keeps
+    /// (`Board::into_owned`) and dropped the lower half, whose tables were in
+    /// this memory.
+    pub fn plan(board: &Board) -> Self {
+        let widen = |range: Range<usize>| range.start as u64..range.end as u64;
+        let mut keep: Vec<Range<u64>> = [
+            arch::kernel_image(),
+            arch::boot_stack(),
+            arch::exception_stack(),
+        ]
+        .into_iter()
+        .map(widen)
+        .collect();
+        let tree = board.for_each_tree_reservation(|region| {
+            keep.push(region.base..region.base.saturating_add(region.size));
+        });
+        assert!(tree.is_ok(), "device tree reservations vanished");
+        let mut ranges = Vec::new();
+        board.for_each_reclaimable_region(|region| {
+            ranges.push(region.base..region.base.saturating_add(region.size));
+        });
+        Self {
+            ranges,
+            keep,
+            released: 0,
+        }
+    }
+
+    /// Gives the frames to the allocator. Allocates nothing.
+    pub fn release(&mut self, frames: &mut FrameAllocator, mut out: impl Write) {
+        let free_before = frames.free_frames();
+        self.released = self
+            .ranges
+            .iter()
+            .map(|range| frames.release(range.clone(), &self.keep))
+            .sum();
+        assert_eq!(
+            frames.free_frames(),
+            free_before + self.released,
+            "the allocator's count of free frames does not follow what it released"
+        );
+        if self.ranges.is_empty() {
+            klog!(
+                Info,
+                out,
+                "frames: no bootloader memory to reclaim (direct load)"
+            );
+        } else {
+            klog!(
+                Ok,
+                out,
+                "frames: reclaimed {} frames ({} KiB) of {} bootloader memory regions, {} free now",
+                self.released,
+                self.released * FRAME_SIZE as usize / 1024,
+                self.ranges.len(),
+                frames.free_frames()
+            );
+        }
+    }
+}
+
+/// The words of a frame the self-test writes: a few across the page, so a
+/// frame that something else still uses shows in at least one.
+const PATTERN_OFFSETS: [usize; 9] = [0, 512, 1024, 1536, 2048, 2560, 3072, 3584, 4088];
+
+fn pattern(frame: u64, word: usize) -> u64 {
+    frame.rotate_left(17) ^ 0x5eed_0000_0000_0000 ^ word as u64
+}
+
+/// Takes every frame that `reclaim` released, writes a pattern in each through
+/// the linear map, reads it back, and gives the frames back (ADR 0030). A frame
+/// that two owners shared, or that was handed out twice, or that the linear map
+/// does not reach, shows here; and the caller digests the hand-over again
+/// afterwards, which a board that still pointed into the memory would fail.
+pub fn reclaim_selftest(frames: &mut FrameAllocator, reclaimed: &Reclaim, mut out: impl Write) {
+    if reclaimed.ranges.is_empty() {
+        return;
+    }
+    let mut used = 0usize;
+    for range in &reclaimed.ranges {
+        while let Some(frame) = frames.alloc_in(range.clone()) {
+            for (word, &offset) in PATTERN_OFFSETS.iter().enumerate() {
+                let at = arch::pointer_to(frame + offset as u64) as *mut u64;
+                // SAFETY: the frame was just handed out, so nothing else uses
+                // it, and the linear map covers every frame of RAM the allocator
+                // manages, read and write.
+                unsafe { at.write_volatile(pattern(frame, word)) };
+            }
+            used += 1;
+        }
+    }
+    assert_eq!(
+        used, reclaimed.released,
+        "the allocator handed out a different number of reclaimed frames than it released"
+    );
+    let mut verified = 0usize;
+    for range in &reclaimed.ranges {
+        for_each_frame_in(range.clone(), range.clone(), |frame| {
+            // Only a frame this test took is allocated: a kept one never was.
+            if frames.free(frame).is_err() {
+                return;
+            }
+            for (word, &offset) in PATTERN_OFFSETS.iter().enumerate() {
+                let at = arch::pointer_to(frame + offset as u64) as *const u64;
+                // SAFETY: as above; the frame is only read.
+                let found = unsafe { at.read_volatile() };
+                assert_eq!(
+                    found,
+                    pattern(frame, word),
+                    "reclaimed frame {frame:#x} changed while the test held it"
+                );
+            }
+            verified += 1;
+        });
+    }
+    assert_eq!(
+        verified, used,
+        "a reclaimed frame the test took was not returned"
+    );
+    klog!(
+        Ok,
+        out,
+        "frames: reclaimed memory used: {used} frames allocated, written and read back through the linear map, then freed"
+    );
+}
+
+/// RAM the allocator does not manage (the part of a big machine beyond its
+/// window) is still in the linear map (ADR 0030), and nothing else in a boot
+/// touches it. If the highest free frame of the machine lies outside the
+/// allocator's window, write a pattern in it through the linear map, read it
+/// back. On a machine of more than 512 GiB it is
+/// the one place the boot shows that the 48-bit regime reaches what a 39-bit
+/// one could not.
+pub fn linear_map_selftest(board: &Board, window: Range<u64>, mut out: impl Write) {
+    let mut highest: Option<u64> = None;
+    let usable = board.for_each_usable_region(|region| {
+        let end = region.base.saturating_add(region.size) & !(FRAME_SIZE - 1);
+        if end > window.end && end - FRAME_SIZE >= region.base {
+            highest = highest.max(Some(end - FRAME_SIZE));
+        }
+    });
+    assert!(usable.is_ok(), "the memory regions vanished");
+    let Some(frame) = highest else {
+        return;
+    };
+    // A frame the device tree reserves is not free.
+    let mut reserved = false;
+    let _ = board.for_each_tree_reservation(|region| {
+        reserved |=
+            region.base < frame + FRAME_SIZE && frame < region.base.saturating_add(region.size);
+    });
+    if reserved {
+        klog!(
+            Info,
+            out,
+            "linear map: the highest free frame {frame:#x} is reserved by the device tree, not tested"
+        );
+        return;
+    }
+    let at = arch::pointer_to(frame) as *mut u64;
+    // SAFETY: the frame is RAM nothing uses (outside the allocator's window and
+    // not reserved), and the linear map covers it read and write. It is written
+    // before it is read, so memory that was never initialised is not read.
+    let found = unsafe {
+        at.write_volatile(pattern(frame, 0));
+        at.read_volatile()
+    };
+    assert_eq!(
+        found,
+        pattern(frame, 0),
+        "the linear map read other memory than it wrote at {frame:#x}"
+    );
+    klog!(
+        Ok,
+        out,
+        "linear map: frame {frame:#x} ({} GiB up), outside the allocator's window, written and read back at {:#x}",
+        frame >> 30,
+        at as usize
+    );
 }

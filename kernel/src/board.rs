@@ -2,12 +2,15 @@
 //! tree (direct load) or from the bootloader's boot info (ADR 0013) instead of
 //! being fixed in the source.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use bootinfo::{BootInfo, MemoryKind, MemoryMap};
 use devicetree::{Error, Fdt, Region};
 
+use crate::arch::pointer_to;
 use crate::drivers::pl011::Pl011;
 
 /// QEMU `virt` puts the device tree blob at the start of RAM when the kernel
@@ -18,8 +21,24 @@ const DEVICE_TREE_AT_RAM_START: usize = 0x4000_0000;
 
 const UART_COMPATIBLE: &str = "arm,pl011";
 
-/// Base address of the console UART, or 0 until the device tree has been read.
+/// Where the console UART's registers are read and written: the physical
+/// address from the moment the hand-over has been read, and an address in the
+/// device window once the kernel's tables are live (ADR 0030). Zero until the
+/// hand-over has been read: output is dropped.
 static CONSOLE_BASE: AtomicUsize = AtomicUsize::new(0);
+
+/// Points the console at `base`. The caller makes sure it is mapped: this is
+/// called once for the address the hand-over names, and once, between the
+/// switch to the kernel's tables and the drop of the lower half, for the
+/// device window.
+pub fn use_console_at(base: usize) {
+    CONSOLE_BASE.store(base, Ordering::Relaxed);
+}
+
+/// Where the console is read and written now.
+pub fn console_base() -> usize {
+    CONSOLE_BASE.load(Ordering::Relaxed)
+}
 
 /// How the kernel was entered, for the log and for tests to read.
 #[derive(Clone, Copy)]
@@ -78,6 +97,28 @@ impl Board {
         }
     }
 
+    /// Calls `visit` with each region of RAM nothing has a claim on: Usable
+    /// memory of the bootloader's map, or the device tree's memory nodes on a
+    /// direct load. Reservations (the tree's own, the kernel image) are not
+    /// subtracted.
+    pub fn for_each_usable_region(&self, mut visit: impl FnMut(Region)) -> Result<(), Error> {
+        if let Some(map) = &self.map {
+            map.iter()
+                .filter(|entry| entry.kind() == MemoryKind::Usable)
+                .for_each(|entry| {
+                    visit(Region {
+                        base: entry.base,
+                        size: entry.length,
+                    })
+                });
+            return Ok(());
+        }
+        match &self.fdt {
+            Some(fdt) => fdt.for_each_memory_region(visit),
+            None => Ok(()),
+        }
+    }
+
     /// Calls `visit` with each region the frame allocator must not hand out
     /// besides the kernel's own: the device tree's reservations and, on the
     /// bootloader path, memory the bootloader still uses (ADR 0013).
@@ -92,10 +133,7 @@ impl Board {
                     })
                 });
         }
-        match &self.fdt {
-            Some(fdt) => fdt.for_each_reserved_region(visit),
-            None => Ok(()),
-        }
+        self.for_each_tree_reservation(visit)
     }
 }
 
@@ -142,8 +180,11 @@ impl Board {
     /// the boot info, every entry of the memory map, every region the memory
     /// and reservation walks give, and all the bytes of the device tree blob.
     /// It is taken before the kernel switches to its own tables and again,
-    /// from a fresh read, after (ADR 0026): the second read goes through the
-    /// lower window, so a window that lost or misplaced a region differs.
+    /// from a fresh read, after (ADR 0026, 0030): the second read goes through
+    /// the linear map, so a map that lost or misplaced a region differs. It is
+    /// taken a third time from the copy the kernel makes before it gives the
+    /// boot memory away, and a fourth after that memory has been used: a board
+    /// that still pointed into it would differ.
     pub fn handoff_digest(&self) -> HandoffDigest {
         let mut digest = HandoffDigest::new();
         digest.region(&self.memory);
@@ -179,24 +220,16 @@ impl Board {
         // from a read that could.
         let _ = self.for_each_memory_region(|region| digest.region(&region));
         let _ = self.for_each_reserved_region(|region| digest.region(&region));
-        if self.device_tree.size > 0 {
-            // SAFETY: the blob is the device tree the kernel validated at this
-            // address and size; the memory is reserved from the allocator and
-            // nothing writes to it.
-            let blob = unsafe {
-                core::slice::from_raw_parts(
-                    self.device_tree.base as usize as *const u8,
-                    self.device_tree.size as usize,
-                )
-            };
-            digest.bytes(blob);
+        if let Some(fdt) = &self.fdt {
+            digest.bytes(fdt.blob());
         }
         digest
     }
 
-    /// Reads the hand-over again from where the loader left it: the boot info
-    /// at `handoff_address` on the bootloader path, the device tree where it
-    /// was found on the direct one.
+    /// Reads the hand-over again from where the loader left it, at the physical
+    /// address `handoff_address`, through whatever map `pointer_to` says is
+    /// live: the boot info on the bootloader path, the device tree where it was
+    /// found on the direct one.
     pub fn read_again(&self, handoff_address: usize) -> Result<Board, HandoffError> {
         match self.entry {
             Entry::Direct => read_device_tree(self.device_tree.base as usize)
@@ -204,9 +237,57 @@ impl Board {
             Entry::Bootloader { .. } => from_boot_info(handoff_address).map_err(|(error, _)| error),
         }
     }
+
+    /// The same board with the memory map and the device tree copied into the
+    /// kernel's heap (ADR 0030), so that nothing points into memory the
+    /// bootloader owned and the kernel is about to give to the frame allocator.
+    /// The copies live as long as the kernel. On the direct path the tree is
+    /// ordinary RAM the kernel reserved and keeps, and there is no map: the
+    /// board is returned as it is.
+    pub fn into_owned(self) -> Board {
+        let Entry::Bootloader { .. } = self.entry else {
+            return self;
+        };
+        let keep =
+            |bytes: &[u8]| -> &'static [u8] { Box::leak(Vec::from(bytes).into_boxed_slice()) };
+        let map = self.map.map(|map| {
+            let (bytes, entry_size) = map.as_bytes();
+            MemoryMap::from_bytes(keep(bytes), entry_size)
+                .expect("a map that was valid a moment ago, copied")
+        });
+        let fdt = self.fdt.map(|fdt| {
+            Fdt::parse(keep(fdt.blob())).expect("a device tree that was valid a moment ago, copied")
+        });
+        Board { map, fdt, ..self }
+    }
+
+    /// Calls `visit` with each region of RAM the bootloader says it owns and
+    /// the kernel may take once it has copied what it needs (ADR 0013,
+    /// BootloaderReclaimable). A direct load has none.
+    pub fn for_each_reclaimable_region(&self, mut visit: impl FnMut(Region)) {
+        for entry in self.map_entries().into_iter().flatten() {
+            if entry.kind() == MemoryKind::BootloaderReclaimable {
+                visit(Region {
+                    base: entry.base,
+                    size: entry.length,
+                });
+            }
+        }
+    }
+
+    /// Calls `visit` with each region the device tree itself reserves
+    /// (`/memreserve/` and `/reserved-memory`), and not the bootloader's map.
+    pub fn for_each_tree_reservation(&self, visit: impl FnMut(Region)) -> Result<(), Error> {
+        match &self.fdt {
+            Some(fdt) => fdt.for_each_reserved_region(visit),
+            None => Ok(()),
+        }
+    }
 }
 
-/// Reads the device tree and makes the console usable.
+/// Reads the device tree. The caller makes the console usable (`use_console_at`
+/// with the board's UART), because reading the hand-over again later must not
+/// change where the console is.
 ///
 /// `boot_address` is what the loader passed in `x0`, zero when it passed
 /// nothing. If that blob is absent or invalid, the start of RAM is tried before
@@ -215,8 +296,7 @@ pub fn discover(boot_address: usize) -> Result<Board, Error> {
     let board = read_device_tree(boot_address)
         .or_else(|first| read_device_tree(DEVICE_TREE_AT_RAM_START).map_err(|_| first))?;
     // A UART base that does not fit the address space cannot be used.
-    let base = usize::try_from(board.uart.base).map_err(|_| Error::MalformedReg)?;
-    CONSOLE_BASE.store(base, Ordering::Relaxed);
+    usize::try_from(board.uart.base).map_err(|_| Error::MalformedReg)?;
     Ok(board)
 }
 
@@ -237,30 +317,24 @@ impl fmt::Display for HandoffError {
 
 const PL011_SIZE: u64 = 0x1000;
 
-/// Reads the boot info the bootloader left at `address` and makes the console
-/// usable, with the console the frozen header names. On failure, the error
-/// comes with whether the console can report it, which holds when the header
-/// was valid enough to name a usable one. The checks themselves are
-/// `bootinfo::check`, tested on the host.
-pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, bool)> {
+/// Reads the boot info the bootloader left at the physical address `address`,
+/// through `pointer_to`. On failure, the error comes with the base of the
+/// console that can report it, which exists when the header was valid enough to
+/// name a usable one. The checks themselves are `bootinfo::check`, tested on
+/// the host. The console is the caller's to point at (`use_console_at`).
+pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, Option<usize>)> {
     // SAFETY: the boot code only takes this path when `x1` held the entry
-    // magic, so `address` is the structure the bootloader built (ADR 0013).
-    let parsed = unsafe { BootInfo::from_address(address) };
+    // magic, so `address` is the structure the bootloader built (ADR 0013),
+    // readable at `pointer_to(address)` through the map the kernel runs on.
+    let parsed = unsafe { BootInfo::from_address(pointer_to(address as u64)) };
     let handoff = bootinfo::check(parsed, |info| {
         // SAFETY: the structure comes from the bootloader, which keeps the map
-        // unchanged and in memory the allocator never hands out.
-        unsafe { info.memory_map() }
+        // unchanged and in memory the allocator never hands out until the
+        // kernel has copied it (ADR 0030); `pointer_to` is how that memory is
+        // read.
+        unsafe { info.memory_map(pointer_to) }
     })
-    .map_err(|rejected| {
-        if let Some(base) = rejected.console {
-            CONSOLE_BASE.store(base, Ordering::Relaxed);
-        }
-        (
-            HandoffError::Rejected(rejected.error),
-            rejected.console.is_some(),
-        )
-    })?;
-    CONSOLE_BASE.store(handoff.console, Ordering::Relaxed);
+    .map_err(|rejected| (HandoffError::Rejected(rejected.error), rejected.console))?;
     let info = handoff.info;
 
     // The copy of the device tree is optional, and only its reservations are
@@ -269,9 +343,10 @@ pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, bool)> {
         None
     } else {
         // SAFETY: the bootloader copied the blob to `device_tree` and reserves
-        // that memory (BootloaderReclaimable) until the kernel is done with it.
-        let blob = unsafe { Fdt::from_address(info.device_tree as usize) }
-            .map_err(|e| (HandoffError::BadDeviceTree(e), true))?;
+        // that memory (BootloaderReclaimable) until the kernel has copied it
+        // (ADR 0030); it is read at `pointer_to(device_tree)`.
+        let blob = unsafe { Fdt::from_address(pointer_to(info.device_tree)) }
+            .map_err(|e| (HandoffError::BadDeviceTree(e), Some(handoff.console)))?;
         Some(blob)
     };
 
@@ -308,12 +383,13 @@ pub fn from_boot_info(address: usize) -> Result<Board, (HandoffError, bool)> {
 
 fn read_device_tree(address: usize) -> Result<Board, Error> {
     // SAFETY: the address is either the loader's device tree pointer or the
-    // start of RAM on QEMU `virt`, where the blob lives. Nothing writes there:
-    // the kernel never does, and `memory::init` reserves the blob so that the
-    // frame allocator never hands it out. The contents are validated by the
-    // reader; that the claimed size stays inside RAM is trusted from the
-    // loader, as the boot protocol requires.
-    let fdt = unsafe { Fdt::from_address(address) }?;
+    // start of RAM on QEMU `virt`, where the blob lives, read at
+    // `pointer_to(address)`. Nothing writes there: the kernel never does, and
+    // `memory::init` reserves the blob so that the frame allocator never hands
+    // it out. The contents are validated by the reader; that the claimed size
+    // stays inside RAM is trusted from the loader, as the boot protocol
+    // requires.
+    let fdt = unsafe { Fdt::from_address(pointer_to(address as u64)) }?;
     Ok(Board {
         memory: fdt.memory()?,
         uart: fdt.device(UART_COMPATIBLE)?,

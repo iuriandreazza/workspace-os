@@ -84,6 +84,7 @@ pub struct Region {
 
 #[derive(Clone, Copy)]
 pub struct Fdt<'a> {
+    blob: &'a [u8],
     size: usize,
     reserve_map: &'a [u8],
     structure: &'a [u8],
@@ -160,11 +161,17 @@ impl<'a> Fdt<'a> {
             return Err(Error::BadHeader);
         }
         Ok(Fdt {
+            blob,
             size: total_size,
             reserve_map: blob.get(reserve_map_offset..).ok_or(Error::BadHeader)?,
             structure: sub_block(blob, structure_offset, structure_size)?,
             strings: sub_block(blob, strings_offset, strings_size)?,
         })
+    }
+
+    /// The validated blob, as many bytes as the header claims.
+    pub fn blob(&self) -> &'a [u8] {
+        self.blob
     }
 
     /// Size in bytes the header claims for the whole blob.
@@ -671,6 +678,16 @@ mod tests {
                 size: 0x1000
             })
         );
+    }
+
+    #[test]
+    fn the_blob_is_what_the_header_claims_and_nothing_after_it() {
+        let mut blob = qemu_like(0x1000_0000, None);
+        let claimed = blob.len();
+        blob.extend_from_slice(&[0xaa; 64]);
+        let fdt = Fdt::parse(&blob).unwrap();
+        assert_eq!(fdt.size(), claimed);
+        assert_eq!(fdt.blob(), &blob[..claimed]);
     }
 
     #[test]

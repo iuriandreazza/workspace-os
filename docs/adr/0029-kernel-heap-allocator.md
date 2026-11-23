@@ -9,6 +9,8 @@ tags: [kernel, memory, heap, safety]
 
 # ADR 0029: Kernel heap
 
+> **Amended by [ADR 0030](0030-linear-map-and-virtual-pointers.md):** growth reaches table frames through the linear map; the allocator is reachable through `heap::with_frames`.
+
 ## Context
 
 K5 gives the kernel `alloc`: `Box`, `Vec` and the like for what comes next

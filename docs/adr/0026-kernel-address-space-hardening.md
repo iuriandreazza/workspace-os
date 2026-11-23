@@ -9,6 +9,8 @@ tags: [kernel, memory, mmu, aarch64, security, exceptions]
 
 # ADR 0026: Hardening the kernel address space
 
+> **Partly superseded by [ADR 0030](0030-linear-map-and-virtual-pointers.md):** the hand-over is re-read through the linear map, not the lower window, and the audit has windows instead of one offset per root.
+
 ## Context
 
 ADR 0019 gave the kernel its own tables and listed what it left open under

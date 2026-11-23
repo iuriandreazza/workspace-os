@@ -1,9 +1,12 @@
-//! The kernel's own translation tables (ADR 0019): built from frames of the
-//! allocator on top of the boot tables `boot.s` installed, and switched to.
+//! The kernel's own translation tables (ADR 0019, 0030): built from frames of
+//! the allocator on top of the boot tables `boot.s` installed, and switched to:
+//! the image, a linear map of RAM and a window for device registers, all in the
+//! upper half. The lower half is dropped.
 //!
 //! The pure part (descriptors, permissions, mapping, auditing) is `kernelvm`,
-//! tested on the host. What is here is the part that touches memory by
-//! physical address and system registers.
+//! tested on the host. What is here is the part that touches system registers
+//! and memory through the way the kernel reads physical addresses
+//! (`super::pointer_to`).
 
 // An error here ends the boot with a report, and there is no heap to box the
 // audit it carries in.
@@ -14,12 +17,12 @@ use core::fmt::{self, Write};
 use core::ops::Range;
 
 use kernelvm::{
-    Expectation, ImageLayout, LayoutError, MapError, Mapper, MemoryTypes, Permissions, Table,
-    TableMemory, TableRead,
+    DeviceWindow, Expectation, ImageLayout, LayoutError, MapError, Mapper, MemoryTypes,
+    Permissions, Table, TableMemory, TableRead, Window,
 };
 use physmem::FrameAllocator;
 
-use super::physical;
+use super::{physical, pointer_to};
 use crate::board::Board;
 use crate::log::klog;
 
@@ -84,31 +87,33 @@ impl From<MapError> for Error {
     }
 }
 
-/// Tables read by physical address, through whichever map covers RAM at that
-/// address: the boot map before `init` and the window it builds after.
+/// Tables read by physical address, at the address `pointer_to` gives: the
+/// entry's identity map before `init` switches, the linear map after.
 struct PhysicalTables;
 
 impl TableRead for PhysicalTables {
     fn table(&self, address: u64) -> &Table {
         // SAFETY: callers only pass the roots of live translation tables and
         // the addresses found in them. Those are tables in RAM that the map
-        // the kernel runs on covers at the physical address: the boot tables
-        // (in the image, which only the boot map and the upper half reach, so
-        // they are read before `switch`) or the tables `init` built from
-        // frames (in the lower window). Nothing writes while they are read.
-        unsafe { &*(address as usize as *const Table) }
+        // the kernel runs on covers at `pointer_to(address)`: the boot tables
+        // (in the image, which only the entry's map and the image's own
+        // mapping reach, so they are read before the switch) or the tables
+        // `init` built from frames (in the linear map, which includes every
+        // frame the allocator hands out). Nothing writes while they are read.
+        unsafe { &*(pointer_to(address) as *const Table) }
     }
 }
 
-/// The most tables `init` builds: the two roots, a level 2 and a level 3 table
-/// for the image, and, per region of RAM, up to two level 2 and two level 3
-/// tables at its edges (whole gigabytes are blocks in the root). The boot map
-/// of a firmware has a few dozen regions, so this is generous; more regions
-/// fail with `OutOfFrames`.
+/// The most tables `init` builds: the root, a level 1, a level 2 and a level 3
+/// table for the image, the device window's, the empty root for the lower half,
+/// and, per region of RAM, up to two level 2 and two level 3 tables at its edges
+/// and a level 1 table for each 512 GiB it touches (whole gigabytes are blocks
+/// in the level 1 tables). The boot map of a firmware has a few dozen regions,
+/// so this is generous; more regions fail with `OutOfFrames`.
 const MAX_TABLES: usize = 512;
 
-/// Tables taken from the frame allocator, which the kernel reaches at their
-/// physical address.
+/// Tables taken from the frame allocator, which the kernel reaches through
+/// `pointer_to`.
 struct FrameTables<'a, 'f> {
     frames: &'a mut FrameAllocator<'f>,
     owned: [u64; MAX_TABLES],
@@ -132,20 +137,22 @@ impl TableMemory for FrameTables<'_, '_> {
             // SAFETY: invalidating a line of a frame that was just handed out
             // discards nothing anyone needs; it keeps a stale dirty line from
             // being written back over the table later.
-            unsafe { asm!("dc ivac, {}", in(reg) line, options(nostack, preserves_flags)) };
+            unsafe {
+                asm!("dc ivac, {}", in(reg) pointer_to(line), options(nostack, preserves_flags))
+            };
         }
         // SAFETY: the frame was just handed out, so nothing else uses it, and
-        // the map the kernel runs on covers RAM at its physical address: the
+        // the map the kernel runs on covers RAM at `pointer_to(address)`: the
         // bootloader's map, or on the direct path the boot map (1 GiB blocks,
-        // and the image's own 2 MiB, tail included), then the lower window.
-        unsafe { core::ptr::write(address as usize as *mut Table, Table::EMPTY) };
+        // and the image's own 2 MiB, tail included), then the linear map.
+        unsafe { core::ptr::write(pointer_to(address) as *mut Table, Table::EMPTY) };
         Some(address)
     }
 
     fn table_mut(&mut self, address: u64) -> &mut Table {
         // SAFETY: the table is one of those `allocate` handed out, so this is
         // the only reference to it while the mapper holds `&mut self`.
-        unsafe { &mut *(address as usize as *mut Table) }
+        unsafe { &mut *(pointer_to(address) as *mut Table) }
     }
 }
 
@@ -156,7 +163,7 @@ impl FrameTables<'_, '_> {
         let line_size = data_cache_line_size();
         for &table in &self.owned[..self.count] {
             for line in (table..table + kernelvm::PAGE_SIZE).step_by(line_size) {
-                clean_and_invalidate(line);
+                clean_and_invalidate(pointer_to(line) as u64);
             }
         }
         // SAFETY: a barrier.
@@ -164,7 +171,7 @@ impl FrameTables<'_, '_> {
     }
 }
 
-/// Cleans and invalidates the line holding `address` to the point of
+/// Cleans and invalidates the line holding the virtual `address` to the point of
 /// coherency. It changes no data; the invalidate matters when the walker's
 /// attributes are cacheable and the kernel's own writes were not (the direct
 /// path runs with `C` clear), so a stale line must not survive.
@@ -223,6 +230,10 @@ fn check_boot_tables(layout: &ImageLayout, types: MemoryTypes) -> Result<(), Err
     // The tables of phase A cover 2 MiB from the start of the image: the part
     // after the stacks is read and write too, and the guard pages are empty.
     let tail = layout.exception_stack.end..layout.text.start + kernelvm::BLOCK_SIZE;
+    let window = Window {
+        virt: kernelvm::virtual_of(layout.text.start)..kernelvm::virtual_of(tail.end),
+        offset: Some(kernelvm::KERNEL_OFFSET),
+    };
     let [text, rodata, data, stack, exception_stack] = layout.parts();
     let known = [
         text,
@@ -235,14 +246,28 @@ fn check_boot_tables(layout: &ImageLayout, types: MemoryTypes) -> Result<(), Err
     let report = kernelvm::audit(
         &PhysicalTables,
         read_ttbr1(),
-        kernelvm::KERNEL_OFFSET,
+        kernelvm::UPPER_BASE,
         &Expectation {
             types,
+            window: Some(&window),
             forbidden: &(0..0),
             device: &(0..0),
             known: Some(&known),
         },
     );
+    // Nothing else is mapped: the boot tables hold the image and no more.
+    let strays = kernelvm::strays(
+        &PhysicalTables,
+        read_ttbr1(),
+        kernelvm::UPPER_BASE,
+        core::slice::from_ref(&window.virt),
+    );
+    if strays.0 != 0 {
+        return Err(Error::BootTables(kernelvm::Audit {
+            wrong_section: strays.1,
+            ..report
+        }));
+    }
     let expected = (
         size(&layout.text),
         size(&layout.rodata),
@@ -330,10 +355,12 @@ impl fmt::Display for Register {
 /// Builds the kernel's tables from frames of `frames` and switches to them.
 ///
 /// The upper half maps the image as the boot tables do, by section, so that
-/// switching `TTBR1_EL1` changes no translation of the code running; the lower
-/// half becomes a window onto RAM and the UART, without the image, which the
-/// kernel's pointers to the boot info, the device tree and its own frames
-/// need until they become virtual (ADR 0019).
+/// switching `TTBR1_EL1` changes no translation of the code running; the rest
+/// of RAM, minus the image, in the linear map; and the console's registers in
+/// the device window. Then every physical address is read through the linear
+/// map, the console is pointed at the device window, and the lower half is
+/// dropped (ADR 0030). A pointer the kernel still holds to a physical address
+/// faults from here on.
 pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
     let types = memory_types()?;
     let layout = layout()?;
@@ -344,18 +371,14 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
         owned: [0; MAX_TABLES],
         count: 0,
     };
-    let upper = {
+    let hole = layout.span();
+    let (upper, console) = {
         let mut mapper = Mapper::new(&mut tables, types)?;
         layout.map(&mut mapper, kernelvm::KERNEL_OFFSET)?;
-        mapper.root()
-    };
-    let hole = layout.span();
-    let lower = {
-        let mut mapper = Mapper::new(&mut tables, types)?;
         let mut result = Ok(());
         let regions = board.for_each_memory_region(|region| {
             if result.is_ok() {
-                result = kernelvm::map_ram_region(
+                result = kernelvm::map_linear_region(
                     &mut mapper,
                     region.base..region.base.saturating_add(region.size),
                     &hole,
@@ -366,54 +389,60 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
         // A region the device tree could not give is not an error here: the
         // allocator has failed on the same tree before this runs.
         let _ = regions;
-        kernelvm::map_device(&mut mapper, board.uart.base, board.uart.size)?;
-        mapper.root()
+        let console = DeviceWindow::new().map(&mut mapper, board.uart.base, board.uart.size)?;
+        (mapper.root(), console)
     };
+    // The root the lower half is pointed at when it is dropped: all zeros.
+    let empty = tables.allocate().ok_or(MapError::OutOfFrames)?;
     tables.publish();
-    switch(lower, upper);
+    switch_upper_half(upper);
+    super::read_physical_through_the_linear_map();
+    crate::board::use_console_at(console as usize);
+    drop_lower_half(empty);
     Ok(())
 }
 
-/// Replaces `TTBR0_EL1` and `TTBR1_EL1`.
-///
-/// The lower half changes shape (bootloader's map, or the boot code's blocks,
-/// for the kernel's), so it is torn down and made: translation walks through
-/// `TTBR0_EL1` are disabled (`EPD0`), the register is written, the TLB is
-/// invalidated, and walks are enabled again, with the lower half of `TCR_EL1`
-/// the kernel's. No memory outside the upper half is touched in between, which
-/// is why this is one block of register operations.
-///
-/// The upper half is switched with the code running from it: the new tables
-/// map the image with the same page size, output address and attributes as
-/// the old ones, so no translation in use changes (ADR 0019).
-fn switch(lower: u64, upper: u64) {
-    let current = read_tcr();
-    let enabled = (current & !kernelvm::TCR_LOWER_HALF_MASK) | kernelvm::TCR_LOWER_HALF;
-    let disabled = enabled | kernelvm::TCR_EPD0;
-    // SAFETY: both roots are complete tables `init` built and published, the
-    // upper half maps this very code and its stack with the translations the
-    // boot tables gave them, and nothing between the first and the last
-    // instruction touches memory the lower half maps.
+/// Replaces `TTBR1_EL1`, with the code running from the upper half: the new
+/// tables map the image with the same page size, output address and
+/// attributes as the old ones, so no translation in use changes (ADR 0019).
+/// The regime is the same, set by `boot.s` (ADR 0030).
+fn switch_upper_half(upper: u64) {
+    // SAFETY: `upper` is a complete level 0 table `init` built and published,
+    // mapping this very code and its stack with the translations the boot
+    // tables gave them.
     unsafe {
         asm!(
-            "msr tcr_el1, {disabled}",
-            "isb",
-            "msr ttbr0_el1, {lower}",
-            "isb",
-            "tlbi vmalle1",
-            "dsb ish",
-            "isb",
-            "msr tcr_el1, {enabled}",
-            "isb",
             "msr ttbr1_el1, {upper}",
             "isb",
             "tlbi vmalle1",
             "dsb ish",
             "isb",
-            disabled = in(reg) disabled,
-            enabled = in(reg) enabled,
-            lower = in(reg) lower,
             upper = in(reg) upper,
+            options(nostack)
+        );
+    }
+}
+
+/// Drops the lower half: translation walks through `TTBR0_EL1` are disabled
+/// (`EPD0`), the register is pointed at a table with no entry, and the TLB is
+/// invalidated. From the first `isb` no address below the upper half
+/// translates, whatever the old tables held (ADR 0030). One block of register
+/// operations, touching no memory.
+fn drop_lower_half(empty: u64) {
+    let disabled = read_tcr() | kernelvm::TCR_EPD0;
+    // SAFETY: the code, its stack, the tables and every pointer the kernel
+    // uses from here on are in the upper half, which this does not touch.
+    unsafe {
+        asm!(
+            "msr tcr_el1, {disabled}",
+            "isb",
+            "msr ttbr0_el1, {empty}",
+            "isb",
+            "tlbi vmalle1",
+            "dsb ish",
+            "isb",
+            disabled = in(reg) disabled,
+            empty = in(reg) empty,
             options(nostack)
         );
     }
@@ -426,39 +455,69 @@ fn read_ttbr0() -> u64 {
     register_ttbr(ttbr)
 }
 
+/// The most RAM regions and hand-over addresses `verify` probes in the lower
+/// half: the first page of each, up to this many.
+const MAX_PROBES: usize = 64;
+
 /// Walks the tables the processor uses now and panics unless they hold what
-/// ADR 0019 promises: no page that is writable and executable, none for EL0,
-/// the image mapped by section with the sizes the linker gave them, a guard
-/// page that translates to nothing, no alias of the image in the lower half,
-/// and `SCTLR_EL1.WXN` set. The walk reads the live registers and the live
-/// tables, not what `init` meant to build.
-pub fn verify(mut out: impl Write, board: &Board) {
+/// ADR 0019 and 0030 promise: no page that is writable and executable, none
+/// for EL0, the image mapped by section with the sizes the linker gave them, a
+/// guard page that translates to nothing, the linear map holding RAM read and
+/// write with no alias of the image, the device window holding only the
+/// console's registers, nothing outside those three windows, a lower half with
+/// no entry and walks through it disabled, and `SCTLR_EL1.WXN` set. The walk
+/// reads the live registers and the live tables, not what `init` meant to
+/// build. The lower half is also asked, by hardware, about addresses that were
+/// mapped before the drop: `handoff_address` is the physical address the
+/// bootloader (or loader) gave in `x0`.
+pub fn verify(mut out: impl Write, board: &Board, handoff_address: usize) {
     let types = memory_types().unwrap_or_else(|e| panic!("mmu: {e}"));
     let layout = layout().unwrap_or_else(|e| panic!("mmu: {e}"));
     let (upper_root, lower_root) = (read_ttbr1(), read_ttbr0());
     let parts = layout.parts();
-    let upper = kernelvm::audit(
+    let span = layout.span();
+    let image_window = Window {
+        virt: kernelvm::virtual_of(span.start)..kernelvm::virtual_of(span.end),
+        offset: Some(kernelvm::KERNEL_OFFSET),
+    };
+    let linear_window = Window {
+        virt: kernelvm::LINEAR_BASE..kernelvm::LINEAR_BASE + kernelvm::LINEAR_SPAN,
+        offset: Some(kernelvm::LINEAR_BASE),
+    };
+    let device_window = Window {
+        virt: kernelvm::DEVICE_BASE..kernelvm::DEVICE_BASE + kernelvm::DEVICE_WINDOW,
+        offset: None,
+    };
+    let device_range = device_pages(board);
+    let device_known = [(device_range.clone(), Permissions::Device)];
+    let walk = |window: &Window, forbidden: &Range<u64>, device: &Range<u64>, known| {
+        kernelvm::audit(
+            &PhysicalTables,
+            upper_root,
+            kernelvm::UPPER_BASE,
+            &Expectation {
+                types,
+                window: Some(window),
+                forbidden,
+                device,
+                known,
+            },
+        )
+    };
+    let upper = walk(&image_window, &(0..0), &(0..0), Some(&parts));
+    let linear = walk(&linear_window, &span, &(0..0), None);
+    let devices = walk(&device_window, &(0..0), &device_range, Some(&device_known));
+    let strays = kernelvm::strays(
         &PhysicalTables,
         upper_root,
-        kernelvm::KERNEL_OFFSET,
-        &Expectation {
-            types,
-            forbidden: &(0..0),
-            device: &(0..0),
-            known: Some(&parts),
-        },
+        kernelvm::UPPER_BASE,
+        &[
+            image_window.virt.clone(),
+            linear_window.virt.clone(),
+            device_window.virt.clone(),
+        ],
     );
-    let lower = kernelvm::audit(
-        &PhysicalTables,
-        lower_root,
-        0,
-        &Expectation {
-            types,
-            forbidden: &layout.span(),
-            device: &device_pages(board),
-            known: None,
-        },
-    );
+    let lower = kernelvm::strays(&PhysicalTables, lower_root, 0, &[]);
     klog!(
         Info,
         out,
@@ -470,13 +529,33 @@ pub fn verify(mut out: impl Write, board: &Board) {
     klog!(
         Info,
         out,
-        "mmu: lower half at {lower_root:#x}: read write {:#x} bytes, device {:#x}, text {:#x}",
-        lower.read_write,
-        lower.device,
-        lower.text
+        "mmu: linear map at {:#x}: {:#x} bytes of RAM, read write, never executed, the image left out",
+        kernelvm::LINEAR_BASE,
+        linear.read_write
+    );
+    klog!(
+        Info,
+        out,
+        "mmu: device window at {:#x}: {:#x} bytes of registers, console at {:#x}",
+        kernelvm::DEVICE_BASE,
+        devices.device,
+        crate::board::console_base()
     );
     assert!(upper.is_clean(), "mmu: upper half is not clean: {upper:?}");
-    assert!(lower.is_clean(), "mmu: lower half is not clean: {lower:?}");
+    assert!(
+        linear.is_clean(),
+        "mmu: linear map is not clean: {linear:?}"
+    );
+    assert!(
+        devices.is_clean(),
+        "mmu: device window is not clean: {devices:?}"
+    );
+    assert!(
+        strays.0 == 0,
+        "mmu: {} leaves lie outside the image, the linear map and the devices, the first at {:#x}",
+        strays.0,
+        strays.1.unwrap_or(0)
+    );
     assert!(
         upper.text == size(&layout.text)
             && upper.read_only == size(&layout.rodata)
@@ -486,8 +565,15 @@ pub fn verify(mut out: impl Write, board: &Board) {
         "mmu: the upper half does not map the image by section: {upper:?}"
     );
     assert!(
-        lower.text == 0 && lower.read_only == 0,
-        "mmu: the lower half holds code or constants: {lower:?}"
+        linear.text == 0 && linear.read_only == 0 && linear.device == 0,
+        "mmu: the linear map holds code, constants or devices: {linear:?}"
+    );
+    assert!(
+        devices.text == 0
+            && devices.read_only == 0
+            && devices.read_write == 0
+            && devices.device == size(&device_range),
+        "mmu: the device window holds more than the console's registers: {devices:?}"
     );
     let guard = kernelvm::virtual_of(layout.data.end);
     assert!(
@@ -497,6 +583,14 @@ pub fn verify(mut out: impl Write, board: &Board) {
     assert!(
         super::system_control() & kernelvm::SCTLR_WXN != 0,
         "mmu: SCTLR_EL1.WXN is not set"
+    );
+    verify_lower_half_is_empty(
+        &mut out,
+        board,
+        handoff_address,
+        &layout,
+        lower_root,
+        lower.0,
     );
     verify_translation_extensions(&mut out);
     klog!(
@@ -508,6 +602,76 @@ pub fn verify(mut out: impl Write, board: &Board) {
         Ok,
         out,
         "mmu: write xor execute holds: no page is writable and executable, WXN is set"
+    );
+}
+
+/// The lower half translates nothing (ADR 0030): walks through `TTBR0_EL1` are
+/// off, its root holds no entry, and the hardware, asked about every kind of
+/// address that was mapped there before (the console's registers, the image,
+/// the hand-over, the first page of each region of RAM), says the translation
+/// faults. The same question about a linear address of that RAM is answered,
+/// so a probe that could not succeed does not pass the others.
+fn verify_lower_half_is_empty(
+    mut out: impl Write,
+    board: &Board,
+    handoff_address: usize,
+    layout: &ImageLayout,
+    lower_root: u64,
+    leaves: u64,
+) {
+    assert!(
+        read_tcr() & kernelvm::TCR_EPD0 != 0,
+        "mmu: TCR_EPD0 is clear: the lower half is walked"
+    );
+    assert!(
+        leaves == 0,
+        "mmu: the lower half's root at {lower_root:#x} holds {leaves} leaves"
+    );
+    let mut probes = [0u64; MAX_PROBES];
+    let mut count = 0;
+    let mut add = |address: u64| {
+        assert!(count < MAX_PROBES, "mmu: too many addresses to probe");
+        probes[count] = address;
+        count += 1;
+    };
+    add(board.uart.base);
+    add(layout.text.start);
+    add(layout.data.start);
+    add(handoff_address as u64);
+    if board.device_tree.size > 0 {
+        add(board.device_tree.base);
+    }
+    // The control is a page of RAM the linear map holds: the first one outside
+    // the image, which the map leaves out.
+    let span = layout.span();
+    let mut control_page = None;
+    // As in `init`: a tree that cannot be walked ended the boot before this.
+    let _ = board.for_each_memory_region(|region| {
+        add(region.base);
+        let page = if span.contains(&region.base) {
+            span.end
+        } else {
+            region.base
+        };
+        if page < region.base.saturating_add(region.size) {
+            control_page.get_or_insert(page);
+        }
+    });
+    for &address in &probes[..count] {
+        assert!(
+            super::memory_attributes(address as usize).is_none(),
+            "mmu: {address:#x} still translates in the lower half"
+        );
+    }
+    let control = control_page.map_or(0, pointer_to);
+    assert!(
+        control_page.is_some() && super::memory_attributes(control).is_some(),
+        "mmu: the linear address {control:#x} of RAM does not translate: the probes prove nothing"
+    );
+    klog!(
+        Info,
+        out,
+        "mmu: lower half dropped: TCR_EL1.EPD0 set, root at {lower_root:#x} holds {leaves} leaves, {count} addresses translate to nothing"
     );
 }
 
@@ -561,7 +725,7 @@ pub fn grow_heap(frames: &mut FrameAllocator, at: u64, pages: usize) -> usize {
             .into_iter()
             .flatten()
         {
-            clean_and_invalidate(descriptor);
+            clean_and_invalidate(pointer_to(descriptor) as u64);
         }
     }
     // SAFETY: barriers: the descriptors are visible to the walker before the

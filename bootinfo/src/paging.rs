@@ -9,7 +9,11 @@
 //!
 //! Layout: 4 KiB granule. Everything below 512 GiB starts as 1 GiB Device
 //! blocks; the regions that are memory split those down to 2 MiB blocks and,
-//! at the edges, 4 KiB pages. The memory-type indexes are not chosen here: the
+//! at the edges, 4 KiB pages. Where the regime has more than 39 bits the root
+//! is a level 0 table, and every further 512 GiB that holds memory gets a level
+//! 1 table of its own, made when the first region reaches it, likewise Device
+//! blocks first (ADR 0030): RAM above 512 GiB is described too, because the
+//! kernel reads what the bootloader put there through this map. The memory-type indexes are not chosen here: the
 //! caller passes the ones the live `MAIR_EL1` already holds, so the map can be
 //! installed without touching `MAIR_EL1` or `TCR_EL1`.
 
@@ -18,8 +22,8 @@ use crate::MemoryEntry;
 pub const PAGE_SIZE: u64 = 4096;
 const BLOCK_2M: u64 = 2 << 20;
 const BLOCK_1G: u64 = 1 << 30;
-/// The map covers this much address space: one 512-entry level 1 table.
-const COVERED: u64 = 512 * BLOCK_1G;
+/// What one level 1 table covers: 512 GiB.
+const SPAN: u64 = 512 * BLOCK_1G;
 const ENTRIES: usize = 512;
 
 /// One translation table: 512 descriptors, aligned on its own size.
@@ -137,8 +141,11 @@ struct Builder<'a> {
     pool: &'a mut [Table],
     used: usize,
     attributes: TableAttributes,
-    /// Index in the pool of the level 1 table.
-    level1: usize,
+    /// Index in the pool of the root table.
+    root: usize,
+    /// Whether the root is a level 0 table over level 1 tables, one per 512 GiB.
+    /// Otherwise the root is the one level 1 table.
+    root_is_level0: bool,
 }
 
 impl Builder<'_> {
@@ -158,6 +165,31 @@ impl Builder<'_> {
         let table = self.used;
         *self.pool.get_mut(table).ok_or(PageError::PoolExhausted)? = Table::EMPTY;
         self.used += 1;
+        Ok(table)
+    }
+
+    /// The level 1 table that covers the 512 GiB `span` (0 for the first),
+    /// made with 1 GiB Device blocks if no region has reached it yet.
+    fn level1(&mut self, span: usize) -> Result<usize, PageError> {
+        if !self.root_is_level0 {
+            return if span == 0 {
+                Ok(self.root)
+            } else {
+                Err(PageError::OutOfRange)
+            };
+        }
+        let descriptor = self.pool[self.root].0[span];
+        if is_table(descriptor) {
+            return Ok(self.index_of(descriptor));
+        }
+        let table = self.alloc()?;
+        let base = span as u64 * SPAN;
+        for gigabyte in 0..ENTRIES {
+            self.pool[table].0[gigabyte] =
+                self.attributes
+                    .leaf(Type::Device, base + gigabyte as u64 * BLOCK_1G, 1);
+        }
+        self.pool[self.root].0[span] = self.address_of(table) | VALID | TABLE_OR_PAGE;
         Ok(table)
     }
 
@@ -196,8 +228,9 @@ impl Builder<'_> {
     fn map_range(&mut self, base: u64, end: u64) -> Result<(), PageError> {
         let mut address = base;
         while address < end {
-            let l1_slot = (address / BLOCK_1G) as usize;
-            let l2 = self.descend(self.level1, l1_slot, 1)?;
+            let level1 = self.level1((address / SPAN) as usize)?;
+            let l1_slot = ((address / BLOCK_1G) % ENTRIES as u64) as usize;
+            let l2 = self.descend(level1, l1_slot, 1)?;
             let l2_slot = ((address / BLOCK_2M) % ENTRIES as u64) as usize;
             if address.is_multiple_of(BLOCK_2M) && end - address >= BLOCK_2M {
                 if self.pool[l2].0[l2_slot] & 3 != 1
@@ -226,12 +259,15 @@ impl Builder<'_> {
 
 /// An upper bound on the tables `build_identity_map` needs for these entries:
 /// the root, the level 1 table, and per memory entry one level 2 table for
-/// each gigabyte it touches plus up to two level 3 tables for its ends.
+/// each gigabyte it touches plus up to two level 3 tables for its ends, and a
+/// level 1 table for each 512 GiB it touches beyond the first.
 pub fn tables_needed(entries: &[MemoryEntry]) -> usize {
     2 + entries
         .iter()
         .filter(|entry| entry.kind().is_normal_memory())
-        .map(|entry| (entry.length / BLOCK_1G) as usize + 2 + 2)
+        .map(|entry| {
+            (entry.length / BLOCK_1G) as usize + 2 + 2 + (entry.length / SPAN) as usize + 2
+        })
         .sum::<usize>()
 }
 
@@ -247,28 +283,30 @@ pub fn build_identity_map(
     if !(31..=48).contains(&attributes.address_bits) {
         return Err(PageError::UnsupportedAddressBits);
     }
-    let two_levels_above = attributes.address_bits > 39;
+    let root_is_level0 = attributes.address_bits > 39;
     let mut builder = Builder {
         pool,
         used: 0,
         attributes,
-        level1: 0,
+        root: 0,
+        root_is_level0,
     };
     let root = builder.alloc()?;
-    let level1 = if two_levels_above {
-        builder.alloc()?
+    builder.root = root;
+
+    // The first 512 GiB (or the whole regime, if it is smaller) start as Device
+    // blocks; further spans are made when a region reaches them.
+    let covered = 1u64 << attributes.address_bits;
+    let level1 = if root_is_level0 {
+        builder.level1(0)?
     } else {
         root
     };
-    builder.level1 = level1;
-    if two_levels_above {
-        builder.pool[root].0[0] = builder.address_of(level1) | VALID | TABLE_OR_PAGE;
-    }
-
-    let covered = COVERED.min(1u64 << attributes.address_bits);
-    for gigabyte in 0..covered / BLOCK_1G {
-        builder.pool[level1].0[gigabyte as usize] =
-            attributes.leaf(Type::Device, gigabyte * BLOCK_1G, 1);
+    if !root_is_level0 {
+        for gigabyte in 0..covered / BLOCK_1G {
+            builder.pool[level1].0[gigabyte as usize] =
+                attributes.leaf(Type::Device, gigabyte * BLOCK_1G, 1);
+        }
     }
 
     for entry in entries

@@ -188,6 +188,17 @@ impl State {
     }
 }
 
+/// Runs `use_frames` with the frame allocator the heap owns (ADR 0030). The heap
+/// is locked meanwhile, so `use_frames` must not allocate.
+pub fn with_frames<R>(use_frames: impl FnOnce(&mut FrameAllocator<'static>) -> R) -> R {
+    HEAP.state.with(|state| {
+        let state = state
+            .as_mut()
+            .expect("the heap owns the frame allocator once it is initialised");
+        use_frames(&mut state.frames)
+    })
+}
+
 /// Allocates, or says why not. The allocator the compiler calls turns a refusal
 /// into a null pointer; kernel code that must survive one calls this.
 pub fn try_alloc(layout: Layout) -> Result<NonNull<u8>, AllocError> {
@@ -488,6 +499,9 @@ pub fn exhaust(mut out: impl Write) {
 
     const BLOCK: usize = 1 << 20;
     let layout = Layout::from_size_align(BLOCK, 4096).expect("a layout");
+    // What the kernel already keeps in the heap: the copy of the hand-over
+    // (ADR 0030) on the bootloader path, nothing on a direct load.
+    let baseline = stats().used;
     // The list of blocks lives in the heap's own memory, so it is taken
     // before the heap fills and never grows.
     let mut blocks: Vec<NonNull<u8>> = Vec::new();
@@ -522,9 +536,9 @@ pub fn exhaust(mut out: impl Write) {
         assert_eq!(unsafe { try_free(block, layout) }, Ok(()));
     }
     let freed = stats();
-    // What stays in use is the list of blocks itself.
+    // What stays in use is what was there before and the list of blocks itself.
     let list = (blocks.capacity() * size_of::<NonNull<u8>>()).next_multiple_of(16);
-    assert_eq!(freed.used, list, "blocks were lost");
+    assert_eq!(freed.used, baseline + list, "blocks were lost");
     let again = try_alloc(layout).expect("the heap is not usable after freeing everything");
     // SAFETY: allocated just above with `layout`.
     assert_eq!(unsafe { try_free(again, layout) }, Ok(()));

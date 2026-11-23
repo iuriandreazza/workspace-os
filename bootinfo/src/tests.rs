@@ -393,18 +393,49 @@ fn the_view_refuses_bad_strides_and_sizes() {
     let mut info = sample();
     info.memory_map_entry_size = 8;
     // SAFETY: the entry size is refused before any memory is read.
-    let result = unsafe { info.memory_map() }.err();
+    let result = unsafe { info.memory_map(|address| address as usize) }.err();
     assert_eq!(result, Some(Error::BadMemoryMap(MapError::EntrySize)));
     info.memory_map_entry_size = 24;
     info.memory_map_count = u64::MAX / 8;
     // SAFETY: the count is refused before any memory is read.
-    let result = unsafe { info.memory_map() }.err();
+    let result = unsafe { info.memory_map(|address| address as usize) }.err();
     assert_eq!(result, Some(Error::BadMemoryMap(MapError::TooLarge)));
     info.memory_map_count = 2;
     info.memory_map = 0;
     // SAFETY: a null address is refused before any memory is read.
-    let result = unsafe { info.memory_map() }.err();
+    let result = unsafe { info.memory_map(|address| address as usize) }.err();
     assert_eq!(result, Some(Error::BadMemoryMap(MapError::BadAddress)));
+}
+
+#[test]
+fn the_map_is_read_at_the_address_the_caller_converts_to() {
+    let entries = [
+        MemoryEntry::new(0x4000_0000, 0x20_0000, MemoryKind::Usable),
+        MemoryEntry::new(0x4020_0000, 0x4_0000, MemoryKind::Kernel),
+    ];
+    let bytes = map_of(&entries, ENTRY_SIZE);
+    // A physical address that is not where the bytes are: the structure holds
+    // `bytes`' address minus a linear base, and the kernel adds it back.
+    const LINEAR_BASE: u64 = 0xffff_0000_0000_0000;
+    let mut info = sample();
+    info.memory_map_entry_size = ENTRY_SIZE as u32;
+    info.memory_map_count = entries.len() as u64;
+    info.memory_map = (bytes.as_ptr() as u64).wrapping_sub(LINEAR_BASE);
+    // SAFETY: the conversion gives the address of `bytes`, which holds the
+    // entries and outlives the map.
+    let map =
+        unsafe { info.memory_map(|physical| physical.wrapping_add(LINEAR_BASE) as usize) }.unwrap();
+    assert_eq!(map.len(), 2);
+    assert_eq!(map.iter().next().unwrap().base, 0x4000_0000);
+    assert_eq!(map.iter().nth(1).unwrap().kind(), MemoryKind::Kernel);
+    // The checks are on the physical address the structure holds.
+    info.memory_map = 0x4000_0001;
+    // SAFETY: a misaligned address is refused before the conversion is called.
+    let refused = unsafe { info.memory_map(|_| unreachable!("a bad address is not converted")) };
+    assert_eq!(
+        refused.err(),
+        Some(Error::BadMemoryMap(MapError::BadAddress))
+    );
 }
 
 // ---- page tables ----
@@ -551,9 +582,15 @@ fn overlapping_or_out_of_range_memory_is_refused() {
         Err(PageError::Overlap)
     );
     overlap.truncate(1);
-    overlap[0].base = 1 << 39;
+    // Past what the regime translates: 2^48, and 2^39 where it has 39 bits.
+    overlap[0].base = 1 << 48;
     assert_eq!(
         build_identity_map(&mut tables, &overlap, attributes(48)),
+        Err(PageError::OutOfRange)
+    );
+    overlap[0].base = 1 << 39;
+    assert_eq!(
+        build_identity_map(&mut tables, &overlap, attributes(39)),
         Err(PageError::OutOfRange)
     );
     assert_eq!(
@@ -565,6 +602,60 @@ fn overlapping_or_out_of_range_memory_is_refused() {
     assert_eq!(
         build_identity_map(&mut tables, &high, attributes(36)),
         Err(PageError::OutOfRange)
+    );
+}
+
+#[test]
+fn memory_above_512_gib_is_mapped_through_a_level_1_table_of_its_own() {
+    // The machine of the item (ADR 0030): RAM from 1 GiB to 521 GiB, with
+    // something at the very top, where a firmware allocates.
+    let entries = std::vec![
+        entry(0x0900_0000, 1, MemoryKind::Reserved),
+        entry(0x4000_0000, 0x200, MemoryKind::Kernel),
+        entry(0x4020_0000, 0x1000, MemoryKind::Usable),
+        entry(0x81_0000_0000, 0x400, MemoryKind::Usable), // 516 GiB
+        entry(0x81_ffc0_0000, 0x400, MemoryKind::BootloaderReclaimable), // the top
+    ];
+    for bits in [40u8, 48] {
+        let mut tables = pool(tables_needed(&entries));
+        let root = build_identity_map(&mut tables, &entries, attributes(bits)).unwrap();
+        let probe = |address: u64| translate(&tables, root, bits, address);
+        for address in [0x81_0000_0000, 0x81_ffc0_0000, 0x82_0000_0000 - 1] {
+            let walk = probe(address).unwrap_or_else(|| panic!("{address:#x} unmapped at {bits}"));
+            assert_eq!(walk.physical, address, "identity at {address:#x}");
+            assert_eq!(walk.index, 3, "Normal at {address:#x}, {bits} bits");
+            assert!(!walk.execute_never);
+        }
+        // Other addresses of the span are Device, as below 512 GiB.
+        for address in [0x80_0000_0000, 0x80_8000_0000, 0x81_4000_0000] {
+            let walk = probe(address).unwrap();
+            assert_eq!((walk.physical, walk.index, walk.level), (address, 0, 1));
+            assert!(walk.execute_never);
+        }
+        // Below 512 GiB nothing changed.
+        assert_eq!(probe(0x4020_0000).unwrap().index, 3);
+        assert_eq!(probe(0x0900_0000).unwrap().index, 0);
+        // A span no region reaches is not made.
+        assert!(probe(0x100_0000_0000).is_none());
+    }
+}
+
+#[test]
+fn the_pool_bound_covers_memory_that_spans_512_gib() {
+    // 600 GiB from 1 GiB: it ends at 601 GiB, in the second span.
+    let entries = std::vec![
+        entry(0x4000_0000, 0x200, MemoryKind::Kernel),
+        entry(0x4020_0000, (600 << 18) - 0x200, MemoryKind::Usable),
+    ];
+    let mut tables = pool(tables_needed(&entries));
+    let root = build_identity_map(&mut tables, &entries, attributes(48)).unwrap();
+    let probe = |address: u64| translate(&tables, root, 48, address).unwrap();
+    assert_eq!(probe(0x95_ffff_f000).index, 3);
+    assert_eq!(probe(0x80_0000_0000).index, 3);
+    let mut short = pool(tables_needed(&entries) / 2);
+    assert_eq!(
+        build_identity_map(&mut short, &entries, attributes(48)),
+        Err(PageError::PoolExhausted)
     );
 }
 
@@ -1023,7 +1114,7 @@ fn the_memory_map_view_of_a_structure_is_bounded_before_it_is_read() {
     // The reads `BootInfo::memory_map` refuses before it touches memory.
     let mut info = handoff_info();
     // SAFETY: every structure below is refused before the map is read.
-    let refused = |info: &BootInfo| unsafe { info.memory_map() }.err();
+    let refused = |info: &BootInfo| unsafe { info.memory_map(|address| address as usize) }.err();
     info.memory_map_count = u64::MAX;
     assert_eq!(
         refused(&info),
