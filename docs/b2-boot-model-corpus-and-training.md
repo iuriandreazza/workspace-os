@@ -256,7 +256,7 @@ of a structural property, not a finding about real disks**. Any numbering a real
 directory order, by path) is relative to the other files of the disk and has the same property, but none was trained
 here. The numbers below are the consequence of the random numbering, and the 270 windows with several slots is a low
 count because nearly every window carries a random version string in its path. Of 7,274 entry windows in the training set, 270 (3.7 %) occur
-with more than one slot even with identical bytes and name. Accuracy on the files of entries is 25.3 %, and 65.6 %
+with more than one slot even with identical bytes and name. Accuracy on the files of entries is 25.3 % (26.3 % in a second model trained with the group loss at full weight instead of 0.05, whose all-three accuracy on the test set was 97.48 %: another sign of how much the weights vary between runs), and 65.6 %
 overall only because the share of "no entry" is 54 %. A tree ensemble scores 57.7 % over every candidate, 7.9 points below the network's 65.6 % on the same measure (its accuracy on entry files alone was not computed), a pair head on the
 trunk's features (trained on training windows the trunk fits almost perfectly, so likely pessimistic) gets precision 61.8 % and recall 38.4 %, and the rule "same directory", given the true roles, 71.1 % and
 75.8 %. ADR 0034 (`proposed`) records this and a way out: the model labels what a file is, code attaches

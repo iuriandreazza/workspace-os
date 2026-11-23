@@ -36,13 +36,13 @@ All on the held-out `test` releases of the report, 17,198 candidates in 1,500 di
 
 | Measure | Result |
 |---|---|
-| Group accuracy of the trained model (random numbering), files that belong to an entry only | 25.3 %. Counting every candidate it is 65.6 %, which is mostly the 53.9 % of candidates that are in no entry and are all given slot 15 |
+| Group accuracy of the trained model (random numbering), files that belong to an entry only | 25.3 % with the group loss at weight 0.05; 26.3 % when a second model was trained with the group loss at weight 1.0 (`run_b2.py --group-weight 1.0`), so under-training is not the cause. Counting every candidate it is 65.6 %, which is mostly the 53.9 % of candidates that are in no entry and are all given slot 15 |
 | Entry windows (training set) seen with more than one slot | 270 of 7,274 (3.7 %), with identical bytes and name; a low count, because nearly every window carries a random version string in its path |
 | Tree ensemble, same output | 57.7 % over every candidate, 3.8 points above the share of slot 15 |
 | A pair head on the trunk's 128 features (is this file in the same entry as that kernel?) | precision 61.8 %, recall 38.4 %, 231 of 1,245 disks with every pair right |
 | The rule "same directory", with the true roles given | precision 71.1 %, recall 75.8 %, 458 of 1,245 disks with every pair right |
 
-A slot that is a function of the window (a hash of the version string in the path, say) is learnable, but a function of one file cannot tell that two entries on the disk landed in one of 16 slots, so it trades the disk-relative problem for collisions; it was not trained here. The pair head and the directory rule are baselines, not designs, and the pair head is likely pessimistic (trained on training windows the trunk fits almost perfectly). Neither is good enough to
+A slot that is a function of the window (a hash of the version string in the path, say) is learnable, but a function of one file cannot tell that two entries on the disk landed in one of 16 slots, so it trades the disk-relative problem for collisions; it was not trained here. The generated entry text names a random machine id and version, not the disk's files, so the baselines below include entry files whose text contradicts the layout. The pair head and the directory rule are baselines, not designs, and the pair head is likely pessimistic (trained on training windows the trunk fits almost perfectly). Neither is good enough to
 build the loader on: entry text in the Boot Loader Specification layout lives in
 `\loader\entries`, away from the kernel it names, and several layouts keep two kernels in
 one directory.
@@ -67,7 +67,7 @@ one directory.
 
 | Option | For | Against |
 |---|---|---|
-| Keep the 16-slot group as specified | Nothing to change | Measured 25 % on the files that matter; a wrong slot puts a kernel with the wrong initrd |
+| Keep the 16-slot group as specified | Nothing to change | 25 % on entry files, but with the generator's random numbering, which makes chance accuracy certain; a wrong slot puts a kernel with the wrong initrd |
 | Replace the group with a pair score trained jointly with the trunk | Keeps assembly inside the model | Not measured here: the baseline on frozen trunk features failed, a joint model needs its own corpus of pairs, its own validation and 256 candidates make up to tens of thousands of pairs |
 | Assembly by code from the model's labels (proposed) | Deterministic, testable on the host, exact where the entry text names paths | A rule beside the model, which the owner must accept; layouts with two kernels in one directory need the version suffix rule, and neither was validated at corpus scale |
 | Generate paths instead of choosing among candidates | Would not need pairing | Rejected by ADR 0027 itself: free text is what the typed decision avoids |

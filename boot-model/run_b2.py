@@ -155,6 +155,8 @@ def main():
     parser.add_argument("--train-disks", type=int, default=4000)
     parser.add_argument("--test-disks", type=int, default=1500)
     parser.add_argument("--epochs", type=int, default=12)
+    parser.add_argument("--group-weight", type=float, default=0.05,
+                        help="weight of the group head's loss; 1.0 gives the head a fair chance (ADR 0034)")
     parser.add_argument("--out", default="target/boot-model")
     parser.add_argument("--skip", default="", help="comma list of: ablations, newdistro, trees, pairs")
     args = parser.parse_args()
@@ -176,7 +178,8 @@ def main():
 
     log("training the model")
     start = time.time()
-    params = training.train(x_train, y_train, args.seed, epochs=args.epochs, log=log)
+    params = training.train(x_train, y_train, args.seed, epochs=args.epochs, log=log,
+                            head_weights=(1.0, 1.0, 1.0, args.group_weight))
     results["train_seconds"] = time.time() - start
     shape, tensors = training.quantise(params, x_train[:4000])
     blob = mdl.write(shape, tensors)

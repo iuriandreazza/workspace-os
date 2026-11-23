@@ -79,6 +79,8 @@ def http(url, byte_range=None, limit=None):
             with urllib.request.urlopen(request, timeout=120) as response:
                 total = response.headers.get("Content-Range", "").rpartition("/")[2] or response.headers.get("Content-Length")
                 size = int(total) if total and total.isdigit() else None
+                if byte_range and response.status != 206 and size is None:
+                    raise Refused(f"{url}: no Range answer and no size, a cut prefix could not be told from a whole file")
                 if limit is not None and size is not None and size > limit:
                     raise Refused(f"{url}: {size} bytes, more than the {limit} this download may take")
                 # one byte more than asked for, so a server that ignores Range is noticed without reading its whole body
