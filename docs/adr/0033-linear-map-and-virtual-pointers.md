@@ -350,8 +350,13 @@ of RAM: the map above is what lets the kernel read them there.
 - **Physical addresses at or above 2^47** are refused. The allocator manages a
   4 GiB window from the lowest RAM address; RAM beyond it is mapped in the linear
   map and reported unused, as before.
-- **RAM above 512 GiB on the gate's machines**: shown on the Mac that develops
-  this (direct and through UEFI, `-m 520G`, about a minute for the UEFI boot).
+- **RAM above 512 GiB on the gate's machines**: both 520 GiB boots (direct and
+  UEFI) ran and passed on the Mac that develops this (plain `-m 520G`, about a
+  minute for the UEFI one) **and on the CI runner** (Ubuntu, QEMU from the
+  distribution): there plain `-m 532480M` was refused (`cannot set up guest memory
+  'mach-virt.ram': Cannot allocate memory`) and the gate's second attempt,
+  `memory-backend-ram,reserve=off`, started them (run 45200361440, nothing
+  skipped).
   Whether another host can start a guest of that size depends on its overcommit
   policy; the gate tries `-m 520G`, then `memory-backend-ram,reserve=off`
   (which macOS's QEMU does not have), and if neither starts it says `SKIP` with
