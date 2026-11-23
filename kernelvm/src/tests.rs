@@ -55,10 +55,12 @@ fn layout() -> ImageLayout {
     .unwrap()
 }
 
-/// An expectation with nothing forbidden, no Device range and no known ranges.
+/// An expectation with nothing forbidden, no Device range and no known ranges,
+/// of a root that maps from `base`, by the offset `base` (the lower half).
 fn open() -> Expectation<'static> {
     Expectation {
         types: TYPES,
+        window: None,
         forbidden: &(0..0),
         device: &(0..0),
         known: None,
@@ -75,29 +77,59 @@ fn upper(arena: &mut Arena) -> u64 {
 
 /// The level 3 table that holds the page at `virtual_address`.
 fn page_table(arena: &Arena, root: u64, virtual_address: u64) -> u64 {
-    let l2 = arena.table(root).0[level_index(virtual_address, 1)] & ADDRESS_MASK;
+    let l1 = arena.table(root).0[level_index(virtual_address, 0)] & ADDRESS_MASK;
+    let l2 = arena.table(l1).0[level_index(virtual_address, 1)] & ADDRESS_MASK;
     arena.table(l2).0[level_index(virtual_address, 2)] & ADDRESS_MASK
+}
+
+/// Maps the pages of `length` bytes of registers at `base` to themselves as
+/// Device memory, as the old lower window did.
+fn map_device(mapper: &mut Mapper<'_, Arena>, base: u64, length: u64) -> Result<(), MapError> {
+    let start = base & !(PAGE_SIZE - 1);
+    let end = (base + length).next_multiple_of(PAGE_SIZE);
+    mapper.map_range(start, start, end - start, Permissions::Device)
+}
+
+/// The window the image is audited in: its own pages, by `KERNEL_OFFSET`.
+static IMAGE_WINDOW: Window = Window {
+    virt: KERNEL_OFFSET + BASE..KERNEL_OFFSET + BASE + 0x7a000,
+    offset: Some(KERNEL_OFFSET),
+};
+
+/// An expectation of the upper half's image window.
+fn in_image(expectation: Expectation<'_>) -> Expectation<'_> {
+    Expectation {
+        window: Some(&IMAGE_WINDOW),
+        ..expectation
+    }
 }
 
 #[test]
 fn indexes_follow_the_bits_of_the_address() {
     let address = KERNEL_OFFSET + 0x4021_d000;
+    assert_eq!(level_index(address, 0), 511);
     assert_eq!(level_index(address, 1), 1);
     assert_eq!(level_index(address, 2), 1);
     assert_eq!(level_index(address, 3), 0x1d);
+    assert_eq!(level_index(0xffff_ffff_ffff_f000, 0), 511);
+    assert_eq!(level_index(0x7f_ffff_f000, 0), 0);
     assert_eq!(level_index(0x7f_ffff_f000, 1), 511);
     assert_eq!(level_index(0x7f_ffff_f000, 3), 511);
+    assert_eq!(level_index(0x0000_7fff_ffff_f000, 0), 255);
+    assert_eq!(level_index(LINEAR_BASE + (513 << 30), 0), 1);
 }
 
 #[test]
 fn canonical_addresses_are_the_two_halves() {
     assert!(is_canonical(0));
     assert!(is_canonical(0x7f_ffff_ffff));
-    assert!(!is_canonical(0x80_0000_0000));
+    assert!(is_canonical(0x80_0000_0000));
+    assert!(is_canonical(0x0000_ffff_ffff_ffff));
+    assert!(!is_canonical(0x0001_0000_0000_0000));
+    assert!(is_canonical(UPPER_BASE));
     assert!(is_canonical(KERNEL_OFFSET));
     assert!(is_canonical(u64::MAX));
-    assert!(!is_canonical(KERNEL_OFFSET - 1));
-    assert!(!is_canonical(0x0001_0000_0000_0000));
+    assert!(!is_canonical(UPPER_BASE - 1));
 }
 
 #[test]
@@ -245,7 +277,7 @@ fn the_upper_half_audits_clean_and_counts_each_kind() {
     let root = upper(&mut arena);
     let layout = layout();
     let size = |r: &Range<u64>| r.end - r.start;
-    let report = audit(&arena, root, KERNEL_OFFSET, &open());
+    let report = audit(&arena, root, UPPER_BASE, &in_image(open()));
     assert!(report.is_clean());
     assert_eq!(report.text, size(&layout.text));
     assert_eq!(report.read_only, size(&layout.rodata));
@@ -263,7 +295,7 @@ fn a_page_that_is_writable_and_executable_is_found() {
     let at = KERNEL_OFFSET + BASE;
     let table = page_table(&arena, root, at);
     arena.table_mut(table).0[level_index(at, 3)] &= !READ_ONLY;
-    let report = audit(&arena, root, KERNEL_OFFSET, &open());
+    let report = audit(&arena, root, UPPER_BASE, &in_image(open()));
     assert_eq!(report.writable_executable, Some(at));
     assert!(!report.is_clean());
 }
@@ -275,18 +307,18 @@ fn a_page_for_el0_is_found() {
     let at = KERNEL_OFFSET + BASE + 0x22000;
     let table = page_table(&arena, root, at);
     arena.table_mut(table).0[level_index(at, 3)] &= !UNPRIVILEGED_EXECUTE_NEVER;
-    let report = audit(&arena, root, KERNEL_OFFSET, &open());
+    let report = audit(&arena, root, UPPER_BASE, &in_image(open()));
     assert_eq!(report.user_reachable, Some(at));
     let table = page_table(&arena, root, at);
     arena.table_mut(table).0[level_index(at, 3)] |= UNPRIVILEGED_EXECUTE_NEVER | USER_ACCESSIBLE;
-    let report = audit(&arena, root, KERNEL_OFFSET, &open());
+    let report = audit(&arena, root, UPPER_BASE, &in_image(open()));
     assert_eq!(report.user_reachable, Some(at));
 }
 
 fn ram_window(arena: &mut Arena, regions: &[(u64, u64)], hole: Range<u64>) -> u64 {
     let mut mapper = Mapper::new(arena, TYPES).unwrap();
     for &(start, end) in regions {
-        map_ram_region(&mut mapper, start..end, &hole).unwrap();
+        map_ram_region(&mut mapper, start..end, &hole, 0).unwrap();
     }
     mapper.root()
 }
@@ -354,12 +386,13 @@ fn an_alias_of_the_image_is_found() {
 #[test]
 fn aligned_ram_uses_blocks_and_edges_use_pages() {
     let mut arena = Arena::new(16);
-    // 6 MiB aligned to 2 MiB: three blocks, so root, level 2 table only.
+    // 6 MiB aligned to 2 MiB: three blocks, so the root, a level 1 and a level
+    // 2 table only.
     ram_window(&mut arena, &[(0x4000_0000, 0x4060_0000)], 0..0);
-    assert_eq!(arena.tables.len(), 2);
+    assert_eq!(arena.tables.len(), 3);
     let mut arena = Arena::new(16);
     ram_window(&mut arena, &[(0x4000_1000, 0x4000_3000)], 0..0);
-    assert_eq!(arena.tables.len(), 3, "two pages need a level 3 table");
+    assert_eq!(arena.tables.len(), 4, "two pages need a level 3 table");
 }
 
 #[test]
@@ -391,9 +424,9 @@ fn ram_above_four_gib_is_mapped() {
 fn ram_beyond_the_regime_is_refused() {
     let mut arena = Arena::new(16);
     let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
-    let beyond = 0x80_0000_0000..0x80_0020_0000;
+    let beyond = 0x0001_0000_0000_0000..0x0001_0000_0020_0000;
     assert_eq!(
-        map_ram_region(&mut mapper, beyond, &(0..0)),
+        map_ram_region(&mut mapper, beyond, &(0..0), 0),
         Err(MapError::NotCanonical)
     );
 }
@@ -481,12 +514,12 @@ fn unaligned_and_non_canonical_ranges_are_refused() {
         Err(MapError::Unaligned)
     );
     assert_eq!(
-        mapper.map_range(0x80_0000_0000, 0, PAGE_SIZE, Permissions::Text),
+        mapper.map_range(0x0001_0000_0000_0000, 0, PAGE_SIZE, Permissions::Text),
         Err(MapError::NotCanonical)
     );
     // A range that starts in the lower half and crosses into the hole.
     assert_eq!(
-        mapper.map_range(0x7f_ffff_f000, 0, 2 * PAGE_SIZE, Permissions::Text),
+        mapper.map_range(0x0000_ffff_ffff_f000, 0, 2 * PAGE_SIZE, Permissions::Text),
         Err(MapError::NotCanonical)
     );
     assert_eq!(
@@ -503,11 +536,16 @@ fn unaligned_and_non_canonical_ranges_are_refused() {
 fn a_malformed_entry_is_counted_and_a_gigabyte_block_is_read() {
     let mut arena = Arena::new(4);
     let root = arena.allocate().unwrap();
-    arena.table_mut(root).0[0] = 0x2; // neither valid nor a table
-    arena.table_mut(root).0[1] = leaf(&TYPES, GIGABYTE, Permissions::ReadWrite, 2);
-    arena.table_mut(root).0[2] = leaf(&TYPES, 2 * GIGABYTE, Permissions::ReadWrite, 2);
+    let l1 = arena.allocate().unwrap();
+    arena.table_mut(root).0[0] = table_descriptor(l1);
+    arena.table_mut(root).0[1] = 0x2; // neither valid nor a table
+    arena.table_mut(l1).0[0] = 0x2; // neither valid nor a table
+    arena.table_mut(l1).0[1] = leaf(&TYPES, GIGABYTE, Permissions::ReadWrite, 2);
+    arena.table_mut(l1).0[2] = leaf(&TYPES, 2 * GIGABYTE, Permissions::ReadWrite, 2);
     let report = audit(&arena, root, 0, &open());
-    assert_eq!(report.malformed, 1);
+    // A level 0 entry that is a block is as malformed as a level 1 entry that
+    // is neither (a 4 KiB granule has no 512 GiB blocks).
+    assert_eq!(report.malformed, 2);
     assert_eq!(report.read_write, 2 * GIGABYTE);
     let found = translate(&arena, root, 2 * GIGABYTE + 0x1234).unwrap();
     assert_eq!(found.output, 2 * GIGABYTE + 0x1234);
@@ -517,8 +555,8 @@ fn a_malformed_entry_is_counted_and_a_gigabyte_block_is_read() {
 fn the_register_fields_match_the_architecture() {
     // T0SZ 25, IRGN0 and ORGN0 write-back write-allocate, SH0 inner, TG0 4 KiB.
     assert_eq!(TCR_LOWER_HALF, 0x3519);
-    // The same fields at 16 and up, with TG1 = 0b10.
-    assert_eq!(TCR_UPPER_HALF, 0xb519_0000);
+    // The same fields at 16 and up, with TG1 = 0b10 and T1SZ 16: 48 bits.
+    assert_eq!(TCR_UPPER_HALF, 0xb510_0000);
     assert_eq!(TCR_LOWER_HALF & TCR_UPPER_HALF_MASK, 0);
     assert_eq!(TCR_UPPER_HALF & TCR_LOWER_HALF_MASK, 0);
     assert_eq!(TCR_EPD0 & TCR_LOWER_HALF_MASK, TCR_EPD0);
@@ -553,29 +591,30 @@ fn the_pieces_the_boot_code_assembles_equal_what_leaf_builds() {
         0x4000_0000 | attribute(device) | DEVICE_BLOCK_BITS
     );
     assert_eq!(table_descriptor(at), at | TABLE_BITS);
-    assert_eq!(TCR_BOTH_HALVES, 0xb519_3519);
+    assert_eq!(TCR_BOTH_HALVES, 0xb510_3519);
 }
 
 #[test]
 fn gigabyte_aligned_ram_uses_one_block_per_gigabyte() {
     let mut arena = Arena::new(16);
-    // 4 GiB aligned to 1 GiB: four level 1 blocks and nothing below the root.
+    // 4 GiB aligned to 1 GiB: four level 1 blocks and nothing below the level 1
+    // table.
     let root = ram_window(&mut arena, &[(0x4000_0000, 0x1_4000_0000)], 0..0);
-    assert_eq!(arena.tables.len(), 1);
+    assert_eq!(arena.tables.len(), 2);
     let found = translate(&arena, root, 0x1_3fff_f123).unwrap();
     assert_eq!(found.output, 0x1_3fff_f123);
     assert!(found.writable && !found.executable);
     let report = audit(&arena, root, 0, &open());
     assert_eq!(report.read_write, 4 << 30);
     assert!(report.is_clean());
-    // A machine with 400 GiB of RAM needs one table, not hundreds.
+    // A machine with 400 GiB of RAM needs two tables below the root, not hundreds.
     let mut arena = Arena::new(16);
     ram_window(
         &mut arena,
         &[(0x4000_0000, 0x4000_0000 + (400 << 30))],
         0..0,
     );
-    assert_eq!(arena.tables.len(), 1);
+    assert_eq!(arena.tables.len(), 2);
 }
 
 #[test]
@@ -682,7 +721,7 @@ fn a_small_region_inside_a_mapped_block_is_accepted_when_identical() {
         ],
         0..0,
     );
-    assert_eq!(arena.tables.len(), 1, "nothing was split");
+    assert_eq!(arena.tables.len(), 2, "nothing was split");
     assert_eq!(
         translate(&arena, root, 0x4800_0800).unwrap().output,
         0x4800_0800
@@ -707,10 +746,10 @@ fn a_small_region_inside_a_mapped_block_is_accepted_when_identical() {
 /// The expectation of the kernel's upper half: the image by section, nothing
 /// else.
 fn image_expectation(parts: &[(Range<u64>, Permissions)]) -> Expectation<'_> {
-    Expectation {
+    in_image(Expectation {
         known: Some(parts),
         ..open()
-    }
+    })
 }
 
 /// Changes the leaf of the page at `at` in the upper half.
@@ -725,7 +764,7 @@ fn the_image_audits_clean_against_its_sections() {
     let mut arena = Arena::new(8);
     let root = upper(&mut arena);
     let parts = layout().parts();
-    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    let report = audit(&arena, root, UPPER_BASE, &image_expectation(&parts));
     assert!(report.is_clean(), "{report:?}");
 }
 
@@ -737,7 +776,7 @@ fn a_page_that_maps_another_frame_is_found() {
     // One page further: still inside the data, so only the address is wrong.
     tamper(&mut arena, root, at, |d| d + PAGE_SIZE);
     let parts = layout().parts();
-    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    let report = audit(&arena, root, UPPER_BASE, &image_expectation(&parts));
     assert_eq!(report.wrong_output, Some(at));
     assert_eq!(report.wrong_section, None);
     assert!(!report.is_clean());
@@ -752,7 +791,7 @@ fn a_page_that_maps_the_wrong_section_is_found() {
     let at = KERNEL_OFFSET + BASE + 0x22000;
     tamper(&mut arena, root, at, |d| d - 5 * PAGE_SIZE);
     let parts = layout().parts();
-    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    let report = audit(&arena, root, UPPER_BASE, &image_expectation(&parts));
     assert_eq!(report.wrong_output, Some(at));
     assert_eq!(report.wrong_section, Some(at));
     assert_eq!(report.read_write, 0x42000 + 0x10000 + 0x4000);
@@ -773,7 +812,7 @@ fn permissions_swapped_between_sections_are_found_though_the_totals_hold() {
     };
     let before = {
         let parts = layout().parts();
-        audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts))
+        audit(&arena, root, UPPER_BASE, &image_expectation(&parts))
     };
     tamper(
         &mut arena,
@@ -783,7 +822,7 @@ fn permissions_swapped_between_sections_are_found_though_the_totals_hold() {
     );
     tamper(&mut arena, root, rodata_page, set_bits(READ_ONLY));
     let parts = layout().parts();
-    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    let report = audit(&arena, root, UPPER_BASE, &image_expectation(&parts));
     assert_eq!(
         (report.text, report.read_only),
         (before.text, before.read_only)
@@ -800,7 +839,7 @@ fn a_memory_type_that_is_not_normal_is_found_in_the_image() {
         tamper(&mut arena, root, at, |d| {
             (d & !ATTRIBUTE_INDEX_MASK) | (u64::from(index) << ATTRIBUTE_INDEX_SHIFT)
         });
-        let report = audit(&arena, root, KERNEL_OFFSET, &open());
+        let report = audit(&arena, root, UPPER_BASE, &in_image(open()));
         assert_eq!(report.wrong_memory_type, Some(at), "{name}");
         assert!(!report.is_clean());
     }
@@ -816,7 +855,7 @@ fn the_device_range_is_device_memory_and_nothing_else_is() {
     let mut arena = Arena::new(16);
     let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
     map_device(&mut mapper, uart.start, 0x1000).unwrap();
-    map_ram_region(&mut mapper, 0x4000_0000..0x4001_0000, &(0..0)).unwrap();
+    map_ram_region(&mut mapper, 0x4000_0000..0x4001_0000, &(0..0), 0).unwrap();
     let root = mapper.root();
     assert!(audit(&arena, root, 0, &expectation).is_clean());
 
@@ -857,7 +896,7 @@ fn a_leaf_outside_the_known_ranges_is_found() {
     let root = upper(&mut arena);
     let mut parts = layout().parts();
     parts[4].0 = parts[4].0.start..parts[4].0.end - PAGE_SIZE;
-    let report = audit(&arena, root, KERNEL_OFFSET, &image_expectation(&parts));
+    let report = audit(&arena, root, UPPER_BASE, &image_expectation(&parts));
     assert_eq!(
         report.wrong_section,
         Some(KERNEL_OFFSET + layout().exception_stack.end - PAGE_SIZE)
@@ -909,12 +948,34 @@ fn heap_pages_added_to_the_live_tables_are_read_write_never_executable() {
     assert!(translate(&arena, root, HEAP_BASE + 3 * PAGE_SIZE).is_none());
     // The image is where it was.
     assert!(translate(&arena, root, virtual_of(BASE)).is_some());
-    // `audit` describes the image's map (every leaf at the constant offset)
-    // and runs before the heap exists; heap pages are the one thing in the
-    // upper half that is not at that offset, which is why it flags them.
-    let report = audit(&arena, root, KERNEL_OFFSET, &open());
-    assert_eq!(report.wrong_output, Some(HEAP_BASE));
-    assert!(report.writable_executable.is_none() && report.user_reachable.is_none());
+    // The image's audit does not see the heap: its window is the image's own.
+    assert!(audit(&arena, root, UPPER_BASE, &in_image(open())).is_clean());
+    // The heap is a window of its own, where any frame is expected, and a root
+    // with the heap in it has a stray unless the heap is listed (ADR 0029, 0033).
+    let heap = Window {
+        virt: HEAP_BASE..HEAP_BASE + HEAP_WINDOW,
+        offset: None,
+    };
+    let report = audit(
+        &arena,
+        root,
+        UPPER_BASE,
+        &Expectation {
+            window: Some(&heap),
+            ..open()
+        },
+    );
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(report.read_write, 3 * PAGE_SIZE);
+    assert_eq!(
+        strays(
+            &arena,
+            root,
+            UPPER_BASE,
+            core::slice::from_ref(&IMAGE_WINDOW.virt)
+        ),
+        (3, Some(HEAP_BASE))
+    );
 }
 
 #[test]
@@ -953,20 +1014,21 @@ fn the_walked_descriptors_are_the_ones_the_mapping_wrote() {
         .map_range(HEAP_BASE, 0x8000_0000, PAGE_SIZE, Permissions::ReadWrite)
         .unwrap();
     let walked = walked_descriptors(&arena, root, HEAP_BASE);
-    let [Some(l1), Some(l2), Some(l3)] = walked else {
-        panic!("a mapped page has three descriptors: {walked:?}");
+    let [Some(l0), Some(l1), Some(l2), Some(l3)] = walked else {
+        panic!("a mapped page has four descriptors: {walked:?}");
     };
-    assert_eq!(l1, root + 8 * level_index(HEAP_BASE, 1) as u64);
+    assert_eq!(l0, root + 8 * level_index(HEAP_BASE, 0) as u64);
     let read = |address: u64| {
         arena.table(address & !(PAGE_SIZE - 1)).0[((address & (PAGE_SIZE - 1)) / 8) as usize]
     };
+    assert_eq!(read(l0) & 3, 3);
     assert_eq!(read(l1) & 3, 3);
     assert_eq!(read(l2) & 3, 3);
     assert_eq!(read(l3) & ADDRESS_MASK, 0x8000_0000);
     // An unmapped address stops at the first empty descriptor.
     let nothing = walked_descriptors(&arena, root, HEAP_BASE + (32 << 30));
-    assert!(nothing[0].is_some() && nothing[2].is_none());
-    assert_eq!(walked_descriptors(&arena, root, 1 << 60), [None; 3]);
+    assert!(nothing[1].is_some() && nothing[2].is_none());
+    assert_eq!(walked_descriptors(&arena, root, 1 << 60), [None; 4]);
 }
 
 #[test]
@@ -998,4 +1060,315 @@ fn mapping_pages_in_the_heap_window_takes_no_more_tables_than_the_formula_says()
             frames_to_map(pages) - pages
         );
     }
+}
+
+// ---- The linear map, the devices and the windows (ADR 0033) --------------
+
+static LINEAR_WINDOW: Window = Window {
+    virt: LINEAR_BASE..LINEAR_BASE + LINEAR_SPAN,
+    offset: Some(LINEAR_BASE),
+};
+
+static DEVICE_WINDOW_RANGE: Window = Window {
+    virt: DEVICE_BASE..DEVICE_BASE + DEVICE_WINDOW,
+    offset: None,
+};
+
+/// The upper half the kernel builds: image, linear map of `regions`, and the
+/// device pages at `uart`; returns the root and where the UART landed.
+fn full_upper(arena: &mut Arena, regions: &[(u64, u64)], uart: u64) -> (u64, u64) {
+    let mut mapper = Mapper::new(arena, TYPES).unwrap();
+    layout().map(&mut mapper, KERNEL_OFFSET).unwrap();
+    for &(start, end) in regions {
+        map_linear_region(&mut mapper, start..end, &layout().span()).unwrap();
+    }
+    let at = DeviceWindow::new().map(&mut mapper, uart, 0x1000).unwrap();
+    (mapper.root(), at)
+}
+
+#[test]
+fn the_layout_constants_keep_the_windows_apart() {
+    assert_eq!(UPPER_BASE, 0xffff_0000_0000_0000);
+    assert_eq!(LINEAR_BASE, UPPER_BASE);
+    // The linear map ends below the last 512 GiB, where the image, the devices
+    // and the heap are, so they never meet.
+    const { assert!(LINEAR_BASE + LINEAR_SPAN <= KERNEL_OFFSET) };
+    assert_eq!(level_index(LINEAR_BASE + LINEAR_SPAN - 1, 0), 255);
+    assert_eq!(level_index(KERNEL_OFFSET, 0), 511);
+    // Inside the last 512 GiB: the image's gigabytes, then the devices, then the heap.
+    const { assert!(KERNEL_OFFSET + (1 << 30) * 2 <= DEVICE_BASE) };
+    const { assert!(DEVICE_BASE + DEVICE_WINDOW < HEAP_BASE) };
+    // The heap's last byte exists: its window does not wrap past 2^64.
+    assert!(HEAP_BASE.checked_add(HEAP_WINDOW).is_some());
+    assert_eq!(linear_of(0x4000_0000), LINEAR_BASE + 0x4000_0000);
+}
+
+#[test]
+fn ram_above_512_gib_gets_a_linear_address_the_image_offset_could_not() {
+    // `KERNEL_OFFSET + physical` overflows 2^64 from 512 GiB up.
+    assert!(KERNEL_OFFSET.checked_add(600 << 30).is_none());
+    let mut arena = Arena::new(64);
+    // 520 GiB of RAM from 1 GiB: it ends at 521 GiB.
+    let ram = 0x4000_0000..0x4000_0000 + (520 << 30);
+    let (root, _) = full_upper(&mut arena, &[(ram.start, ram.end)], 0x0900_0000);
+    for physical in [
+        ram.start,
+        0x7f_ffff_f000,
+        0x80_0000_0000,
+        ram.end - PAGE_SIZE,
+    ] {
+        let found = translate(&arena, root, linear_of(physical)).unwrap();
+        assert_eq!(found.output, physical);
+        assert!(found.writable && !found.executable);
+    }
+    assert!(translate(&arena, root, linear_of(ram.end)).is_none());
+    assert!(translate(&arena, root, linear_of(0)).is_none());
+
+    let report = audit(
+        &arena,
+        root,
+        UPPER_BASE,
+        &Expectation {
+            window: Some(&LINEAR_WINDOW),
+            forbidden: &layout().span(),
+            ..open()
+        },
+    );
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(
+        report.read_write,
+        (ram.end - ram.start) - (layout().span().end - layout().span().start)
+    );
+    // The image's frames are not writable through the linear map.
+    assert!(translate(&arena, root, linear_of(layout().text.start)).is_none());
+    assert!(translate(&arena, root, linear_of(layout().data.start)).is_none());
+}
+
+#[test]
+fn a_machine_that_cannot_be_reached_by_the_linear_map_is_refused() {
+    let mut arena = Arena::new(16);
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    let last = LINEAR_SPAN - 0x20_0000..LINEAR_SPAN;
+    assert_eq!(map_linear_region(&mut mapper, last, &(0..0)), Ok(()));
+    let beyond = LINEAR_SPAN - 0x10_0000..LINEAR_SPAN + 0x10_0000;
+    assert_eq!(
+        map_linear_region(&mut mapper, beyond, &(0..0)),
+        Err(MapError::BeyondLinearMap)
+    );
+    let far = 1 << 47 | 0x4000_0000;
+    assert_eq!(
+        map_linear_region(&mut mapper, far..far + 0x20_0000, &(0..0)),
+        Err(MapError::BeyondLinearMap)
+    );
+    assert_eq!(map_linear_region(&mut mapper, 5..5, &(0..0)), Ok(()));
+}
+
+#[test]
+fn the_image_window_the_linear_window_and_the_devices_audit_clean_apart() {
+    let mut arena = Arena::new(64);
+    let ram = 0x4000_0000..0x4800_0000;
+    let (root, uart) = full_upper(&mut arena, &[(ram.start, ram.end)], 0x0900_0000);
+    let parts = layout().parts();
+    let image = audit(&arena, root, UPPER_BASE, &image_expectation(&parts));
+    assert!(image.is_clean(), "{image:?}");
+    assert_eq!(image.text, layout().text.end - layout().text.start);
+    let device_range = 0x0900_0000..0x0900_1000;
+    let devices = audit(
+        &arena,
+        root,
+        UPPER_BASE,
+        &Expectation {
+            window: Some(&DEVICE_WINDOW_RANGE),
+            device: &device_range,
+            ..open()
+        },
+    );
+    assert!(devices.is_clean(), "{devices:?}");
+    assert_eq!(devices.device, PAGE_SIZE);
+    assert_eq!(devices.read_write + devices.text + devices.read_only, 0);
+    assert_eq!(uart, DEVICE_BASE);
+    let windows = [
+        IMAGE_WINDOW.virt.clone(),
+        LINEAR_WINDOW.virt.clone(),
+        DEVICE_WINDOW_RANGE.virt.clone(),
+    ];
+    assert_eq!(strays(&arena, root, UPPER_BASE, &windows), (0, None));
+}
+
+#[test]
+fn a_leaf_outside_every_window_is_a_stray() {
+    let mut arena = Arena::new(64);
+    let (root, _) = full_upper(&mut arena, &[(0x4000_0000, 0x4800_0000)], 0x0900_0000);
+    let windows = [
+        IMAGE_WINDOW.virt.clone(),
+        LINEAR_WINDOW.virt.clone(),
+        DEVICE_WINDOW_RANGE.virt.clone(),
+    ];
+    // The heap's window is none of the three: a heap page is a stray until the
+    // heap is in the list.
+    let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+    mapper
+        .map_range(HEAP_BASE, 0x8000_0000, PAGE_SIZE, Permissions::ReadWrite)
+        .unwrap();
+    assert_eq!(
+        strays(&arena, root, UPPER_BASE, &windows),
+        (1, Some(HEAP_BASE))
+    );
+    let mut with_heap = windows.to_vec();
+    with_heap.push(HEAP_BASE..HEAP_BASE + HEAP_WINDOW);
+    assert_eq!(strays(&arena, root, UPPER_BASE, &with_heap), (0, None));
+}
+
+#[test]
+fn a_root_with_no_mappings_has_no_strays_and_one_leaf_below_is_found() {
+    let mut arena = Arena::new(16);
+    let root = Mapper::new(&mut arena, TYPES).unwrap().root();
+    assert_eq!(strays(&arena, root, 0, &[]), (0, None));
+    assert!(audit(&arena, root, 0, &open()).is_clean());
+    // One identity page, as the old lower window held.
+    let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+    mapper
+        .map_range(0x0900_0000, 0x0900_0000, PAGE_SIZE, Permissions::Device)
+        .unwrap();
+    assert_eq!(strays(&arena, root, 0, &[]), (1, Some(0x0900_0000)));
+}
+
+#[test]
+fn a_linear_leaf_that_maps_another_frame_is_found() {
+    let mut arena = Arena::new(64);
+    let (root, _) = full_upper(&mut arena, &[(0x4000_0000, 0x4010_0000)], 0x0900_0000);
+    // A 2 MiB-aligned region of one block: make the block point elsewhere.
+    let at = linear_of(0x4000_0000);
+    let l1 = arena.table(root).0[level_index(at, 0)] & ADDRESS_MASK;
+    let l2 = arena.table(l1).0[level_index(at, 1)] & ADDRESS_MASK;
+    let l3 = arena.table(l2).0[level_index(at, 2)] & ADDRESS_MASK;
+    arena.table_mut(l3).0[0] += PAGE_SIZE;
+    let report = audit(
+        &arena,
+        root,
+        UPPER_BASE,
+        &Expectation {
+            window: Some(&LINEAR_WINDOW),
+            ..open()
+        },
+    );
+    assert_eq!(report.wrong_output, Some(at));
+}
+
+#[test]
+fn device_registers_land_in_the_window_with_a_guard_page_after_each() {
+    let mut arena = Arena::new(64);
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    let mut window = DeviceWindow::new();
+    assert_eq!(window.next(), DEVICE_BASE);
+    // 0x10 bytes into a page, 0x1000 long: two pages, the offset kept.
+    let first = window.map(&mut mapper, 0x0900_0010, 0x1000).unwrap();
+    assert_eq!(first, DEVICE_BASE + 0x10);
+    assert_eq!(window.next(), DEVICE_BASE + 3 * PAGE_SIZE);
+    let second = window.map(&mut mapper, 0x0801_0000, 0x10000).unwrap();
+    assert_eq!(second, DEVICE_BASE + 3 * PAGE_SIZE);
+    let root = mapper.root();
+    for (address, output) in [
+        (DEVICE_BASE, 0x0900_0000),
+        (DEVICE_BASE + PAGE_SIZE, 0x0900_1000),
+        (second, 0x0801_0000),
+        (second + 15 * PAGE_SIZE, 0x0801_f000),
+    ] {
+        let found = translate(&arena, root, address).unwrap();
+        assert_eq!(found.output, output);
+        assert_eq!(found.attribute_index, TYPES.device_index);
+        assert!(found.writable && !found.executable);
+    }
+    // The pages after each mapping are unmapped.
+    assert!(translate(&arena, root, DEVICE_BASE + 2 * PAGE_SIZE).is_none());
+    assert!(translate(&arena, root, second + 16 * PAGE_SIZE).is_none());
+}
+
+#[test]
+fn the_device_window_refuses_what_does_not_fit_or_has_no_length() {
+    let mut arena = Arena::new(64);
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    let mut window = DeviceWindow::new();
+    assert_eq!(
+        window.map(&mut mapper, 0x0900_0000, 0),
+        Err(MapError::Empty)
+    );
+    // One page less than the window, with its guard, fits; one byte more does not.
+    let fits = DEVICE_WINDOW - 2 * PAGE_SIZE;
+    assert_eq!(
+        window.map(&mut mapper, 0x1000_0000, fits + PAGE_SIZE + 1),
+        Err(MapError::WindowFull)
+    );
+    assert_eq!(window.next(), DEVICE_BASE, "a refusal maps nothing");
+    window
+        .map(&mut mapper, 0x1000_0000, fits + PAGE_SIZE)
+        .unwrap();
+    assert_eq!(window.next(), DEVICE_BASE + DEVICE_WINDOW);
+    assert_eq!(
+        window.map(&mut mapper, 0x0900_0000, 1),
+        Err(MapError::WindowFull)
+    );
+}
+
+#[test]
+fn a_block_that_starts_before_the_window_is_not_judged_by_it() {
+    let mut arena = Arena::new(64);
+    let root = upper(&mut arena);
+    let mut mapper = Mapper::resume(&mut arena, TYPES, root);
+    // A 2 MiB block that overlaps the window but starts before it.
+    mapper
+        .map_range(HEAP_BASE, 0x8000_0000, BLOCK_SIZE, Permissions::ReadWrite)
+        .unwrap();
+    let window = Window {
+        virt: HEAP_BASE + 0x1000..HEAP_BASE + 0x3000,
+        offset: None,
+    };
+    let report = audit(
+        &arena,
+        root,
+        UPPER_BASE,
+        &Expectation {
+            window: Some(&window),
+            ..open()
+        },
+    );
+    assert_eq!(report.read_write, 0, "{report:?}");
+    // ... and it is a stray of any list of windows that does not start it.
+    assert_eq!(
+        strays(
+            &arena,
+            root,
+            UPPER_BASE,
+            &[IMAGE_WINDOW.virt.clone(), window.virt.clone()]
+        ),
+        (1, Some(HEAP_BASE))
+    );
+}
+
+#[test]
+fn a_hostile_device_length_is_a_full_window_not_an_overflow() {
+    let mut arena = Arena::new(16);
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    let mut window = DeviceWindow::new();
+    assert_eq!(
+        window.map(&mut mapper, 0x0900_0000, 0xffff_ffff_f000_0000),
+        Err(MapError::NotCanonical)
+    );
+    assert_eq!(
+        window.map(&mut mapper, 0x0900_0000, 1 << 40),
+        Err(MapError::WindowFull)
+    );
+    assert_eq!(window.next(), DEVICE_BASE);
+}
+
+#[test]
+fn a_device_beyond_48_physical_bits_is_refused() {
+    let mut arena = Arena::new(16);
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    let mut window = DeviceWindow::new();
+    assert_eq!(
+        window.map(&mut mapper, 0x0001_0000_0900_0000, 0x1000),
+        Err(MapError::NotCanonical)
+    );
+    assert_eq!(window.next(), DEVICE_BASE);
 }

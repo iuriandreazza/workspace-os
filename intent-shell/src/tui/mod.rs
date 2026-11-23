@@ -25,6 +25,7 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 
 use crate::broker::Authority;
+use crate::interview::{self, Dialog};
 use crate::model::NoModel;
 use crate::ports::{ChoiceLine, Confirm, DecisionLog, Host, Planner, Retry, User};
 use crate::reply::{self, Voice};
@@ -244,6 +245,11 @@ fn discard_pending_keys() -> std::io::Result<bool> {
 /// restore the screen instead of leaving the terminal in raw mode.
 static TERMINATIONS: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether a termination signal (a closed terminal, `kill`) arrived: the next screen must not be opened.
+pub fn terminated() -> bool {
+    TERMINATIONS.load(Ordering::Relaxed) > 0
+}
+
 extern "C" fn on_terminate(_signal: libc::c_int) {
     TERMINATIONS.fetch_add(1, Ordering::Relaxed);
 }
@@ -356,11 +362,91 @@ fn opening_state(header: String, entry: Entry, notice: Option<String>) -> State 
 /// Open the interface and run until the person quits. The history is printed
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
-    let mut state = opening_state(
+    let state = opening_state(
         setup.header(&SessionState::start(&setup.host)),
         setup.entry(),
         setup.notice.clone(),
     );
+    run_with(state, transcript, move |requests, events, replies| {
+        worker(setup, requests, events, replies);
+    })
+}
+
+/// The worker's `Dialog` for the SOUL interview: a line the person submits is the answer.
+struct ChannelDialog {
+    requests: Receiver<String>,
+    events: Sender<Event>,
+}
+
+impl Dialog for ChannelDialog {
+    fn ask(&mut self, text: &str) -> Option<String> {
+        self.events.send(Event::Outcome(text.to_owned())).ok()?;
+        self.requests.recv().ok()
+    }
+
+    fn waiting(&mut self) {
+        let _ = self.events.send(Event::Busy("asking the model"));
+    }
+
+    fn writing(&mut self) {
+        // Leaving while a step is "working" waits for it instead of abandoning it.
+        let _ = self.events.send(Event::Busy("working"));
+    }
+}
+
+/// Runs the SOUL interview for the interface (S9). It ends with a message,
+/// and the worker then waits, because the interface owns the screen until the
+/// person leaves.
+fn serve_interview(
+    mut task: interview::Task,
+    requests: Receiver<String>,
+    events: Sender<Event>,
+    leave: &str,
+) {
+    let mut dialog = ChannelDialog { requests, events };
+    let ended = match task.run(&mut dialog) {
+        Ok(done) => done.message(),
+        Err(why) => why,
+    };
+    let _ = dialog
+        .events
+        .send(Event::Outcome(format!("{ended}\n\n{leave}")));
+    // A line typed after the end must not leave the interface waiting for an answer.
+    while dialog.requests.recv().is_ok() {
+        let _ = dialog
+            .events
+            .send(Event::Outcome(format!("The interview is over. {leave}")));
+    }
+}
+
+/// A submitted line starts as "working", never as a wait for the model: the
+/// worker says when it asks the model, and the write that ends the interview
+/// must not be abandoned by leaving.
+fn interview_state() -> State {
+    State::for_entry("SOUL interview".to_owned(), Entry::Command)
+}
+
+/// The SOUL interview in the conversational interface (S9).
+/// `leave` tells the person how to go on: `Ctrl-D leaves.`, or what follows.
+pub fn interview(
+    task: interview::Task,
+    transcript: Option<&Path>,
+    leave: &'static str,
+) -> Result<(), String> {
+    run_with(
+        interview_state(),
+        transcript,
+        move |requests, events, _replies| {
+            serve_interview(task, requests, events, leave);
+        },
+    )
+}
+
+fn run_with(
+    mut state: State,
+    transcript: Option<&Path>,
+    work: impl FnOnce(Receiver<String>, Sender<Event>, Receiver<Reply>) + Send + 'static,
+) -> Result<(), String> {
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
@@ -376,7 +462,7 @@ pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
     }));
     let _ = execute!(stdout(), EnableMouseCapture, EnableBracketedPaste);
     watch_termination();
-    let worker = thread::spawn(move || worker(setup, requests, event_tx, replies));
+    let worker = thread::spawn(move || work(requests, event_tx, replies));
     let result = event_loop(&mut terminal, &mut state, &request_tx, &reply_tx, &events);
 
     // Questions sent but not yet read from the channel still count as asked.
@@ -748,5 +834,98 @@ mod tests {
                 .all(|e| !matches!(e, Event::OutcomeAwaitingReply(_) | Event::Said(_)))
         );
         assert!(log.events.iter().all(|e| e["event"] != "reply"));
+    }
+
+    #[test]
+    fn the_interview_takes_each_submitted_line_as_an_answer_and_ends_with_a_message() {
+        let dir =
+            std::env::temp_dir().join(format!("intent-shell-tui-interview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        // The last line is typed after the interview ended.
+        for line in ["preset", "Dex", "2", "y", "anything"] {
+            request_tx.send(line.to_owned()).unwrap();
+        }
+        drop(request_tx);
+        serve_interview(
+            interview::Task {
+                model: None,
+                soul: (dir.join("soul"), true),
+                administrator: true,
+                log: crate::log::JsonlLog::open(&dir.join("log.jsonl")).unwrap(),
+            },
+            requests,
+            events_tx,
+            "Ctrl-D leaves.",
+        );
+        // Leaving while the file is written waits for it, so it is announced as work.
+        let all: Vec<Event> = events.try_iter().collect();
+        assert_eq!(all[4], Event::Busy("working"), "{all:?}");
+        let shown: Vec<String> = all
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Outcome(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shown.len(),
+            6,
+            "four questions, the ending and the answer to a late line: {shown:?}"
+        );
+        assert!(shown[5].contains("The interview is over"), "{}", shown[5]);
+        assert!(
+            shown[0].contains("How do you want to set up the SOUL"),
+            "{}",
+            shown[0]
+        );
+        assert!(
+            shown[4].contains("was written") && shown[4].contains("Ctrl-D leaves."),
+            "{}",
+            shown[4]
+        );
+        let file = std::fs::read_to_string(dir.join("soul")).unwrap();
+        assert_eq!(
+            file,
+            "format: 1\npreset: warm-didactic\nname: Dex\nlanguages: any\n"
+        );
+    }
+
+    #[test]
+    fn a_refused_interview_says_why_in_the_interface_and_waits_for_the_person_to_leave() {
+        let dir =
+            std::env::temp_dir().join(format!("intent-shell-tui-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        drop(request_tx);
+        serve_interview(
+            interview::Task {
+                model: None,
+                soul: (dir.join("soul"), true),
+                administrator: false,
+                log: crate::log::JsonlLog::open(&dir.join("log.jsonl")).unwrap(),
+            },
+            requests,
+            events_tx,
+            "Ctrl-D leaves.",
+        );
+        let shown: Vec<Event> = events.try_iter().collect();
+        assert!(
+            matches!(&shown[..], [Event::Outcome(text)] if text.contains("root authority")),
+            "{shown:?}"
+        );
+        assert!(!dir.join("soul").exists());
+    }
+
+    #[test]
+    fn a_line_submitted_in_the_interview_is_never_a_wait_that_leaving_abandons() {
+        let mut state = interview_state();
+        for code in [KeyCode::Char('y'), KeyCode::Enter] {
+            state.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        assert!(matches!(state.mode, Mode::Busy { .. }), "{:?}", state.mode);
+        assert!(!abandons_when_leaving(&state.mode), "{:?}", state.mode);
     }
 }

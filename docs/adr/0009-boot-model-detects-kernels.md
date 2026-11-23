@@ -3,7 +3,7 @@ title: "ADR 0009: A small model in the bootloader detects and decides how to loa
 type: adr
 status: accepted
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-20
 tags: [boot, bootloader, model, linux, multi-boot]
 ---
 
@@ -82,7 +82,9 @@ based scanner runs beside it to overrule it.
 
 ## Open questions
 
-- Language model or purpose-trained classifier, and its size.
+- Language model or purpose-trained classifier, and its size. (Proposed in
+  ADR 0027, which also narrows "the parameters to pass" to choosing among
+  lines that already exist on the disk.)
 - Which boot protocols the loader implements first.
 - How the weights are verified at boot.
 - What the user sees, and can correct, when a decision is wrong.

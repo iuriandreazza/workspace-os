@@ -5,8 +5,8 @@
 //! the host can build the maps the kernel builds and walk them. The unsafe part
 //! (frames, system registers) stays in the kernel.
 //!
-//! Layout: 4 KiB granule, 39-bit address spaces in both halves
-//! (`T0SZ = T1SZ = 25`), so every root is a level 1 table. Leaves are 4 KiB
+//! Layout: 4 KiB granule, 48-bit address spaces (`T1SZ = 16`, ADR 0033), so a
+//! root is a level 0 table of 512 entries of 512 GiB each. Leaves are 4 KiB
 //! pages and 2 MiB and 1 GiB blocks.
 
 #![cfg_attr(not(test), no_std)]
@@ -17,13 +17,30 @@ pub const PAGE_SIZE: u64 = 4096;
 pub const BLOCK_SIZE: u64 = 2 << 20;
 const GIGABYTE: u64 = 1 << 30;
 const ENTRIES: usize = 512;
-/// Bits of virtual address each half translates.
-pub const ADDRESS_BITS: u32 = 39;
+/// Bits of virtual address each half translates (ADR 0033).
+pub const ADDRESS_BITS: u32 = 48;
+
+/// The first address of the upper half, `T1SZ = 16`.
+pub const UPPER_BASE: u64 = 0xffff_0000_0000_0000;
 
 /// The virtual address of the kernel image is its physical address plus this.
-/// It is the start of the upper half, and `link.ld` defines the same number
-/// (the boot smoke test compares them).
+/// It is the last 512 GiB of the address space, and `link.ld` defines the same
+/// number (the boot smoke test compares them).
 pub const KERNEL_OFFSET: u64 = 0xffff_ff80_0000_0000;
+
+/// The linear map of RAM (ADR 0033): the virtual address of a byte of RAM is
+/// its physical address plus this. It cannot be `KERNEL_OFFSET`, which
+/// overflows 2^64 for physical addresses of 512 GiB or more.
+pub const LINEAR_BASE: u64 = UPPER_BASE;
+/// How much physical address space the linear map reaches: 128 TiB. RAM at or
+/// above it is refused.
+pub const LINEAR_SPAN: u64 = 1 << 47;
+
+/// Where device registers are mapped (ADR 0033): 384 GiB into the last 512 GiB,
+/// between the image and the heap, in a window of its own.
+pub const DEVICE_BASE: u64 = KERNEL_OFFSET + (384 << 30);
+/// The most device registers can take: 1 GiB, guard pages included.
+pub const DEVICE_WINDOW: u64 = 1 << 30;
 
 /// Where the kernel heap lives (ADR 0029): 448 GiB into the upper half, far
 /// above the image, in a window of its own. Only heap pages are ever mapped in
@@ -35,7 +52,7 @@ pub const HEAP_WINDOW: u64 = 1 << 30;
 /// The frames mapping `pages` consecutive pages inside the heap window takes:
 /// the pages themselves, one level 3 table per 512 of them, and up to three more
 /// tables where the range starts and ends (the window is one level 1 entry, so at
-/// most one new level 2 table).
+/// most one new level 2 table; the level 1 table is the image's).
 pub const fn frames_to_map(pages: usize) -> usize {
     pages.saturating_add(pages.div_ceil(512) + 3)
 }
@@ -46,6 +63,11 @@ pub const fn virtual_of(physical: u64) -> u64 {
 
 pub const fn physical_of(virtual_address: u64) -> u64 {
     virtual_address.wrapping_sub(KERNEL_OFFSET)
+}
+
+/// The address of physical `address` in the linear map.
+pub const fn linear_of(address: u64) -> u64 {
+    address.wrapping_add(LINEAR_BASE)
 }
 
 /// One translation table: 512 descriptors, aligned on its own size.
@@ -182,11 +204,13 @@ fn table_descriptor(address: u64) -> u64 {
 
 // ---- Registers -----------------------------------------------------------
 
-/// `TCR_EL1` fields for the lower half (`TTBR0_EL1`): 39 bits, 4 KiB granule,
-/// write-back write-allocate, inner shareable, walks enabled.
+/// `TCR_EL1` fields for the lower half (`TTBR0_EL1`) as the direct path's boot
+/// code builds it, which it needs only to run its first instructions: 39 bits,
+/// 4 KiB granule, write-back write-allocate, inner shareable, walks enabled.
 pub const TCR_LOWER_HALF: u64 = 25 | (1 << 8) | (1 << 10) | (3 << 12);
-/// The same for the upper half (`TTBR1_EL1`); `TG1` encodes 4 KiB as `0b10`.
-pub const TCR_UPPER_HALF: u64 = (25 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30);
+/// The upper half (`TTBR1_EL1`): 48 bits (`T1SZ = 16`), a level 0 root; `TG1`
+/// encodes 4 KiB as `0b10`.
+pub const TCR_UPPER_HALF: u64 = (16 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30);
 /// `EPD0`: translation walks through `TTBR0_EL1` are disabled.
 pub const TCR_EPD0: u64 = 1 << 7;
 /// `EPD1`: the same for `TTBR1_EL1`.
@@ -208,21 +232,30 @@ pub const SCTLR_WXN: u64 = 1 << 19;
 pub enum MapError {
     /// No frame left for a table.
     OutOfFrames,
-    /// An address is not in either half of a 39-bit regime.
+    /// An address is not in either half of the 48-bit regime.
     NotCanonical,
     /// An address or a length is not a multiple of the page size.
     Unaligned,
     /// Part of the range is already mapped.
     Overlap,
+    /// RAM lies at or above what the linear map reaches (`LINEAR_SPAN`).
+    BeyondLinearMap,
+    /// A device range of no length.
+    Empty,
+    /// The device window has no room for the range.
+    WindowFull,
 }
 
 impl core::fmt::Display for MapError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             Self::OutOfFrames => "no frame left for a page table",
-            Self::NotCanonical => "address outside the 39-bit translation regime",
+            Self::NotCanonical => "address outside the 48-bit translation regime",
             Self::Unaligned => "address or length is not page aligned",
             Self::Overlap => "range overlaps memory that is already mapped",
+            Self::BeyondLinearMap => "memory lies beyond the 128 TiB the linear map reaches",
+            Self::Empty => "a device range with no length",
+            Self::WindowFull => "the device window is full",
         })
     }
 }
@@ -232,13 +265,13 @@ fn level_index(address: u64, level: u8) -> usize {
     ((address >> shift) & 0x1ff) as usize
 }
 
-/// Bits 63:39 equal: the address is in the lower or the upper half.
+/// Bits 63:48 equal: the address is in the lower or the upper half.
 fn is_canonical(address: u64) -> bool {
     let top = address >> ADDRESS_BITS;
     top == 0 || top == u64::MAX >> ADDRESS_BITS
 }
 
-/// A root table and the means to add to it.
+/// A root table (level 0) and the means to add to it.
 pub struct Mapper<'a, M: TableMemory> {
     memory: &'a mut M,
     types: MemoryTypes,
@@ -265,7 +298,7 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
         }
     }
 
-    /// The physical address of the level 1 table, the value for `TTBRn_EL1`.
+    /// The physical address of the level 0 table, the value for `TTBRn_EL1`.
     pub fn root(&self) -> u64 {
         self.root
     }
@@ -292,10 +325,10 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
         level: u8,
     ) -> Result<(), MapError> {
         let mut table = self.root;
-        for walked in 1..level {
+        for walked in 0..level {
             let index = level_index(virtual_address, walked);
             let descriptor = self.memory.table(table).0[index];
-            if descriptor & 3 == 1 {
+            if descriptor & 3 == 1 && walked > 0 {
                 // A bigger block already maps this: fine if it maps it the
                 // way this range wants, a conflict otherwise.
                 let size = span(walked);
@@ -391,7 +424,7 @@ impl<'a, M: TableMemory> Mapper<'a, M> {
     /// Whether the entry for `virtual_address` at `level` is a table.
     fn is_table_at(&self, virtual_address: u64, level: u8) -> bool {
         let mut table = self.root;
-        for walked in 1..level {
+        for walked in 0..level {
             let descriptor = self.memory.table(table).0[level_index(virtual_address, walked)];
             if descriptor & 3 != 3 {
                 return false;
@@ -452,6 +485,7 @@ impl Leaf {
 
 fn span(level: u8) -> u64 {
     match level {
+        0 => 512 * GIGABYTE,
         1 => GIGABYTE,
         2 => BLOCK_SIZE,
         _ => PAGE_SIZE,
@@ -465,10 +499,10 @@ pub fn translate<M: TableRead>(memory: &M, root: u64, virtual_address: u64) -> O
         return None;
     }
     let mut table = root;
-    for level in 1..=3u8 {
+    for level in 0..=3u8 {
         let descriptor = memory.table(table).0[level_index(virtual_address, level)];
         match (descriptor & 3, level) {
-            (3, 1 | 2) => table = descriptor & ADDRESS_MASK,
+            (3, 0..=2) => table = descriptor & ADDRESS_MASK,
             (3, 3) | (1, 1 | 2) => {
                 let mut found = Leaf::decode(descriptor, level);
                 found.output |= virtual_address & (span(level) - 1);
@@ -487,15 +521,15 @@ pub fn walked_descriptors<M: TableRead>(
     memory: &M,
     root: u64,
     virtual_address: u64,
-) -> [Option<u64>; 3] {
-    let mut found = [None; 3];
+) -> [Option<u64>; 4] {
+    let mut found = [None; 4];
     if !is_canonical(virtual_address) {
         return found;
     }
     let mut table = root;
-    for level in 1..=3u8 {
+    for level in 0..=3u8 {
         let index = level_index(virtual_address, level);
-        found[usize::from(level) - 1] = Some(table + 8 * index as u64);
+        found[usize::from(level)] = Some(table + 8 * index as u64);
         let descriptor = memory.table(table).0[index];
         if descriptor & 3 != 3 || level == 3 {
             break;
@@ -505,11 +539,26 @@ pub fn walked_descriptors<M: TableRead>(
     found
 }
 
+/// A part of the virtual address space a root is expected to map in one way
+/// (ADR 0033): the image, the linear map and the devices each have their own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Window {
+    pub virt: Range<u64>,
+    /// `Some(offset)`: every leaf maps the physical address `virtual - offset`.
+    /// `None`: any frame (the places whose frames are chosen at run time).
+    pub offset: Option<u64>,
+}
+
 /// What a root's leaves must look like, beyond the permissions every leaf has
 /// to respect (never writable and executable, never reachable from EL0).
 #[derive(Clone, Copy, Debug)]
 pub struct Expectation<'a> {
     pub types: MemoryTypes,
+    /// When present, only the leaves that start inside the window are judged
+    /// and counted, and the window says what their output addresses must be.
+    /// When absent, every leaf is judged and must map the address it
+    /// translates minus the root's base.
+    pub window: Option<&'a Window>,
     /// A range of physical addresses nothing under the root may map.
     pub forbidden: &'a Range<u64>,
     /// The physical range that is Device memory: a leaf that touches it must
@@ -534,8 +583,8 @@ pub struct Audit {
     pub user_reachable: Option<u64>,
     /// The first virtual address whose output lies in the forbidden range.
     pub aliased: Option<u64>,
-    /// The first virtual address whose output is not the virtual address minus
-    /// the root's base: both halves map by a constant offset.
+    /// The first virtual address whose output is not the one the window (or the
+    /// root's base, without a window) says: each part maps by a constant offset.
     pub wrong_output: Option<u64>,
     /// The first virtual address whose memory type is neither Normal nor
     /// Device, or is Device where it should not be, or is not where it should.
@@ -575,6 +624,9 @@ fn overlaps(range: &Range<u64>, start: u64, size: u64) -> bool {
 impl Walk<'_> {
     fn leaf(&mut self, descriptor: u64, level: u8, at: u64) {
         let types = self.expect.types;
+        if self.expect.window.is_some_and(|w| !w.virt.contains(&at)) {
+            return;
+        }
         let found = Leaf::decode(descriptor, level);
         let size = span(level);
         let permissions = found.permissions(types);
@@ -593,7 +645,16 @@ impl Walk<'_> {
         if overlaps(self.expect.forbidden, found.output, size) {
             self.audit.aliased.get_or_insert(at);
         }
-        if found.output != at.wrapping_sub(self.base) {
+        let wrong = match self.expect.window {
+            Some(Window {
+                offset: Some(offset),
+                ..
+            }) => Some(*offset),
+            Some(_) => None,
+            None => Some(self.base),
+        }
+        .is_some_and(|offset| found.output != at.wrapping_sub(offset));
+        if wrong {
             self.audit.wrong_output.get_or_insert(at);
         }
         let known_type = found.attribute_index == types.normal_index
@@ -617,9 +678,14 @@ impl Walk<'_> {
     fn table<M: TableRead>(&mut self, memory: &M, table: u64, level: u8, base: u64) {
         for (index, &descriptor) in memory.table(table).0.iter().enumerate() {
             let at = base + index as u64 * span(level);
+            if let Some(window) = self.expect.window
+                && !overlaps(&window.virt, at, span(level))
+            {
+                continue;
+            }
             match (descriptor & 3, level) {
                 (0, _) => {}
-                (3, 1 | 2) => self.table(memory, descriptor & ADDRESS_MASK, level + 1, at),
+                (3, 0..=2) => self.table(memory, descriptor & ADDRESS_MASK, level + 1, at),
                 (3, 3) | (1, 1 | 2) => self.leaf(descriptor, level, at),
                 _ => self.audit.malformed += 1,
             }
@@ -628,15 +694,58 @@ impl Walk<'_> {
 }
 
 /// Walks every entry under `root`, whose lowest address is `base` (0 for the
-/// lower half, [`KERNEL_OFFSET`] for the upper one), against `expect`.
+/// lower half, [`UPPER_BASE`] for the upper one), against `expect`.
 pub fn audit<M: TableRead>(memory: &M, root: u64, base: u64, expect: &Expectation<'_>) -> Audit {
     let mut walk = Walk {
         expect,
         base,
         audit: Audit::default(),
     };
-    walk.table(memory, root, 1, base);
+    walk.table(memory, root, 0, base);
     walk.audit
+}
+
+/// The leaves under `root` that start outside every window: how many, and the
+/// first one's virtual address. A root that maps only what it should has none;
+/// the lower half after it is dropped is audited with no window at all.
+pub fn strays<M: TableRead>(
+    memory: &M,
+    root: u64,
+    base: u64,
+    windows: &[Range<u64>],
+) -> (u64, Option<u64>) {
+    fn walk<M: TableRead>(
+        memory: &M,
+        table: u64,
+        level: u8,
+        base: u64,
+        windows: &[Range<u64>],
+        found: &mut (u64, Option<u64>),
+    ) {
+        for (index, &descriptor) in memory.table(table).0.iter().enumerate() {
+            let at = base + index as u64 * span(level);
+            match (descriptor & 3, level) {
+                (0, _) => {}
+                (3, 0..=2) => walk(
+                    memory,
+                    descriptor & ADDRESS_MASK,
+                    level + 1,
+                    at,
+                    windows,
+                    found,
+                ),
+                _ => {
+                    if !windows.iter().any(|window| window.contains(&at)) {
+                        found.0 += 1;
+                        found.1.get_or_insert(at);
+                    }
+                }
+            }
+        }
+    }
+    let mut found = (0, None);
+    walk(memory, root, 0, base, windows, &mut found);
+    found
 }
 
 // ---- The kernel's maps ---------------------------------------------------
@@ -753,14 +862,15 @@ impl ImageLayout {
     }
 }
 
-/// Maps one region of RAM to itself, read and write, never executed, except
-/// for what lies in `hole` (the kernel image, which the upper half maps with
-/// its own permissions and no alias may make writable). The region is widened
-/// to whole pages.
+/// Maps one region of RAM at its physical address plus `offset`, read and
+/// write, never executed, except for what lies in `hole` (the kernel image,
+/// which the upper half maps with its own permissions and no alias may make
+/// writable). The region is widened to whole pages.
 pub fn map_ram_region<M: TableMemory>(
     mapper: &mut Mapper<'_, M>,
     region: Range<u64>,
     hole: &Range<u64>,
+    offset: u64,
 ) -> Result<(), MapError> {
     if region.is_empty() {
         return Ok(());
@@ -776,7 +886,7 @@ pub fn map_ram_region<M: TableMemory>(
     for part in [below, above] {
         if part.start < part.end {
             mapper.map_range(
-                part.start,
+                part.start.wrapping_add(offset),
                 part.start,
                 part.end - part.start,
                 Permissions::ReadWrite,
@@ -786,20 +896,79 @@ pub fn map_ram_region<M: TableMemory>(
     Ok(())
 }
 
-/// Maps the pages that hold `length` bytes of registers at `base` to
-/// themselves as Device memory.
-pub fn map_device<M: TableMemory>(
+/// Maps one region of RAM into the linear map (ADR 0033), refusing RAM the map
+/// does not reach.
+pub fn map_linear_region<M: TableMemory>(
     mapper: &mut Mapper<'_, M>,
-    base: u64,
-    length: u64,
+    region: Range<u64>,
+    hole: &Range<u64>,
 ) -> Result<(), MapError> {
-    let start = base & !(PAGE_SIZE - 1);
-    let end = base
-        .checked_add(length)
-        .and_then(|end| end.checked_add(PAGE_SIZE - 1))
-        .ok_or(MapError::NotCanonical)?
-        & !(PAGE_SIZE - 1);
-    mapper.map_range(start, start, end - start, Permissions::Device)
+    if region.end > LINEAR_SPAN && !region.is_empty() {
+        return Err(MapError::BeyondLinearMap);
+    }
+    map_ram_region(mapper, region, hole, LINEAR_BASE)
+}
+
+/// Where the next device registers go in the device window (ADR 0033): every
+/// mapping takes the next free pages and leaves one unmapped page after it, so
+/// a run past the end of one device's registers faults instead of reaching the
+/// next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceWindow {
+    next: u64,
+}
+
+impl Default for DeviceWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeviceWindow {
+    pub const fn new() -> Self {
+        Self { next: DEVICE_BASE }
+    }
+
+    /// The first address no mapping has used, guard page included: where a
+    /// window resumed on the live tables continues.
+    pub const fn next(&self) -> u64 {
+        self.next
+    }
+
+    /// Maps the pages that hold `length` bytes of registers at physical
+    /// `base` as Device memory and returns the virtual address of `base`
+    /// itself (the page offset is kept).
+    pub fn map<M: TableMemory>(
+        &mut self,
+        mapper: &mut Mapper<'_, M>,
+        base: u64,
+        length: u64,
+    ) -> Result<u64, MapError> {
+        if length == 0 {
+            return Err(MapError::Empty);
+        }
+        let start = base & !(PAGE_SIZE - 1);
+        let end = base
+            .checked_add(length)
+            .and_then(|end| end.checked_add(PAGE_SIZE - 1))
+            .ok_or(MapError::NotCanonical)?
+            & !(PAGE_SIZE - 1);
+        // Physical addresses have 48 bits: a leaf drops the rest silently.
+        if end > 1 << 48 {
+            return Err(MapError::NotCanonical);
+        }
+        let bytes = end - start;
+        if bytes
+            .checked_add(PAGE_SIZE)
+            .is_none_or(|room| room > DEVICE_BASE + DEVICE_WINDOW - self.next)
+        {
+            return Err(MapError::WindowFull);
+        }
+        mapper.map_range(self.next, start, bytes, Permissions::Device)?;
+        let at = self.next + (base - start);
+        self.next += bytes + PAGE_SIZE;
+        Ok(at)
+    }
 }
 
 #[cfg(test)]
