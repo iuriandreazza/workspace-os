@@ -19,7 +19,7 @@ import os
 import re
 import sys
 import time
-import http.client
+import http.client as httpclient
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -86,7 +86,7 @@ def http(url, byte_range=None, limit=None):
                 body = response.read(want)
                 expected = min(want - 1, size) if byte_range and size else size
                 if expected is not None and len(body) < expected:  # read(n) does not raise on a cut body
-                    raise http.client.IncompleteRead(body, expected - len(body))
+                    raise httpclient.IncompleteRead(body, expected - len(body))
                 return body, size
         except urllib.error.HTTPError as error:
             if error.code < 500 and error.code != 429:  # a missing file stays missing
@@ -94,7 +94,7 @@ def http(url, byte_range=None, limit=None):
             if attempt == 3:
                 raise
             time.sleep(5 * (attempt + 1))
-        except (OSError, http.client.HTTPException):  # timeouts and cut bodies: a slow mirror is not a failed corpus
+        except (OSError, httpclient.HTTPException):  # timeouts and cut bodies: a slow mirror is not a failed corpus
             if attempt == 3:
                 raise
             time.sleep(5 * (attempt + 1))
@@ -221,7 +221,7 @@ def fetch():
         try:
             data = (http(pin_["url"], (0, pin_["bytes"] - 1))[0] if pin_["mode"] == "prefix"
                     else http(pin_["url"], limit=LIMIT_FULL)[0])
-        except (OSError, http.client.HTTPException, Refused) as error:
+        except (OSError, httpclient.HTTPException, Refused) as error:
             print(f"UNREACHABLE {pin_['url']}: {error}", file=sys.stderr)
             bad += 1
             continue
