@@ -34,6 +34,13 @@ python3 -I eval/test_modes.py
 python3 -I eval/test_run_eval.py
 bash -n eval/run-matrix.sh
 
+echo "==> boot model tooling"
+# B2 (ADR 0027): the window of a candidate, the labels, the \WSOS.MDL file with its
+# integer forward pass, the metrics, the corpus labelling and layouts are plain Python
+# with unit tests. The gate neither downloads the corpus nor trains (docs/b2-boot-model-corpus-and-training.md).
+python3 -I boot-model/test_core.py
+python3 -I boot-model/test_corpus.py
+
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings
 cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap,selftest-write-text,selftest-execute-data,selftest-execute-rodata,selftest-stack-overflow,selftest-nested-exception,selftest-dirty-tcr2,selftest-heap-exhaustion -- -D warnings
