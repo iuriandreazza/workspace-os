@@ -333,14 +333,21 @@ impl BootInfo {
         Self::parse(bytes)
     }
 
-    /// The memory map this structure points at.
+    /// The memory map this structure points at. `pointer_to` turns the physical
+    /// address the structure holds into the address the kernel reads it at:
+    /// itself while the entry's identity map is live, an address in the linear
+    /// map after (ADR 0033).
     ///
     /// # Safety
     ///
     /// The structure must come from the bootloader, so that `memory_map` points
     /// at `memory_map_count` entries that stay unchanged for as long as the
-    /// result is used.
-    pub unsafe fn memory_map(&self) -> Result<MemoryMap<'static>, Error> {
+    /// result is used, and `pointer_to` must give the address at which that
+    /// physical memory is readable.
+    pub unsafe fn memory_map(
+        &self,
+        pointer_to: impl Fn(u64) -> usize,
+    ) -> Result<MemoryMap<'static>, Error> {
         let entry_size = self.memory_map_entry_size as usize;
         let count = usize::try_from(self.memory_map_count)
             .map_err(|_| Error::BadMemoryMap(MapError::TooLarge))?;
@@ -351,17 +358,21 @@ impl BootInfo {
         if entry_size < ENTRY_SIZE {
             return Err(Error::BadMemoryMap(MapError::EntrySize));
         }
-        let address = self.memory_map as usize;
+        let physical = self.memory_map;
         if bytes > 0
-            && (address == 0 || !address.is_multiple_of(8) || address.checked_add(bytes).is_none())
+            && (physical == 0
+                || !physical.is_multiple_of(8)
+                || physical.checked_add(bytes as u64).is_none())
         {
             return Err(Error::BadMemoryMap(MapError::BadAddress));
         }
         let entries = if bytes == 0 {
             &[]
         } else {
-            // SAFETY: the caller guarantees the entries are readable and
-            // unchanged; the size was bounded above.
+            let address = pointer_to(physical);
+            // SAFETY: the caller guarantees the entries are readable at
+            // `pointer_to(memory_map)` and unchanged; the size was bounded
+            // above.
             unsafe { core::slice::from_raw_parts(address as *const u8, bytes) }
         };
         Ok(MemoryMap {
@@ -532,6 +543,12 @@ impl<'a> MemoryMap<'a> {
 
     pub fn len(&self) -> usize {
         self.entries.len() / self.entry_size
+    }
+
+    /// The bytes of every entry and the stride between them, to copy the map
+    /// out of the memory it lives in.
+    pub fn as_bytes(&self) -> (&'a [u8], usize) {
+        (self.entries, self.entry_size)
     }
 
     pub fn is_empty(&self) -> bool {

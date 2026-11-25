@@ -12,6 +12,7 @@ use serde_json::json;
 
 use intent_shell::broker::Authority;
 use intent_shell::host::UnixHost;
+use intent_shell::interview;
 use intent_shell::log::JsonlLog;
 use intent_shell::model::LlamaPlanner;
 use intent_shell::plain;
@@ -19,7 +20,7 @@ use intent_shell::ports::{DecisionLog, User};
 use intent_shell::setup::Setup;
 use intent_shell::soul::{self, Persona, Source};
 
-const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--soul FILE] [--personality FILE]";
+const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--soul FILE] [--personality FILE] [--setup-soul]";
 
 struct Options {
     /// `None` is the deterministic shell: no model, lines are commands (ADR 0022).
@@ -33,6 +34,8 @@ struct Options {
     /// The SOUL file and the personality file, and whether the person named each.
     soul: (PathBuf, bool),
     personality: (PathBuf, bool),
+    /// Build the SOUL with the interview or a preset instead of starting a session (S9).
+    setup_soul: bool,
 }
 
 /// The value of a flag. One that looks like a flag is not taken for it, so
@@ -54,6 +57,7 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
         no_reply: false,
         soul: (config.join("soul"), false),
         personality: (config.join("personality"), false),
+        setup_soul: false,
     };
     let mut args = args;
     let (mut chose_model, mut chose_none) = (false, false);
@@ -74,6 +78,7 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
             // The S8a name of the SOUL file, kept so nothing that used it breaks (ADR 0028).
             "--soul" | "--voice-profile" => options.soul = (PathBuf::from(value(&mut args)?), true),
             "--personality" => options.personality = (PathBuf::from(value(&mut args)?), true),
+            "--setup-soul" => options.setup_soul = true,
             "--transcript" => options.transcript = Some(PathBuf::from(value(&mut args)?)),
             _ => return Err(USAGE.to_owned()),
         }
@@ -110,7 +115,7 @@ fn main() {
 /// beside it when that is what exists (ADR 0028).
 fn soul_path(options: &Options) -> PathBuf {
     let (path, named) = &options.soul;
-    let legacy = path.with_file_name("voice-profile");
+    let legacy = soul::legacy_path(path);
     // A dangling link is a `soul` that is there and broken, not an absent one.
     if *named || path.symlink_metadata().is_ok() || !legacy.exists() {
         path.clone()
@@ -165,6 +170,78 @@ fn voice_of(
     Ok((Some(loaded.persona), notice))
 }
 
+/// The SOUL interview, in the interface the session would have used (S9).
+fn setup_soul(options: Options, log: JsonlLog) -> Result<(), String> {
+    let task = interview::Task {
+        model: options.model,
+        soul: options.soul,
+        administrator: options.administrator,
+        log,
+    };
+    task.gate()?;
+    #[cfg(feature = "tui")]
+    if !options.plain && can_draw() {
+        return intent_shell::tui::interview(task, options.transcript.as_deref(), "Ctrl-D leaves.");
+    }
+    if options.transcript.is_some() {
+        return Err("--transcript needs the conversational interface".to_owned());
+    }
+    plain::interview(task)
+}
+
+/// A shell that starts on a machine with no SOUL builds one first when someone
+/// can answer and has the authority, and otherwise says who can (ADR 0032).
+/// What goes wrong here never stops the session: it starts with the default.
+fn first_soul(options: &Options) -> Result<Option<String>, String> {
+    let notice = first_soul_notice(options)?;
+    // Like the other problems with the SOUL: said once, and kept for the screen.
+    if let Some(notice) = &notice {
+        eprintln!("{notice}");
+    }
+    Ok(notice)
+}
+
+fn first_soul_notice(options: &Options) -> Result<Option<String>, String> {
+    // A named personality means the person is using the shell: it is checked against
+    // the SOUL there is, and an error about it is not to wait for an interview (ADR 0032).
+    if options.personality.1 {
+        return Ok(None);
+    }
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let replies = !options.no_reply && options.model.is_some();
+    Ok(
+        match interview::first_run(
+            (&soul_path(options), options.soul.1),
+            replies,
+            interactive,
+            options.administrator,
+        ) {
+            interview::FirstRun::No => None,
+            interview::FirstRun::Notice => Some(interview::NO_SOUL_NOTICE.to_owned()),
+            interview::FirstRun::Interview => {
+                let task = interview::Task {
+                    model: options.model.clone(),
+                    soul: options.soul.clone(),
+                    administrator: true,
+                    log: JsonlLog::open(&options.log)
+                        .map_err(|e| format!("cannot open the decision log: {e}"))?,
+                };
+                #[cfg(feature = "tui")]
+                if !options.plain && can_draw() {
+                    let ended =
+                        intent_shell::tui::interview(task, None, "Ctrl-D starts the shell.");
+                    // A closed terminal ends the shell: there is no screen left for the session.
+                    if intent_shell::tui::terminated() {
+                        return Err("interrupted".to_owned());
+                    }
+                    return Ok(ended.err());
+                }
+                plain::interview(task).err()
+            }
+        },
+    )
+}
+
 fn run() -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
     let options = parse_options(&home, std::env::args().skip(1))?;
@@ -174,7 +251,20 @@ fn run() -> Result<(), String> {
             options.log.display()
         )
     })?;
+    if options.setup_soul {
+        return setup_soul(options, log);
+    }
+    // Before the interview: a screen is needed for a transcript, and nothing may be asked first.
+    let screen = cfg!(feature = "tui") && !options.plain && can_draw();
+    if options.transcript.is_some() && !screen {
+        return Err("--transcript needs the conversational interface".to_owned());
+    }
+    let first = first_soul(&options)?;
     let (reply, notice) = voice_of(&options, &mut log)?;
+    let notice = match (first, notice) {
+        (Some(first), Some(notice)) => Some(format!("{first}\n{notice}")),
+        (first, notice) => first.or(notice),
+    };
     let setup = Setup {
         authority: Authority::full(User {
             name: std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()),
@@ -192,13 +282,8 @@ fn run() -> Result<(), String> {
             .unwrap_or_default(),
     };
     #[cfg(feature = "tui")]
-    if !options.plain && can_draw() {
+    if screen {
         return intent_shell::tui::run(setup, options.transcript.as_deref());
-    }
-    #[cfg(not(feature = "tui"))]
-    let _ = can_draw;
-    if options.transcript.is_some() {
-        return Err("--transcript needs the conversational interface".to_owned());
     }
     plain::run(setup)
 }

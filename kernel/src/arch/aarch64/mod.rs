@@ -1,5 +1,6 @@
 use core::arch::{asm, global_asm};
 use core::ops::Range;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // The constants are the ones `kernelvm` builds descriptors and register values
 // from, so that the boot code and the Rust that replaces its tables agree.
@@ -43,6 +44,23 @@ macro_rules! address_of {
 /// virtual address, the physical one is a fixed offset below.
 fn physical(address: usize) -> usize {
     kernelvm::physical_of(address as u64) as usize
+}
+
+/// What the kernel adds to a physical address to read it (ADR 0033): zero while
+/// the entry's identity map is the way in (the bootloader's, or the boot code's
+/// on the direct path), and the start of the linear map once that is live.
+static POINTER_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// The address at which the kernel reads physical `address`. Every physical
+/// address the kernel dereferences goes through here, so that dropping the
+/// identity map is one change and not a hunt.
+pub fn pointer_to(address: u64) -> usize {
+    address.wrapping_add(POINTER_OFFSET.load(Ordering::Relaxed)) as usize
+}
+
+/// From now on physical addresses are read through the linear map.
+fn read_physical_through_the_linear_map() {
+    POINTER_OFFSET.store(kernelvm::linear_of(0), Ordering::Relaxed);
 }
 
 /// Physical addresses of the loaded kernel: code, data and `.bss`.

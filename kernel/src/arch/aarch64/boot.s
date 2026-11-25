@@ -314,13 +314,18 @@ _start:
     cmp  x1, #512
     b.lo 8b
 
-    // The upper half: level 1 -> level 2 -> the table above, at the indexes of
-    // the image's virtual address.
+    // The upper half has 48 bits (T1SZ = 16, ADR 0033), so its root is a level
+    // 0 table: level 0 -> level 1 -> level 2 -> the table above, at the indexes
+    // of the image's virtual address.
     ldr  x0, =__image_start
+    ubfx x6, x0, #39, #9
     ubfx x1, x0, #30, #9
     ubfx x2, x0, #21, #9
+    adrp x7, boot_l0_high
     adrp x4, boot_l1_high
     adrp x5, boot_l2_high
+    orr  x3, x4, #{TABLE_BITS}
+    str  x3, [x7, x6, lsl #3]
     orr  x3, x5, #{TABLE_BITS}
     str  x3, [x4, x1, lsl #3]
     orr  x3, x10, #{TABLE_BITS}
@@ -398,7 +403,7 @@ _start:
     // half of TCR_EL1; the upper half is ours.
     // TTBR1_EL1 is written first: while EPD1 is still set from the firmware
     // no walk reads it, and once the new TCR_EL1 enables walks it is ours.
-    adrp x0, boot_l1_high
+    adrp x0, boot_l0_high
     msr  ttbr1_el1, x0
     isb
     mrs  x0, tcr_el1
@@ -409,7 +414,7 @@ _start:
     msr  tcr_el1, x0
     b    25f
 23:
-    adrp x0, boot_l1_high
+    adrp x0, boot_l0_high
     msr  ttbr1_el1, x0
 25:
     isb
@@ -459,6 +464,8 @@ _start:
 .section .bss.boot_tables, "aw", @nobits
 .balign 4096
 boot_tables_start:
+boot_l0_high:
+    .skip 4096
 boot_l1_high:
     .skip 4096
 boot_l2_high:
