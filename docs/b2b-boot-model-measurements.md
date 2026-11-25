@@ -26,17 +26,17 @@ spread, and the spread is large** (initrd recall on `debian`: 6.9 to 43.1 % for 
 
 | Step | Question | Answer, measured |
 |---|---|---|
-| 1 | Does the group assembly of ADR 0034 hold on a generator whose text names the disk's files? | With the true roles: ADR 0034's combination P 95.6 % / R 95.6 %, **78.9 % of 1,244 disks entirely right** (directory rule alone 21.9 %, directory + version suffix 35.3 %, entry-text lines 29.4 %; pair head 153 to 295 disks). With the **model's roles**: R 71.7 ± 11.4 %, 51.6 ± 10.5 % of disks right. The text rule is exact by construction of the generator |
+| 1 | Does the group assembly of ADR 0034 hold on a generator whose text names the disk's files? | With the true roles: ADR 0034's combination P 95.6 % / R 95.6 %, **78.9 % of 1,244 disks entirely right** (directory rule alone 21.9 %, directory + version suffix 35.3 %, entry-text lines 29.4 %; pair head 153 to 295 disks). With the **model's roles** (in distribution): `base` R 71.7 ± 11.4 %, 51.6 ± 10.5 % of disks right; with the roles of the augmented models R 94.6 ± 1.7 %, 77.5 ± 2.4 %. The text rule is exact by construction of the generator |
 | 2 | How big is the noise? | Large: initrd recall 0.0 % (Alpine), 4.4 % (B2 fold), 25.5 % (Debian), 91.6 % (EL) across folds and 6.9 to 43.1 % across seeds on one; B2's 0.0 % initrd recall on its fold is 4.4 ± 4.2 % over three seeds; false kernels 4.8 % (B2, candidates) are 5.3 ± 5.2 % per candidate, and per distinct file 0.2 ± 0.2 % over all files of the evaluation disks or 0.5 ± 0.4 % over the held-out family's files; on `debian` 10.1 ± 1.7 % of the held-out family's non-kernel files |
-| 3 | Option A (formats) | **Gain** where the format is missing from training: initrd recall on the B2 fold 4.4 ± 4.2 → 36.9 ± 17.1 %; kernel recall in distribution 86.7 → 98.8 % (the test releases' bare gzip kernels, a format chosen after reading which failed). **No gain** pooled over the five families (kernel 69.7 → 70.6 %), none on Alpine's gzip initrds (0 → 2 %), none shown on the five bare-gzip kernels of `el` per release (ranges overlap, one seed in three finds them), and **a drop in the PE kernels of Fedora** (88.3 → 76.2 % mean recall); false kernels of the held-out family not reduced (`debian` 10.1 → 16.0 %, `opensuse` 0.0 → 1.7 %) |
+| 3 | Option A (formats) | **Gain** where the format is missing from training: initrd recall on the B2 fold 4.4 ± 4.2 → 36.9 ± 17.1 %; kernel recall in distribution 86.7 → 98.8 % (the test releases' bare gzip kernels, a format chosen after reading which failed). **No gain** pooled over the five families (kernel 69.7 → 70.6 %), none on Alpine's gzip initrds (0 → 2 %), none shown on the five bare-gzip kernels of `el` per release (ranges overlap, one seed in three finds them), and **lower means for the PE kernels of Fedora** (88.4 → 76.1 %, per-seed ranges overlap); false kernels of the held-out family not reduced (`debian` 10.1 → 16.0 %, `opensuse` 0.0 → 1.7 %) |
 | 4a | Name or bytes? | On unseen families **bytes alone find kernels better than name and bytes** (pooled 69.7 → 89.4 %) and find almost no initrds (35.7 → 7.4 %); name alone finds few kernels (19.7 %) |
 | 4b | Option C (mixed names) | Small gain on decoys in distribution (all-three 95.5 → 97.2 %); **no gain and a loss on `debian`: false kernels 10.1 → 47.2 % of the held-out family's non-kernel files** |
-| 5 | Is the margin usable? | Raw ECE 17.6 to 18.8 %; a temperature fitted on `opensuse` changes it to 14.6, 25.1 and 14.9 % on three other families, ranges overlapping the raw ones: **not shown to help or to carry over**. A threshold on one model's margin removes the false kernels only by losing 34 to 47 % of the real ones, and the thresholds of one quantile differ by 1.4 to 2.4 times between seeds (at the 10, 25 and 50 % quantiles). **Outlier exposure did not help** (`debian` false kernels 10.1 → 19.7 %, a loss). Three models' disagreement flags 63 % and 100 % of the false kernels of two folds at 13 % and 10.5 % of their real kernels, but 23.5 % (Alpine) and 100 % (OpenBSD) of the real kernels elsewhere |
+| 5 | Is the margin usable? | Raw scores saturate (probability 0.99997, so raw ECE 17.6 to 18.8 % is just the error rate); a temperature fitted on `opensuse` changes it to 14.6, 25.1 and 14.9 % on three other families, ranges overlapping the raw ones: **not shown to help or to carry over**. A threshold on one model's margin removes the false kernels only by losing 34 to 47 % of the real ones, and the thresholds of one quantile differ by 1.4 to 2.4 times between seeds (at the 10, 25 and 50 % quantiles). **Outlier exposure did not help** (`debian` false kernels 10.1 → 19.7 %, a loss). Three models' disagreement flags 63 % and 100 % of the false kernels of two folds at 13 % and 10.5 % of their real kernels, but 23.5 % (Alpine) and 100 % (OpenBSD) of the real kernels elsewhere |
 | 6 | Options E and F | **E** (size): better means, within the spread (`debian` initrd 25.5 → 43.0 %). **F** (neighbour names): no gain on `el` (kernel 54.4 → 49.9 %). **G**: no gain in accuracy |
 
 **What did not improve:** kernel recall on unseen families (pooled over five families A is within the spread; OE over
-three; C, E and F, run on one to three folds, show no gain beyond it), the false kernels of the held-out family (no option
-reduced them; C and outlier exposure raised those of `debian` by 37 and 10 points, A and the bytes-only network by 6 and 17,
+three; C, E and F, run on one to three folds, show no gain beyond it; the one gain is bytes alone, which finds kernels
+but not initrds), the false kernels of the held-out family (the one reduction by the rule, name alone on `debian`, 10.1 → 2.7 %, is a network that calls almost nothing a kernel; C and outlier exposure raised those of `debian` by 37 and 10 points, A and the bytes-only network by 6 and 17,
 within the spread), the margin as a safety net, and Alpine's gzip initrds. **What B2b changes for B3:** assembly by code (ADR 0034, still
 `proposed`) is much better than any learned group head measured, but is only as good as the roles the model gives; the
 roles on a family the corpus lacks are the weak point, and the one lever that targeted a measured cause (A) fixed that cause only.
@@ -52,7 +52,7 @@ the integer arithmetic the bootloader will use. **Nothing in `window.py` or in t
 options E and F build a longer window inside the measurement code only (`boot-model/contexts.py`).
 
 - **A run** is one training on one *fold* with one *configuration* and one *seed*: `boot-model/b2b.py`. 4,000
-  generated training disks per run, as in B2 (the corrected generator makes about 42,000 to 48,000 candidates of them:
+  generated training disks per run, as in B2 (the corrected generator makes about 42,000 to 51,000 candidates of them:
   more files per disk carry entry text and two kernels).
 - **Folds** leave a family of distributions out of training whole, and evaluate on every release of that family:
   `alpine`, `debian`, `el` (Fedora, AlmaLinux and Rocky **together**: they share a layout, so leaving out one would
@@ -109,7 +109,7 @@ it asserts, compared with the pairs that really belong to one entry.
 
 Test disks of the `indist` split (1,500 disks), the same releases as B2's test set. "True roles" gives each rule the
 roles of the generator (the rule's ceiling); "predicted roles" gives it the roles of the three `base` models of the
-protocol below (what B3 would get). Disks "with pairs" are disks that hold at least one kernel or loader and a
+protocol below, `base` (the B2 recipe) and `A` (with format augmentation, which repairs the one format hole of this split): Disks "with pairs" are disks that hold at least one kernel or loader and a
 companion of the same entry. A disk counts as right only if the rule asserts exactly the true set of pairs.
 
 B2's figures, on the old generator, for the same two baselines: the directory rule P 71.1 % / R 75.8 %, 458 of
@@ -136,20 +136,32 @@ every disk that had a kernel-like file and a companion; the table counts disks w
 
 ### Group rules, roles predicted by the model (3 seeds)
 
-| Disks | Rule | Pair precision | Pair recall | Disks with every pair right (of disks with pairs) |
-|---|---|---|---|---|
-| all disks | same directory | 54.9 ± 3.1 (51.8–58.0) | 50.2 ± 6.7 (44.1–57.3) | 15.2 ± 1.1 (14.1–16.3) |
-| all disks | directory + version suffix | 90.9 ± 1.4 (89.7–92.4) | 50.2 ± 6.7 (44.1–57.3) | 23.4 ± 2.5 (21.0–25.9) |
-| all disks | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 42.6 ± 9.4 (34.4–52.9) | 21.8 ± 5.2 (17.2–27.5) |
-| all disks | ADR 0034 (entry text, else directory + suffix) | 93.4 ± 1.2 (92.4–94.7) | 71.7 ± 11.4 (61.5–83.9) | 51.6 ± 10.5 (42.3–62.9) |
-| disks with entry text | same directory | 60.0 ± 3.9 (56.2–64.0) | 42.8 ± 7.6 (36.0–51.0) | 0.0 ± 0.0 (0.0–0.0) |
-| disks with entry text | directory + version suffix | 95.3 ± 0.9 (94.5–96.2) | 42.8 ± 7.6 (36.0–51.0) | 0.0 ± 0.0 (0.0–0.0) |
-| disks with entry text | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 63.0 ± 13.9 (50.9–78.2) | 43.6 ± 10.5 (34.5–55.1) |
-| disks with entry text | ADR 0034 (entry text, else directory + suffix) | 97.2 ± 0.6 (96.7–97.8) | 74.5 ± 14.6 (61.6–90.3) | 56.5 ± 16.1 (42.7–74.2) |
-| disks with two kernels in one directory | same directory | 39.7 ± 2.7 (36.9–42.1) | 52.3 ± 6.8 (45.6–59.2) | 5.1 ± 0.8 (4.5–6.0) |
-| disks with two kernels in one directory | directory + version suffix | 92.1 ± 1.5 (90.8–93.8) | 52.3 ± 6.8 (45.6–59.2) | 25.6 ± 4.3 (21.2–29.8) |
-| disks with two kernels in one directory | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 35.8 ± 6.6 (29.3–42.5) | 15.5 ± 3.4 (12.3–19.1) |
-| disks with two kernels in one directory | ADR 0034 (entry text, else directory + suffix) | 94.0 ± 1.3 (92.9–95.4) | 70.4 ± 10.1 (60.5–80.7) | 48.0 ± 10.2 (38.0–58.4) |
+| Roles from | Disks | Rule | Pair precision | Pair recall | Disks with every pair right (of disks with pairs) |
+|---|---|---|---|---|---|
+| `base` | all disks | same directory | 54.9 ± 3.1 (51.8–58.0) | 50.2 ± 6.7 (44.1–57.3) | 15.2 ± 1.1 (14.1–16.3) |
+| `base` | all disks | directory + version suffix | 90.9 ± 1.4 (89.7–92.4) | 50.2 ± 6.7 (44.1–57.3) | 23.4 ± 2.5 (21.0–25.9) |
+| `base` | all disks | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 42.6 ± 9.4 (34.4–52.9) | 21.8 ± 5.2 (17.2–27.5) |
+| `base` | all disks | ADR 0034 (entry text, else directory + suffix) | 93.4 ± 1.2 (92.4–94.7) | 71.7 ± 11.4 (61.5–83.9) | 51.6 ± 10.5 (42.3–62.9) |
+| `base` | disks with entry text | same directory | 60.0 ± 3.9 (56.2–64.0) | 42.8 ± 7.6 (36.0–51.0) | 0.0 ± 0.0 (0.0–0.0) |
+| `base` | disks with entry text | directory + version suffix | 95.3 ± 0.9 (94.5–96.2) | 42.8 ± 7.6 (36.0–51.0) | 0.0 ± 0.0 (0.0–0.0) |
+| `base` | disks with entry text | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 63.0 ± 13.9 (50.9–78.2) | 43.6 ± 10.5 (34.5–55.1) |
+| `base` | disks with entry text | ADR 0034 (entry text, else directory + suffix) | 97.2 ± 0.6 (96.7–97.8) | 74.5 ± 14.6 (61.6–90.3) | 56.5 ± 16.1 (42.7–74.2) |
+| `base` | disks with two kernels in one directory | same directory | 39.7 ± 2.7 (36.9–42.1) | 52.3 ± 6.8 (45.6–59.2) | 5.1 ± 0.8 (4.5–6.0) |
+| `base` | disks with two kernels in one directory | directory + version suffix | 92.1 ± 1.5 (90.8–93.8) | 52.3 ± 6.8 (45.6–59.2) | 25.6 ± 4.3 (21.2–29.8) |
+| `base` | disks with two kernels in one directory | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 35.8 ± 6.6 (29.3–42.5) | 15.5 ± 3.4 (12.3–19.1) |
+| `base` | disks with two kernels in one directory | ADR 0034 (entry text, else directory + suffix) | 94.0 ± 1.3 (92.9–95.4) | 70.4 ± 10.1 (60.5–80.7) | 48.0 ± 10.2 (38.0–58.4) |
+| `A` | all disks | same directory | 59.0 ± 0.8 (58.1–59.4) | 66.8 ± 1.7 (64.8–67.8) | 21.2 ± 1.2 (19.9–21.9) |
+| `A` | all disks | directory + version suffix | 93.6 ± 0.5 (93.1–93.9) | 66.8 ± 1.7 (64.8–67.8) | 34.3 ± 1.7 (32.4–35.3) |
+| `A` | all disks | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 55.3 ± 0.0 (55.3–55.3) | 29.4 ± 0.0 (29.4–29.4) |
+| `A` | all disks | ADR 0034 (entry text, else directory + suffix) | 95.4 ± 0.3 (95.0–95.6) | 94.6 ± 1.7 (92.6–95.6) | 77.5 ± 2.4 (74.7–78.9) |
+| `A` | disks with entry text | same directory | 63.9 ± 0.6 (63.2–64.2) | 56.4 ± 0.7 (55.6–56.8) | 0.0 ± 0.0 (0.0–0.0) |
+| `A` | disks with entry text | directory + version suffix | 96.9 ± 0.1 (96.7–97.0) | 56.4 ± 0.7 (55.6–56.8) | 0.0 ± 0.0 (0.0–0.0) |
+| `A` | disks with entry text | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 81.8 ± 0.0 (81.8–81.8) | 58.9 ± 0.0 (58.9–58.9) |
+| `A` | disks with entry text | ADR 0034 (entry text, else directory + suffix) | 98.2 ± 0.1 (98.1–98.2) | 97.5 ± 0.7 (96.7–97.9) | 86.4 ± 1.5 (84.7–87.3) |
+| `A` | disks with two kernels in one directory | same directory | 43.5 ± 0.8 (42.5–44.0) | 70.5 ± 2.0 (68.2–71.7) | 6.8 ± 0.0 (6.8–6.8) |
+| `A` | disks with two kernels in one directory | directory + version suffix | 95.2 ± 0.7 (94.4–95.7) | 70.5 ± 2.0 (68.2–71.7) | 38.7 ± 1.4 (37.2–39.5) |
+| `A` | disks with two kernels in one directory | entry text lines | 100.0 ± 0.0 (100.0–100.0) | 46.3 ± 0.0 (46.3–46.3) | 22.8 ± 0.0 (22.8–22.8) |
+| `A` | disks with two kernels in one directory | ADR 0034 (entry text, else directory + suffix) | 96.4 ± 0.5 (95.8–96.7) | 93.9 ± 2.0 (91.6–95.1) | 76.5 ± 2.6 (73.6–78.0) |
 
 ### Pair head (logistic regression on the trunk's 128 features), true roles, per seed
 
@@ -170,18 +182,22 @@ Reading, with the limits that each carries:
   59 % (44 % where two kernels share a directory): every initrd in the directory is paired with every kernel in it.
   Adding the suffix makes it 94 % (96 % with two kernels in a directory) at the same recall.
   Both rules miss every entry text (it lives in `\loader\entries`) and the device trees that sit in another
-  directory (Debian puts them in `\usr\lib\linux-image-<v>`).
+  directory (Debian puts them in `\usr\lib\linux-image-<v>`, Alpine in `\boot\dtbs-<flavour>`).
 - **The combination ADR 0034 proposes** (text where a kernel is named by one, the directory-and-suffix fallback for
   the rest) reaches P 95.6 % / R 95.6 % with true roles and 78.9 % of the 1,244 disks entirely right; 87.3 % where
-  there is text. The failures are of two kinds: the fallback cannot reach a device tree in another directory (143
-  pairs), and it pairs a **loader** with the companions of its directory (143 pairs: on a Debian installer disk
-  `grubaa64.efi` sits beside `linux` and `initrd.gz`; two systems that both put `\INITRD` and `\kernel.elf` in the
-  root do the same). The second is a property of the rule, which treats a loader as kernel-like, as B2's pair
-  experiment did; a rule that did not pair loaders would not make that error, and this was not tried.
-- **With the roles the model predicts, the picture is much worse**: pair recall drops from 95.6 % to 71.7 ± 11.4 %
-  and the disks entirely right from 78.9 % to 51.6 ± 10.5 % (range 42.3–62.9). Roles are the model's weak point
-  on files it has not seen (below), and a pair needs both files to be called what they are. **Assembly is only as
-  good as the labelling**; the 95.6 % is not a number B3 can expect.
+  there is text. The failures are of two kinds. The fallback cannot reach a device tree in another directory (143
+  pairs: 110 Alpine `\boot\dtbs-<flavour>\...` files and 33 Debian ones in `\usr\lib\linux-image-<v>`). And it asserts 143
+  wrong pairs with an initrd: 113 pair a **loader** with the companions of its directory (on a Debian installer disk
+  `grubaa64.efi` sits beside `linux` and `initrd.gz`), and 30 pair a true **kernel** of one system (OpenBSD's `bsd`,
+  `bsd.mp`, `bsd.rd`; our `kernel.elf`) with another system's `\INITRD` in the same root directory. The first kind is a
+  property of treating a loader as kernel-like, as B2's pair experiment did (excluding loaders was not tried); the
+  second, two systems sharing a directory, no directory-based rule can see.
+- **With the roles the model predicts, `base` is much worse**: pair recall drops from 95.6 % to 71.7 ± 11.4 % and the
+  disks entirely right from 78.9 % to 51.6 ± 10.5 % (range 42.3–62.9). Most of that is one format hole of this split: with
+  the roles of the `A` models (augmented formats; role accuracy 99.5–100 %) the same rule gets recall 94.6 ± 1.7 % and
+  **77.5 ± 2.4 %** of the disks right (ranges 92.6–95.6 and 74.7–78.9: apart from `base` by the report's rule). This is the
+  in-distribution split, not a held-out family. **Assembly is only as good as the labelling**: on a family
+  the model labels badly (steps 2 to 3) it would inherit those errors, which was not measured.
 - **The pair head is no baseline worth keeping**: P 52 to 59 %, R 25 to 47 %, 153 to 295 disks right, with the
   seed spread larger than the gap to its B2 figure (the logistic regression did not converge in 2,000 iterations, as
   in B2). With true roles every rule above beats it on precision and on recall.
@@ -290,9 +306,10 @@ What the baseline shows, each with its spread:
   (`openbsd`: 5 files). Per candidate `el` reaches 6.3 ± 5.9 % (0.0–11.8) because a few files appear on many disks.
   B2's 4.8 % on `b2four` was a candidate rate: 5.3 ± 5.2 % here, and per file 0.5 ± 0.4 % over the family's files.
   The figure depends on which files the model happens to call kernels in a given training.
-- **All-three on the family's own files is far from the diluted 95 to 99 %**: `alpine` 88.7 %, `debian` 71.0 ± 5.6 %,
-  `b2four` 96.1 %, `el` 98.4 % and `opensuse` 97.5 %; `openbsd` **0.0 %** in every seed and every configuration (its
-  kernels are family `bsd` and protocol `none`, its loader `bsd`/`chainload`: the model never gets all three).
+- **All-three on the family's own files is below the diluted figure for two folds**: `alpine` 88.7 %, `debian` 71.0 ± 5.6 %,
+  `b2four` 96.1 %, `el` 98.4 % and `opensuse` 97.5 %; `openbsd` **0.0 %** in every seed and every configuration, which is
+  **by construction**: the family `bsd` exists only for OpenBSD, so with OpenBSD held out the label is never trained and
+  no file of the fold can be right on all three. Pooled all-three rows that include `openbsd` use its diluted 97.7 %.
 - **In distribution it is not 100 %.** Kernel recall on `indist` is 86.7 ± 3.4 % (the bare gzip kernels of the test releases:
   Alpine 3.18, AlmaLinux and Rocky, are a format the training set holds once).
 
@@ -345,7 +362,7 @@ kept, as the corpus does for every file. An initrd's name takes the compressor's
 formats were fixed from the task, before the failing files were looked at; the corpus was tabulated by magic
 number first (xz initrds: Fedora, AlmaLinux, Rocky, openSUSE; bare gzip kernels: AlmaLinux, Rocky and Alpine 3.18; all other
 kernels PE or ELF; gzip initrds: Alpine and Debian) which is disclosed because it was read. Nothing is derived from
-a held-out family.
+a held-out family's files (the initrd payload is the Alpine minirootfs, userland of the `alpine-rootfs` system, which is in training for every fold, including `alpine`).
 
 File level, three seeds:
 
@@ -421,8 +438,9 @@ Result, against the targets the task named:
   means over three seeds go from 6 to 19 % to 32 to 55 % per release (table), **but the per-seed values overlap for
   every release** (for example `alma/9.3`: base 0.0 / 56.5 / 0.0 %, A 1.4 / 63.6 / 99.3 %): the base run of one seed
   already finds them, and A finds them in two seeds of three, so this is a hint, not a result. The `el` fold does not
-  move (54.4 → 61.8 %, ranges overlap), and **A lowers the PE kernels of Fedora** that training already holds: mean
-  recall over the six releases 88.3 → 76.2 % (`fedora/39` 100.0 → 85.0, `fedora/44` 75.6 → 58.8), an effect the fold figure
+  move (54.4 → 61.8 %, ranges overlap), and A has **lower means for the PE kernels of Fedora**, a format training already holds: mean
+  recall over the six releases 88.4 → 76.1 % (but per seed base is 81.4 / 92.7 / 91.1 and A 81.8 / 66.6 / 79.8: the ranges overlap, so by the rule this
+  is a hint of harm, not a loss) (`fedora/39` 100.0 → 85.0, `fedora/44` 75.6 → 58.8), an effect the fold figure
   hides.
 - **False kernels: no reduction, a possible increase.** Over the held-out family's files: `debian` 10.1 ± 1.7 → 16.0 ± 8.1 %
   (ranges overlap), `opensuse` 0.0 → 1.7 ± 0.5 % (a loss by the rule); over all files, pooled 1.2 ± 0.2 → 2.0 ± 1.0 %. A copy whose name stays and whose bytes are a format that
@@ -556,13 +574,17 @@ Threshold fitted on `opensuse`, reported on the other folds (config `OE`; weight
 | el | 0.25 | 9344, 11112, 8688 | 100.0 ± 0.0 (100.0–100.0) % | 56.7 ± 33.1 (31.2–94.1) % | 0.0 |
 | el | 0.50 | 10816, 11840, 9971 | 100.0 ± 0.0 (100.0–100.0) % | 62.8 ± 31.7 (36.9–98.2) % | 0.0 |
 
-- **The raw scores are badly calibrated**: ECE 17.6 to 18.8 % (candidate level; role accuracy about 81 %). Temperature
+- **The raw scores are saturated, not calibrated**: at T = 1 the integer scores (thousands) give a maximum probability of
+  about 0.99997, so the raw ECE of 17.6 to 18.8 % is simply the error rate (role accuracy about 81 %) and says nothing
+  about the ordering of confidences. Temperature
   fitted on `opensuse` gives 14.6 % (`alpine`), 14.9 % (`el`) and 25.1 % (`debian`): the ranges of the three seeds
   overlap the raw ones in every fold (`debian` 16.5–19.2 raw, 15.3–34.1 after), so by the rule none of the three is
-  shown to improve or worsen, and a temperature that transfers is **not shown**. Even at best a 15 % error remains.
+  shown to improve or worsen (and the temperature, like the threshold, is fitted on a different training than the one it is applied to), and a temperature that transfers is **not shown**. Even at best a 15 % error remains.
   Outlier exposure's after-temperature ECE (10.3, 18.7, 13.5 %) is lower than base's in all three, also within the
   spread; the table does not support "no better" or "better".
-- **The margin separates errors only with a large loss of kernels.** A threshold at the 10 % quantile of the
+- **The margin separates errors only with a large loss of kernels.** (Sample sizes: `debian` has 142 to 195 false-kernel
+  candidates per seed; `el` 8 and 7 files in two seeds and none in the third; `alpine` one file in one seed and none in the
+  others, so its rows, and the means over seeds that have any, rest on a handful of files.) A threshold at the 10 % quantile of the
   calibration fold's kernel margins removes 99 to 100 % of the false kernels of `alpine`, `debian` and `el` and
   loses 33.7 ± 35.9 % (`debian`), 46.4 ± 28.3 % (`alpine`) and 46.9 ± 21.2 % (`el`) of the kernels the model found;
   at the 25 % quantile the loss is 71 to 82 %. The lowest threshold (the smallest margin of the calibration fold's kernels) loses 9 to 24 % of the
@@ -666,9 +688,10 @@ On the held-out family's own files (`el`, `debian`), configurations `base`, `C` 
   the family's own files) and all-three from 82.7 to 62.4 % (71.0 → 37.1 % on the family's files): both a loss, while initrd recall rises 25.5 → 45.1 % (within the spread). With the name made less reliable
   the model leans on the bytes, and the Debian files that look like kernels to it (GRUB modules, device trees,
   the netboot `linux` of other releases) are called kernels.
-- A similarity to disclose: the training decoy `\\boot\\vmlinuz-5.15.0-91-generic` and the evaluation decoy
-  `\\boot\\vmlinuz-6.1.0-18-arm64` differ only in the version, so the decoy gain is closer to in-sample than the
-  disjoint lists suggest, and it is 0.1 point beyond the ranges.
+- A contamination to disclose: five of the eight evaluation decoy paths have a near twin in the training list
+  (`\\boot\\vmlinuz-6.1.0-18-arm64` and `\\boot\\vmlinuz-5.15.0-91-generic`; `\\bsd` and `\\bsd.mp`; `\\grubaa64.efi` and
+  `\\boot\\grub\\grubaa64.efi`; `\\boot\\Image` and `\\Image.gz`; `\\initrd.img` and `\\boot\\initramfs-linux.img`), so the lists
+  are disjoint as strings only and the decoy gain, 0.1 point beyond the ranges, is closer to in-sample than it looks.
 - C **did not** pass the test the note set it: it does not reduce the false kernels on unseen families and it can
   increase them a lot. It stays a candidate only for a configuration with a measured guard against that (see "What
   B3 should settle").
@@ -677,9 +700,9 @@ On the held-out family's own files (`el`, `debian`), configurations `base`, `C` 
 
 Both change the window contract and neither touches `window.py`: `contexts.py` builds the longer window in the
 measurement only. **E**: one more position after the 512 holding the size bucket (`bit_length` of the file size,
-capped at 31; it shares the byte embedding, so it is not the 32 x 256 one-hot the note costed; +16K weights). **F**:
+capped at 31; it shares the byte embedding, so it is not the 32 x 256 one-hot the note costed; +8,192 weights). **F**:
 512 more positions: the names of up to 16 other files of the same directory, sorted, 32 bytes each (window 1,024;
-the first layer doubles to 8.4 M weights and multiply-accumulates, inside ADR 0027's budget at 8.4 MiB and 8.4 M
+the first layer doubles to 8.4 M weights and multiply-accumulates, inside ADR 0027's budget at 8.0 MiB and 8.4 M
 MACs). Neither is a filter: the size is an input to the model, and ADR 0027's enumeration "applies no filter by
 name, size, extension or content". They were run on `el` and `debian` (E) and on `el` only (F: a run takes twice
 as long), three seeds each.
@@ -717,12 +740,12 @@ as long), three seeds each.
    roles the BLS-line rule has precision 100 % but recall 43 ± 9 %, and the ADR 0034 combination 71.7 ± 11.4 % of the
    pairs and 51.6 ± 10.5 % of the disks entirely right. Whether a disk with a wrong or missing label is
    shown as unverified, falls back to the stored decision of an earlier boot, or is refused, is a B3 decision.
-3. **Whether the loader treats a loader as kernel-like in the fallback rule.** 143 of the wrong pairs of the ADR 0034
-   combination (true roles) pair a loader with the initrd beside it. Excluding loaders from the fallback was not
-   measured.
+3. **Whether the loader treats a loader as kernel-like in the fallback rule.** 113 of the 143 wrong pairs of the ADR 0034
+   combination (true roles) pair a loader with the initrd beside it; excluding loaders from the fallback was not measured and
+   would leave the other 30 (two systems sharing a root directory).
 4. **How to use the margin, if at all.** It did not transfer between trainings (thresholds of the same quantile
    differ by 1.4 to 2.4 times between seeds), so a threshold has to be fitted on the weights that ship, on a held-out family, and
-   it costs about a third of the real kernels for removing the false ones (step 5). Disagreement of three models is a
+   it costs 34 to 47 % of the real kernels at the 10 % quantile for removing the false ones, on folds with few false files (step 5). Disagreement of three models is a
    better signal on two folds and triples the work (inside the budget).
 5. **The balance of name and bytes**, since bytes alone find unseen kernels (89 %) and the name is what finds initrds
    (7 % without it). Neither the 15 % name dropout of B2 nor option C is the answer; a per-class treatment or a
@@ -738,7 +761,7 @@ as long), three seeds each.
   invented. Every rule and every model figure is for those layouts.
 - **Seeds.** Three per configuration; the spread is the range of three numbers. A gain that is "within spread"
   may be real and a "gain" may be luck: the folds with one to three distinct files (`openbsd`, `debian`) move in
-  steps of 33 and 100 points.
+  steps of 33 points (`openbsd`, three kernels) and 25 points (`debian`, four kernels and four initrds).
 - **Runs before two fixes.** The 21 `base` runs and about a dozen of the `A` runs (the cache's timestamps do not say exactly which) were trained before the generator stopped
   stamping the current time in the headers of generated zip files (four bytes of the window of about 8 % of the junk)
   and before the sizes of generated files were drawn independently of class; neither affects them beyond those
@@ -765,7 +788,8 @@ as long), three seeds each.
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 U="uv run --no-project --with numpy==2.5.5 --with scikit-learn==1.9.1 --with zstandard --with lz4 python -I"
 $U boot-model/b2b.py queue --jobs 4 --seeds 0 1 2 --configs base A --folds alpine debian el opensuse openbsd b2four indist
-$U boot-model/b2b.py queue --jobs 4 --seeds 0 1 2 --configs name bytes OE --folds alpine debian el opensuse openbsd
+$U boot-model/b2b.py queue --jobs 4 --seeds 0 1 2 --configs name bytes --folds alpine debian el opensuse openbsd
+$U boot-model/b2b.py queue --jobs 4 --seeds 0 1 2 --configs OE --folds alpine debian el opensuse
 $U boot-model/b2b.py queue --jobs 4 --seeds 0 1 2 --configs C --folds el debian indist
 $U boot-model/b2b.py queue --jobs 4 --seeds 0 1 2 --configs E --folds el debian
 $U boot-model/b2b.py queue --jobs 4 --seeds 0 1 2 --configs F --folds el

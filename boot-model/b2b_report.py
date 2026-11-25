@@ -118,20 +118,21 @@ def step1():
                   f"{r['disks_all_right']} ({pct(r['disks_all_right'] / max(1, r['disks_with_pairs']))} %) | {r['spurious_on_pairless']} | "
                   f"{r['missed_by_role']} | {r['wrong_by_role']} |")
     print("\n### Group rules, roles predicted by the model (3 seeds)\n")
-    print("| Disks | Rule | Pair precision | Pair recall | Disks with every pair right (of disks with pairs) |")
-    print("|---|---|---|---|---|")
-    predicted = {s: predicted_role_names("indist", "base", s, "test", disks) for s in SEEDS if load("indist", "base", s)}
+    print("| Roles from | Disks | Rule | Pair precision | Pair recall | Disks with every pair right (of disks with pairs) |")
+    print("|---|---|---|---|---|---|")
     index = {id(d): i for i, d in enumerate(disks)}
-    for gname, subset in groups.items():
-        for rname in assembly.RULES:
-            per_seed = []
-            for s, names in predicted.items():
-                sub_roles = [names[index[id(d)]] for d in subset]
-                per_seed.append(assembly.score(subset, assembly.RULES[rname], sub_roles))
-            if not per_seed:
-                continue
-            ok = [r["disks_all_right"] / max(1, r["disks_with_pairs"]) for r in per_seed]
-            print(f"| {gname} | {rname} | {spread([r['precision'] for r in per_seed])} | {spread([r['recall'] for r in per_seed])} | {spread(ok)} |")
+    for config in ("base", "A"):
+        predicted = {s: predicted_role_names("indist", config, s, "test", disks) for s in SEEDS if load("indist", config, s)}
+        for gname, subset in groups.items():
+            for rname in assembly.RULES:
+                per_seed = []
+                for s, names in predicted.items():
+                    sub_roles = [names[index[id(d)]] for d in subset]
+                    per_seed.append(assembly.score(subset, assembly.RULES[rname], sub_roles))
+                if not per_seed:
+                    continue
+                ok = [r["disks_all_right"] / max(1, r["disks_with_pairs"]) for r in per_seed]
+                print(f"| `{config}` | {gname} | {rname} | {spread([r['precision'] for r in per_seed])} | {spread([r['recall'] for r in per_seed])} | {spread(ok)} |")
     print("\n### Pair head (logistic regression on the trunk's 128 features), true roles, per seed\n")
     print("| Seed | Pair precision | Pair recall | Disks with pairs | Disks with every pair right |")
     print("|---|---:|---:|---:|---:|")
