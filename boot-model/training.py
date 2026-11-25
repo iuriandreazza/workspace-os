@@ -18,10 +18,10 @@ WINDOW, EMBEDDING, HIDDEN1, HIDDEN2 = 512, 32, 256, 128
 HEAD_NAMES = [name for name, _ in labels.SLICES]
 
 
-def initial_params(rng):
+def initial_params(rng, window=WINDOW):
     return {
         "E": rng.normal(0, 0.5, (256, EMBEDDING)).astype(np.float32),
-        "W1": (rng.normal(0, 1, (WINDOW * EMBEDDING, HIDDEN1)) * np.sqrt(2 / (WINDOW * EMBEDDING))).astype(np.float32),
+        "W1": (rng.normal(0, 1, (window * EMBEDDING, HIDDEN1)) * np.sqrt(2 / (window * EMBEDDING))).astype(np.float32),
         "W2": (rng.normal(0, 1, (HIDDEN1, HIDDEN2)) * np.sqrt(2 / HIDDEN1)).astype(np.float32),
         "W3": (rng.normal(0, 1, (HIDDEN2, labels.HEADS)) * np.sqrt(1 / HIDDEN2)).astype(np.float32),
     }
@@ -35,25 +35,44 @@ def forward(params, x):
     return feats, h1, h2, h2 @ params["W3"]
 
 
-def loss_and_grad_logits(logits, y, head_weights):
-    """Sum of the cross-entropies of the heads, and its gradient with respect to the logits."""
+def loss_and_grad_logits(logits, y, head_weights, outliers=None, outlier_weight=0.0):
+    """Sum of the cross-entropies of the heads, and its gradient with respect to the logits.
+
+    `outliers` is a boolean mask of rows that belong to no class (outlier exposure, B2b): for them the family,
+    protocol and role heads are pulled to the uniform distribution (cross-entropy to it, weighted by
+    `outlier_weight`) and the group head is left alone; the labels of those rows are ignored by the ordinary loss.
+    """
     total, grad = 0.0, np.zeros_like(logits)
     rows = np.arange(logits.shape[0])
+    ordinary = np.ones(len(rows), dtype=bool) if outliers is None else ~outliers
+    count, extra = max(1, int(ordinary.sum())), 0 if outliers is None else int(outliers.sum())
     for head, (_, (start, end)) in enumerate(labels.slice_bounds().items()):
         part = logits[:, start:end]
         part = part - part.max(axis=1, keepdims=True)
         prob = np.exp(part)
         prob /= prob.sum(axis=1, keepdims=True)
-        total += head_weights[head] * -np.log(prob[rows, y[:, head]] + 1e-9).mean()
-        prob[rows, y[:, head]] -= 1
-        grad[:, start:end] = head_weights[head] * prob / logits.shape[0]
+        hit = np.where(ordinary, y[:, head], 0)
+        total += head_weights[head] * -np.log(prob[rows, hit] + 1e-9)[ordinary].sum() / count
+        step = prob.copy()
+        step[rows, hit] -= 1
+        step[~ordinary] = 0
+        grad[:, start:end] = head_weights[head] * step / count
+        if extra and head < 3:
+            uniform = 1.0 / (end - start)
+            total += outlier_weight * -np.log(prob[outliers] + 1e-9).mean(axis=1).sum() / extra
+            grad[outliers, start:end] = outlier_weight * (prob[outliers] - uniform) / extra
     return total, grad
 
 
 def train(x, y, seed, epochs=12, batch=128, lr=1e-3, head_weights=(1.0, 1.0, 1.0, 0.05), log=print, params=None,
-          drop_content=0.25, drop_name=0.15, fresh_tails=0.8):
+          drop_content=0.25, drop_name=0.15, fresh_tails=0.8, outliers=None, outlier_share=0.1, outlier_weight=0.5):
+    """`outliers`: windows that belong to no class (B2b); a share of each batch is drawn from them.
+
+    The window may be longer than 512 (extra inputs after the content, B2b): the augmentations touch only
+    positions below `WINDOW`.
+    """
     rng = np.random.default_rng(seed)
-    params = params or initial_params(rng)
+    params = params or initial_params(rng, x.shape[1])
     moment = {k: np.zeros_like(v) for k, v in params.items()}
     velocity = {k: np.zeros_like(v) for k, v in params.items()}
     step = 0
@@ -65,8 +84,14 @@ def train(x, y, seed, epochs=12, batch=128, lr=1e-3, head_weights=(1.0, 1.0, 1.0
             idx = order[start:start + batch]
             xb = fresh_random_tails(x[idx], rng, fresh_tails)
             xb, yb = modality_dropout(xb, rng, drop_content, drop_name), y[idx]
+            flagged = None
+            if outliers is not None:
+                extra = outliers[rng.integers(0, len(outliers), max(1, int(len(idx) * outlier_share)))]
+                xb = np.concatenate([xb, extra])
+                yb = np.concatenate([yb, np.zeros((len(extra), yb.shape[1]), dtype=yb.dtype)])
+                flagged = np.arange(len(xb)) >= len(idx)
             feats, h1, h2, logits = forward(params, xb)
-            value, d_logits = loss_and_grad_logits(logits, yb, head_weights)
+            value, d_logits = loss_and_grad_logits(logits, yb, head_weights, flagged, outlier_weight)
             d_h2 = (d_logits @ params["W3"].T) * (h2 > 0)
             d_h1 = (d_h2 @ params["W2"].T) * (h1 > 0)
             d_feats = d_h1 @ params["W1"].T
@@ -97,10 +122,10 @@ def fresh_random_tails(xb, rng, probability):
     Fresh bytes every time keep it from doing that, and keep the headers it should learn from.
     """
     xb = xb.copy()
-    tail = np.sort(xb[:, HEADER_END:], axis=1)
+    tail = np.sort(xb[:, HEADER_END:WINDOW], axis=1)
     distinct = 1 + (np.diff(tail.astype(np.int16), axis=1) != 0).sum(axis=1)
     rows = np.flatnonzero((distinct > HIGH_ENTROPY) & (rng.random(len(xb)) < probability))
-    xb[rows, HEADER_END:] = rng.integers(0, 256, (len(rows), xb.shape[1] - HEADER_END), dtype=np.uint8)
+    xb[rows, HEADER_END:WINDOW] = rng.integers(0, 256, (len(rows), WINDOW - HEADER_END), dtype=np.uint8)
     return xb
 
 
@@ -110,7 +135,7 @@ def modality_dropout(xb, rng, drop_content, drop_name):
     other way round, so neither modality alone decides."""
     xb = xb.copy()
     roll = rng.random(len(xb))
-    xb[roll < drop_content, 64:] = 0
+    xb[roll < drop_content, 64:WINDOW] = 0
     xb[(roll >= drop_content) & (roll < drop_content + drop_name), :64] = 0
     return xb
 
@@ -158,7 +183,7 @@ def quantise(params, calibration, clip_pct=99.99):
     w2_q, shift2 = layer(params["W2"], a1, a2)
     w3 = params["W3"]
     w3_q = np.clip(np.rint(w3 * (127.0 / np.abs(w3).max())), -128, 127).astype(np.int64)
-    shape = mdl.Shape(WINDOW, EMBEDDING, HIDDEN1, HIDDEN2, labels.HEADS, shift1, shift2)
+    shape = mdl.Shape(calibration.shape[1], EMBEDDING, HIDDEN1, HIDDEN2, labels.HEADS, shift1, shift2)
     # file order is row-major with one row per output: the transpose of the float layout
     tensors = [e_q.reshape(-1), w1_q.T.reshape(-1), w2_q.T.reshape(-1), w3_q.T.reshape(-1)]
     return shape, [t.tolist() for t in tensors]

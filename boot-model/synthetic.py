@@ -50,7 +50,8 @@ def bmp(rng):
 def zip_file(rng):
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("notes.txt", text(rng, 2000))
+        # a fixed timestamp: the default is the current time, which would make every run's junk differ
+        archive.writestr(zipfile.ZipInfo("notes.txt", date_time=(2026, 1, 1, 0, 0, 0)), text(rng, 2000), zipfile.ZIP_DEFLATED)
     return buffer.getvalue()
 
 
@@ -120,20 +121,52 @@ def junk_assets(count, seed):
     return out
 
 
-def bls_entry(rng, family):
-    """Entry text in the format of the Boot Loader Specification, type 1."""
-    machine = "%032x" % rng.getrandbits(128)
-    version = f"{rng.randrange(4, 7)}.{rng.randrange(0, 20)}.{rng.randrange(0, 200)}"
+# Files in formats that none of the training or evaluation negatives use (B2b, outlier exposure): the kinds of file a
+# model that says "I do not know" should not be forced to class. The magic numbers are the published ones.
+OUTLIER_KINDS = {
+    "squashfs": (b"hsqs", ".sqfs"), "7z": (b"7z\xbc\xaf\x27\x1c", ".7z"), "rar": (b"Rar!\x1a\x07\x01\x00", ".rar"),
+    "sqlite": (b"SQLite format 3\x00", ".db"), "jpeg": (b"\xff\xd8\xff\xe0\x00\x10JFIF", ".jpg"),
+    "mp4": (b"\x00\x00\x00\x18ftypmp42", ".mp4"), "ogg": (b"OggS\x00\x02", ".ogg"),
+    "wav": (b"RIFF\x24\x08\x00\x00WAVEfmt ", ".wav"), "cab": (b"MSCF\x00\x00\x00\x00", ".cab"),
+    "hdf5": (b"\x89HDF\r\n\x1a\n", ".h5"), "class": (b"\xca\xfe\xba\xbe\x00\x00\x00\x34", ".class"),
+    "wasm": (b"\x00asm\x01\x00\x00\x00", ".wasm"), "pcap": (b"\xd4\xc3\xb2\xa1\x02\x00\x04\x00", ".pcap"),
+    "flac": (b"fLaC\x00\x00\x00\x22", ".flac"), "iso": (bytes(2048), ".iso"), "lzip": (b"LZIP\x01", ".lz"),
+}
+OUTLIER_WORDS = ("archive", "export", "sample", "media", "capture", "bundle", "snapshot", "dump", "track", "report")
+
+
+def outlier_files(count, seed):
+    """`[(path, bytes)]`: a magic number of a format outside every negative of the corpus, then random bytes or text."""
+    rng = random.Random(seed)
+    out = []
+    for _ in range(count):
+        magic, extension = OUTLIER_KINDS[rng.choice(sorted(OUTLIER_KINDS))]
+        body = random_bytes(rng) if rng.random() < 0.7 else text(rng, 3000)
+        folder = rng.choice(("", "\\media", "\\export", "\\EFI\\data"))
+        out.append((f"{folder}\\{rng.choice(OUTLIER_WORDS)}-{rng.randrange(1000)}{extension}", (magic + body)[:4096]))
+    return out
+
+
+def bls_entry(rng, family, linux, initrd=None, devicetree=None, version=None):
+    """Entry text in the format of the Boot Loader Specification, type 1.
+
+    `linux`, `initrd` and `devicetree` are the paths the entry names, with `/`, relative to the volume root: the
+    caller passes the paths of the files the disk really holds, so the text agrees with the layout.
+    """
+    version = version or f"{rng.randrange(4, 7)}.{rng.randrange(0, 20)}.{rng.randrange(0, 200)}"
     root = rng.choice((f"root=UUID={'%08x-%04x-%04x-%04x-%012x' % (rng.getrandbits(32), rng.getrandbits(16), rng.getrandbits(16), rng.getrandbits(16), rng.getrandbits(48))}",
                        "root=/dev/vda2", "root=LABEL=rootfs"))
     options = f"{root} ro {rng.choice(('quiet', 'console=ttyAMA0', 'earlycon', 'rhgb quiet'))}"
     title = rng.choice(("Fedora Linux", "openSUSE Leap", "Arch Linux", "Debian GNU/Linux", "Alpine Linux"))
-    lines = [f"title {title} ({version})", f"version {version}", f"machine-id {machine}",
-             f"linux /{machine}/{version}/linux", f"initrd /{machine}/{version}/initrd",
-             f"options {options}", "architecture aa64"]
+    lines = [f"title {title} ({version})", f"version {version}", f"linux {linux}"]
+    if initrd:
+        lines.append(f"initrd {initrd}")
+    if devicetree:
+        lines.append(f"devicetree {devicetree}")
+    lines += [f"options {options}", "architecture aa64"]
     if rng.random() < 0.3:
-        lines.insert(3, f"sort-key {family}")
-    return ("\n".join(lines) + "\n").encode(), machine, version
+        lines.insert(2, f"sort-key {family}")
+    return ("\n".join(lines) + "\n").encode()
 
 
 # First bytes of a partition (432 are visible to the model after the 16-byte type GUID).

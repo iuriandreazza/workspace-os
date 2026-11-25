@@ -68,8 +68,11 @@ TEST_RELEASES = {
 
 
 class Asset:
-    def __init__(self, system, release, name, content, family, protocol, role, split, source=""):
+    alias = None  # the name a layout writes for the file when it differs from `name` (a re-encoded initrd: `initrd.xz`)
+
+    def __init__(self, system, release, name, content, family, protocol, role, split, source="", size=None):
         self.system, self.release, self.name, self.content = system, release, name, content
+        self.size = len(content) if size is None else size  # of the whole file; `content` is only its first bytes
         self.family, self.protocol, self.role, self.split = family, protocol, role, split
         self.source = source
 
@@ -159,10 +162,11 @@ def _pin_assets(pins):
             else:
                 name = pin["url"].rsplit("/", 1)[1]
                 labels = classify(system, name)
-            yield Asset(system, release, name, data[:fetch.PREFIX_BYTES], *refine(labels, data), split, pin["url"])
+            yield Asset(system, release, name, data[:fetch.PREFIX_BYTES], *refine(labels, data), split, pin["url"],
+                        pin["size"])
         elif system == "openbsd":
             yield Asset(system, release, "BOOTAA64.EFI", data[:fetch.PREFIX_BYTES], *classify(system, "BOOTAA64.EFI"),
-                        split, pin["url"])
+                        split, pin["url"], len(data))
         else:
             yield from _archive_assets(pin, split, data)
 
@@ -179,7 +183,7 @@ def _archive_assets(pin, split, data):
                 labels = ("none", "none", "other")
             else:
                 labels = refine(classify(system, name), content)
-            yield Asset(system, release, name, content, *labels, split, f"{pin['url']}!{member.name}")
+            yield Asset(system, release, name, content, *labels, split, f"{pin['url']}!{member.name}", member.size)
 
 
 def pinned_assets():

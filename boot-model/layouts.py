@@ -17,9 +17,12 @@ is the disk's own: the entries of a disk are numbered in a random order, 0 to 14
 and every candidate that belongs to no entry is group 15. That number is not a
 function of the candidate, which is the finding of the group output (see the report).
 """
+import hashlib
 import random
 
+import catalogue
 import labels
+import synthetic
 import window
 
 NO_ENTRY = labels.GROUPS - 1
@@ -28,10 +31,11 @@ MAX_ENTRIES = NO_ENTRY
 
 class Candidate:
     __slots__ = ("window", "family", "protocol", "role", "group", "system", "release", "name", "entry", "disk",
-                 "split", "path")
+                 "split", "path", "text", "size", "file_id")
 
-    def __init__(self, window_bytes, asset_labels, group, system, release, name, entry, disk, split, path=""):
-        self.path = path
+    def __init__(self, window_bytes, asset_labels, group, system, release, name, entry, disk, split, path="", text=None,
+                 size=0, file_id=""):
+        self.path, self.text, self.size, self.file_id = path, text, size, file_id
         self.window = window_bytes
         self.family, self.protocol, self.role = asset_labels
         self.group, self.system, self.release, self.name = group, system, release, name
@@ -99,14 +103,33 @@ def maybe_dtb(rng, entry, pool, system, release, folder, odds=0.25):
         entry.add(f"{folder}\\{dtb.name}", dtb)
 
 
+def with_entry_text(rng, entry, system, stem):
+    """Adds the Boot Loader Specification text that names the files `entry` really holds.
+
+    The kernel, initrd and device tree lines carry the paths of the entry's own files, so the text and the layout
+    agree; the text sits in `\\loader\\entries`, away from the kernel, as on a real volume.
+    """
+    paths = {asset.role: path for path, asset in entry.files}
+    as_bls = lambda path: path.replace("\\", "/") if path else None
+    version = stem.split("-", 1)[-1]
+    text_ = synthetic.bls_entry(rng, system, as_bls(paths["kernel"]), as_bls(paths.get("initrd")),
+                                as_bls(paths.get("dtb")), version)
+    entry.add(f"\\loader\\entries\\{stem}.conf", _text_asset(system, entry.key[1], text_))
+
+
+def kernel_count(rng, odds=0.3):
+    """One kernel, or two versions side by side in one directory, as a system keeps the previous kernel."""
+    return 2 if rng.random() < odds else 1
+
+
 def alpine(rng, pool):
     release = pool.release(rng, "alpine")
     entries, extras = [], []
     flavours = [f for f in ("virt", "lts", "rpi") if pool.get("alpine", release, f"initramfs-{f}")]
+    style = rng.choice(("boot", "root", "short", "image"))  # one per disk: two flavours then share a directory
     for flavour in rng.sample(flavours, rng.choice((1, 1, 2)) if len(flavours) > 1 else 1):
         kernel = pool.get("alpine", release, f"vmlinuz-{flavour}")
         initrd = pool.get("alpine", release, f"initramfs-{flavour}")
-        style = rng.choice(("boot", "root", "short", "image"))
         folder, kname, iname = {
             "boot": ("\\boot", f"vmlinuz-{flavour}", f"initramfs-{flavour}"),
             "root": ("", f"vmlinuz-{flavour}", f"initramfs-{flavour}"),
@@ -134,16 +157,20 @@ def debian(rng, pool):
     if rng.random() < 0.4:
         base = "\\debian-installer\\arm64"
         entry = Entry(("debian", release, "installer"))
-        entry.add(f"{base}\\linux", kernel).add(f"{base}\\initrd.gz", initrd)
+        entry.add(f"{base}\\linux", kernel).add(f"{base}\\{initrd.alias or 'initrd.gz'}", initrd)
         entries.append(entry)
         if grub:
             entries.append(Entry(("debian", release, "grub-installer")).add(f"{base}\\grubaa64.efi", grub))
     else:
-        v = f"{rng.randrange(4, 7)}.{rng.randrange(0, 20)}.{rng.randrange(0, 40)}-{rng.randrange(1, 9)}-arm64"
-        entry = Entry(("debian", release, v))
-        entry.add(f"\\boot\\vmlinuz-{v}", kernel).add(f"\\boot\\initrd.img-{v}", initrd)
-        maybe_dtb(rng, entry, pool, "debian", release, f"\\usr\\lib\\linux-image-{v}", 0.2)
-        entries.append(entry)
+        with_text = rng.random() < 0.25
+        for _ in range(kernel_count(rng)):
+            v = f"{rng.randrange(4, 7)}.{rng.randrange(0, 20)}.{rng.randrange(0, 40)}-{rng.randrange(1, 9)}-arm64"
+            entry = Entry(("debian", release, v))
+            entry.add(f"\\boot\\vmlinuz-{v}", kernel).add(f"\\boot\\initrd.img-{v}", initrd)
+            maybe_dtb(rng, entry, pool, "debian", release, f"\\usr\\lib\\linux-image-{v}", 0.2)
+            if with_text:
+                with_entry_text(rng, entry, "debian", f"debian-{v}")
+            entries.append(entry)
         if grub:
             entries.append(Entry(("debian", release, "grub")).add("\\EFI\\debian\\grubaa64.efi", grub))
         if bootnet:
@@ -159,17 +186,20 @@ def el(rng, pool, system):
     release = pool.release(rng, system)
     kernel, initrd = pool.get(system, release, "vmlinuz"), pool.get(system, release, "initrd.img")
     tag = {"fedora": f"fc{release}", "alma": "el9", "rocky": "el9"}[system]
-    v = f"{rng.randrange(5, 7)}.{rng.randrange(0, 20)}.{rng.randrange(0, 40)}-{rng.randrange(100, 600)}.{tag}.aarch64"
     entries, extras = [], []
-    entry = Entry((system, release, v))
-    if rng.random() < 0.5:
-        entry.add(f"\\boot\\vmlinuz-{v}", kernel).add(f"\\boot\\initramfs-{v}.img", initrd)
-    else:
-        machine = "%032x" % rng.getrandbits(128)
-        entry.add(f"\\{machine}\\{v}\\linux", kernel).add(f"\\{machine}\\{v}\\initrd", initrd)
-        text_, _, _ = __import__("synthetic").bls_entry(rng, system)
-        entry.add(f"\\loader\\entries\\{machine}-{v}.conf", _text_asset(system, release, text_))
-    entries.append(entry)
+    machine_style = rng.random() >= 0.5
+    machine = "%032x" % rng.getrandbits(128)
+    with_text = machine_style or rng.random() < 0.4
+    for _ in range(kernel_count(rng)):
+        v = f"{rng.randrange(5, 7)}.{rng.randrange(0, 20)}.{rng.randrange(0, 40)}-{rng.randrange(100, 600)}.{tag}.aarch64"
+        entry = Entry((system, release, v))
+        if machine_style:
+            entry.add(f"\\{machine}\\{v}\\linux", kernel).add(f"\\{machine}\\{v}\\initrd", initrd)
+        else:
+            entry.add(f"\\boot\\vmlinuz-{v}", kernel).add(f"\\boot\\initramfs-{v}.img", initrd)
+        if with_text:
+            with_entry_text(rng, entry, system, f"{machine}-{v}" if machine_style else f"{system}-{v}")
+        entries.append(entry)
     distro = {"fedora": "fedora", "alma": "almalinux", "rocky": "rocky"}[system]
     boot, grub = pool.get(system, release, "BOOTAA64.EFI"), pool.get(system, release, "grubaa64.efi")
     if boot:
@@ -186,7 +216,6 @@ def el(rng, pool, system):
 
 
 def _text_asset(system, release, text_):
-    import catalogue
     return catalogue.Asset(system, release, "entry.conf", text_, system_family(system), "linux", "entry", "", "synthetic")
 
 
@@ -199,13 +228,18 @@ def opensuse(rng, pool):
     kernel, initrd = pool.get("opensuse", release, "linux"), pool.get("opensuse", release, "initrd")
     entries = []
     if rng.random() < 0.6:
-        v = f"{rng.randrange(5, 7)}.{rng.randrange(0, 12)}.0-{rng.randrange(100, 160)}.{rng.randrange(1, 50)}-default"
-        entry = Entry(("opensuse", release, v))
-        entry.add(f"\\boot\\vmlinuz-{v}", kernel).add(f"\\boot\\initrd-{v}", initrd)
+        with_text = rng.random() < 0.25
+        for _ in range(kernel_count(rng)):
+            v = f"{rng.randrange(5, 7)}.{rng.randrange(0, 12)}.0-{rng.randrange(100, 160)}.{rng.randrange(1, 50)}-default"
+            entry = Entry(("opensuse", release, v))
+            entry.add(f"\\boot\\vmlinuz-{v}", kernel).add(f"\\boot\\initrd-{v}", initrd)
+            if with_text:
+                with_entry_text(rng, entry, "opensuse", f"opensuse-{v}")
+            entries.append(entry)
     else:
         entry = Entry(("opensuse", release, "image"))
         entry.add("\\boot\\Image", kernel).add("\\boot\\initrd", initrd)
-    entries.append(entry)
+        entries.append(entry)
     return entries, []
 
 
@@ -246,18 +280,28 @@ def junk_paths(rng, name):
                        f"\\docs\\{name}", f"\\backup\\old\\{name}", f"\\boot\\{name}"))
 
 
+def junk_size(kind, name, data):
+    """A file size for a generated file, independent of its class: log-uniform from 512 B to 256 MiB.
+
+    The generated junk is a few KiB long, while the real kernels and initrds it is told apart from are megabytes, so
+    a model that reads the size would "learn" the generator, not the task. Real negatives (ISOs, videos, firmware
+    images) have every size; this gives the generated ones the same spread, from a hash of the file so it is stable.
+    """
+    unit = int.from_bytes(hashlib.sha256(kind.encode() + b"/" + name.encode() + b"/" + data).digest()[:4], "big") / 2 ** 32
+    return int(2 ** (9 + 19 * unit))
+
+
 class Corpus:
     """The pieces disks are built from, for one split."""
 
     def __init__(self, assets, junk):
-        import catalogue
         self.qemu = [a for a in assets if a.system == "qemu"]
         self.pool = Pool([a for a in assets if a.role != "other" or a.system not in ("alpine-rootfs",)])
         self.pool_systems = [s for s in self.pool.systems() if s in BUILDERS]
         self.rootfs = [a for a in assets if a.system == "alpine-rootfs"]
         self.others = [a for a in assets if a.system == "debian" and a.role == "other" and a.name.endswith(".mod")]
-        self.junk = [catalogue.Asset("junk", kind, name, data, "none", "none", "other", "", "synthetic")
-                     for kind, name, data in junk]
+        self.junk = [catalogue.Asset("junk", kind, name, data, "none", "none", "other", "", "synthetic",
+                                     junk_size(kind, name, data)) for kind, name, data in junk]
 
 
 def make_disk(rng, corpus, disk_id, split, mode="normal"):
@@ -276,6 +320,8 @@ def make_disk(rng, corpus, disk_id, split, mode="normal"):
         extras.append((f"\\boot\\dtb\\{asset.name}", asset))
     if mode == "renamed":
         entries = [_renamed(rng, e) for e in entries]
+    elif mode == "mixed":
+        entries = [_mixed_names(rng, e) for e in entries]
     entries, extras = without_repeated_paths(entries, extras)
     entries = entries[:MAX_ENTRIES]
     order = list(range(len(entries)))
@@ -286,14 +332,16 @@ def make_disk(rng, corpus, disk_id, split, mode="normal"):
             candidates.append(_candidate(path, asset, slot, entry.key, disk_id, split))
     for path, asset in extras:
         candidates.append(_candidate(path, asset, NO_ENTRY, None, disk_id, split))
-    if mode == "decoy":
+    if mode in ("decoy", "mixed"):
         taken = {c.path.lower() for c in candidates}
-        candidates += [c for c in decoys(rng, corpus, disk_id, split) if c.path.lower() not in taken]
-    for name, guid, start in rng.sample(__import__("synthetic").PARTITIONS, rng.randrange(1, 4)):
+        paths = DECOY_PATHS if mode == "decoy" else MIXED_DECOY_PATHS
+        candidates += [c for c in decoys(rng, corpus, disk_id, split, paths) if c.path.lower() not in taken]
+    for name, guid, start in rng.sample(synthetic.PARTITIONS, rng.randrange(1, 4)):
         label = rng.choice(name)
         content = start(rng)
-        candidates.append(Candidate(window.partition_window(label, guid, content), ("none", "none", "other"),
-                                    NO_ENTRY, "partition", "", label, None, disk_id, split))
+        part = window.partition_window(label, guid, content)
+        candidates.append(Candidate(part, ("none", "none", "other"), NO_ENTRY, "partition", "", label, None, disk_id,
+                                    split, file_id=hashlib.sha1(part).hexdigest()[:16]))
     rng.shuffle(candidates)
     return candidates
 
@@ -314,6 +362,22 @@ def without_repeated_paths(entries, extras):
     return kept, extras_kept
 
 
+def _mixed_names(rng, entry):
+    """Real kernels, initrds and loaders under names unrelated to what they are, for half of the files (B2b, option C).
+
+    The words and extensions differ from `_renamed` (hex names with `.bin`, `.dat`, `.img`), so the renamed
+    evaluation sets stay disjoint from what training saw.
+    """
+    mixed = Entry(entry.key)
+    for path, asset in entry.files:
+        if rng.random() < 0.5:
+            words = "-".join(rng.sample(synthetic.WORDS, 2))
+            folder = rng.choice(("", "\\boot", "\\data"))
+            path = f"{folder}\\{words}{rng.choice(('.rom', '.fw', '.pak', '.sys', ''))}"
+        mixed.add(path, asset)
+    return mixed
+
+
 def _renamed(rng, entry):
     renamed = Entry(entry.key)
     for path, asset in entry.files:
@@ -321,11 +385,18 @@ def _renamed(rng, entry):
     return renamed
 
 
-def decoys(rng, corpus, disk_id, split):
+DECOY_PATHS = ("\\vmlinuz", "\\boot\\vmlinuz-6.1.0-18-arm64", "\\initrd.img", "\\KERNEL.ELF",
+               "\\EFI\\BOOT\\BOOTAA64.EFI", "\\boot\\Image", "\\bsd", "\\grubaa64.efi")
+# Names for the training mixture (B2b, option C). None is in `DECOY_PATHS`: the evaluation decoys stay evaluation-only.
+MIXED_DECOY_PATHS = ("\\vmlinux", "\\boot\\vmlinuz-5.15.0-91-generic", "\\kernel8.img", "\\zImage", "\\Image.gz",
+                     "\\boot\\initramfs-linux.img", "\\bsd.mp", "\\boot\\grub\\grubaa64.efi",
+                     "\\EFI\\fedora\\shimaa64.efi", "\\boot\\initrd-lts")
+
+
+def decoys(rng, corpus, disk_id, split, paths=DECOY_PATHS):
     """Files that are not kernels but carry the names of one, the case a name-reading model gets wrong."""
     out = []
-    for path in rng.sample(("\\vmlinuz", "\\boot\\vmlinuz-6.1.0-18-arm64", "\\initrd.img", "\\KERNEL.ELF",
-                            "\\EFI\\BOOT\\BOOTAA64.EFI", "\\boot\\Image", "\\bsd", "\\grubaa64.efi"), rng.randrange(1, 4)):
+    for path in rng.sample(paths, rng.randrange(1, 4)):
         asset = rng.choice(corpus.junk + corpus.rootfs)
         out.append(_candidate(path, asset, NO_ENTRY, None, disk_id, split))
     return out
@@ -333,8 +404,10 @@ def decoys(rng, corpus, disk_id, split):
 
 def _candidate(path, asset, slot, entry_key, disk_id, split):
     name = path.rsplit("\\", 1)[1]
+    text = asset.content  # the same bytes object as the asset's: the whole file as far as it is held (4 KiB for a download)
+    file_id = hashlib.sha1(f"{asset.system}/{asset.release}/".encode() + asset.content).hexdigest()[:16]
     return Candidate(window.file_window(path, asset.content), asset.labels(), slot, asset.system, asset.release,
-                     name, entry_key, disk_id, split, path)
+                     name, entry_key, disk_id, split, path, text, asset.size, file_id)
 
 
 def generate(assets, junk, split, count, seed, mode="normal", systems=None):
