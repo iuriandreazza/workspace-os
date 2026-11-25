@@ -4,8 +4,8 @@
     uv run --no-project --with numpy==2.5.5 --with scikit-learn==1.9.1 python boot-model/b2b_report.py step1
     ... folds [--configs base A] ; calibration ; ablation
 
-A change counts as a gain only if the seeds' ranges do not overlap in the favourable direction (`verdict`): fixed
-before any run was read, with three seeds a configuration's min and max are its spread.
+A change counts as a gain only if the seeds' ranges do not overlap in the favourable direction and the means differ by
+one point (`verdict`): the first part was fixed before any run was read, the one-point floor after the first tables.
 """
 import json
 import statistics
