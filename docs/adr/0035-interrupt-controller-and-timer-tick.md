@@ -97,7 +97,7 @@ left it, since turning it off under a core that uses the system registers is not
 something the architecture promises), clears every enable, pending and active bit
 (and a GICv2's pending SGIs through `GICD_CPENDSGIR`), writes the CPU interface
 control register whole (which clears an EOI mode firmware may have set), sets the
-priority mask and binary point, and drains what the interface already signalled.
+priority mask and binary point, and (for a GICv2) drains what the interface already signalled; a GICv3's running priority is not reset, so an interrupt firmware left acknowledged and not ended can block the tick, which ends in the "no tick" refusal.
 A GICv3's redistributor is found by walking its region for this core's affinity
 (`MPIDR_EL1`; the walk and the packing are the `giclayout` crate, tested on the
 host with fake regions, because no QEMU boot has its core anywhere but in the
@@ -105,7 +105,7 @@ first slot; a slot whose ID registers do not say GICv3 is never matched), woken 
 SGIs and PPIs are made Group 1 and cleared; the distributor gets affinity routing
 and Group 1, in the bit that the controller's security state says (`DS`).
 
-An acknowledge that returns a special ID (1020 to 1023) says nothing is pending
+An acknowledge that returns a special ID (1020 to 1023, and the reserved IDs up to 8191) says nothing is pending
 for this world: it is counted as spurious and nothing is ended. Any other ID is
 ended with the whole value the register returned (a GICv2 SGI carries its
 sender).

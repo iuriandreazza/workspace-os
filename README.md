@@ -99,7 +99,7 @@ passing.
 - [ADR 0017: MPL-2.0 dependencies in a GPL-2.0-only system](docs/adr/0017-mpl2-dependencies.md)
 - [ADR 0029: Kernel heap: a first-fit free list in its own window](docs/adr/0029-kernel-heap-allocator.md)
 - [ADR 0033: A linear map, virtual pointers, no lower half, a 48-bit regime and reclaimed boot memory](docs/adr/0033-linear-map-and-virtual-pointers.md)
-- [ADR 0035: Interrupts: a GICv2 read from the device tree, the virtual timer's tick, and an EL3 stand-in for firmware](docs/adr/0035-interrupt-controller-and-timer-tick.md) (proposed)
+- [ADR 0035: Interrupts: GICv2 and GICv3 read from the device tree, the virtual timer's tick, and an EL3 stand-in for firmware](docs/adr/0035-interrupt-controller-and-timer-tick.md) (proposed)
 
 ## Licence
 

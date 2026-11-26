@@ -64,7 +64,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownFrequency => {
-                f.write_str("the counter frequency register is zero and the device tree gives none")
+                f.write_str("the counter frequency register is zero and the device tree gives none that can be used")
             }
             Self::Monitor(answer) => write!(
                 f,
