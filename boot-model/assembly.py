@@ -1,6 +1,6 @@
 """Rules that attach the companions of a kernel from a disk's labelled files (B2b, ADR 0034).
 
-ADR 0034 (`proposed`) has the model say what each file *is* and code decide which files go together. The
+ADR 0034 (`accepted`) has the model say what each file *is* and code decide which files go together. The
 rules here are the candidates for that code, measured on the host so the numbers exist before B3 builds one:
 
 - `same_directory`: a companion belongs to the kernel in its own directory;
