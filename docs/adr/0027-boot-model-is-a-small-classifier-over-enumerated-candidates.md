@@ -472,3 +472,5 @@ that supersedes this one would swap the producer.
 - The cause of the bimodal fp32 time on TCG is unknown.
 - The weights' licensing and the integrity of the weights are open (section 6
   and B4).
+- ADR 0034 amends this: the group output (section 3) is not used; entries are assembled by
+  code from the model's labels (B3).

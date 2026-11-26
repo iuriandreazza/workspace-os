@@ -80,6 +80,9 @@ based scanner runs beside it to overrule it.
 - Accuracy has to be measured on that corpus before the model is trusted,
   and the measurement belongs in the gate.
 
+- ADR 0034 reads the sentence about a rule-based scanner as being about detection: pairing
+  files the model has already labelled is assembly, not a second detector.
+
 ## Open questions
 
 - Language model or purpose-trained classifier, and its size. (Proposed in
