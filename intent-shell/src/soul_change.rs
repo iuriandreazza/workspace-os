@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::action::quoted;
+use crate::action::printable;
 use crate::ports::{SoulStore, User};
 use crate::soul::{MAX_BYTES, Soul};
 
@@ -297,6 +297,50 @@ pub fn diff(before: &str, after: &str) -> Vec<DiffLine> {
     lines
 }
 
+/// Untrusted text for a line of the panel or of the listing: escaped, with the
+/// frame characters escaped too, and with every character that may take more
+/// than one terminal cell escaped (anything outside ASCII and Latin-1 to Latin
+/// Extended-A), so a line is as wide as it has characters and a terminal wraps
+/// it where the code expects, never inside a piece of untrusted text.
+pub fn line_safe(text: &str) -> String {
+    safe_units(text).concat()
+}
+
+/// `line_safe` as the pieces it is made of, each one character or one escape,
+/// so a line can be cut between pieces and never inside an escape.
+fn safe_units(text: &str) -> Vec<String> {
+    printable(text, false)
+        .chars()
+        .map(|c| {
+            let narrow = c.is_ascii() || ('\u{a0}'..='\u{24f}').contains(&c);
+            if narrow && !matches!(c, '║' | '╔' | '╚' | '═' | '↳') {
+                c.to_string()
+            } else {
+                format!("\\u{{{:04x}}}", c as u32)
+            }
+        })
+        .collect()
+}
+
+/// `text` made safe and cut into pieces of at most `width` characters, never
+/// inside an escape. An escape longer than `width` is a piece of its own.
+pub fn line_pieces(text: &str, width: usize) -> Vec<String> {
+    let mut pieces = vec![String::new()];
+    for unit in safe_units(text) {
+        let current = pieces.last_mut().expect("there is always a piece");
+        if !current.is_empty() && current.chars().count() + unit.chars().count() > width {
+            pieces.push(unit);
+        } else {
+            current.push_str(&unit);
+        }
+    }
+    pieces
+}
+
+/// The most of a rationale the listing shows: a line of the listing stays
+/// shorter than a terminal, so a wrapped piece cannot pass for an entry.
+const LISTED_REASON: usize = 40;
+
 /// The history as the person reads it, oldest first.
 pub fn history_text(entries: &[HistoryEntry]) -> String {
     if entries.is_empty() {
@@ -308,15 +352,19 @@ pub fn history_text(entries: &[HistoryEntry]) -> String {
             let what = match (entry.kind, entry.reverts, &entry.rationale) {
                 (ChangeKind::Undo, Some(reverted), _) => format!("reverts change {reverted}"),
                 (ChangeKind::Undo, None, _) => "reverts an unknown change".to_owned(),
-                (ChangeKind::Change, _, Some(reason)) => format!("reason {}", quoted(reason)),
+                (ChangeKind::Change, _, Some(reason)) => {
+                    let pieces = line_pieces(reason, LISTED_REASON);
+                    let more = if pieces.len() > 1 { "…" } else { "" };
+                    format!("reason \"{}{more}\"", pieces[0])
+                }
                 (ChangeKind::Change, _, None) => "no reason given".to_owned(),
             };
             format!(
-                "{:>4}  {:<6} {}  by {}  {}",
+                "{:>4}  {:<6} {}  by \"{}\"  {}",
                 entry.seq,
                 entry.kind.word(),
                 utc(entry.at),
-                quoted(&entry.by),
+                line_safe(&entry.by),
                 what
             )
         })
@@ -468,6 +516,27 @@ mod tests {
     }
 
     #[test]
+    fn a_line_is_cut_between_pieces_and_never_inside_an_escape() {
+        let text = format!("ab{}cd", "\u{ff21}".repeat(4));
+        let pieces = line_pieces(&text, 12);
+        assert_eq!(pieces.concat(), line_safe(&text));
+        assert!(pieces.iter().all(|p| p.chars().count() <= 12), "{pieces:?}");
+        for piece in &pieces {
+            assert_eq!(
+                piece.matches("\\u{").count(),
+                piece.matches('}').count(),
+                "{piece}"
+            );
+        }
+        assert_eq!(line_pieces("", 12), [""]);
+        assert_eq!(
+            line_pieces("\u{ff21}", 3),
+            ["\\u{ff21}"],
+            "an escape wider than the line is a piece of its own"
+        );
+    }
+
+    #[test]
     fn only_an_administrator_can_make_an_approval() {
         let user = |administrator| User {
             name: "ana".into(),
@@ -486,7 +555,7 @@ mod tests {
         undo.at = 1_795_703_400;
         let text = history_text(&[change, undo]);
         assert!(text.contains("2026-11-26 14:30 UTC"), "{text}");
-        assert!(text.contains(r#"reason "shorter\nanswers""#), "{text}");
+        assert!(text.contains(r#"reason "shorter\u000aanswers""#), "{text}");
         assert!(text.contains("reverts change 1"), "{text}");
         assert!(text.ends_with("2 entries, oldest first."), "{text}");
         assert_eq!(

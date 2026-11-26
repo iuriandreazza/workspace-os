@@ -219,7 +219,7 @@ fn settle(dir: &Path, target: &Path, current: &str) -> Result<(), ApplyError> {
     {
         for item in listing.flatten() {
             let name = item.file_name().to_string_lossy().into_owned();
-            if name.starts_with(".soul-change-") && name.ends_with(".tmp") {
+            if is_temporary_of(&name, target) {
                 let _ = fs::remove_file(item.path());
             }
         }
@@ -245,6 +245,32 @@ fn settle(dir: &Path, target: &Path, current: &str) -> Result<(), ApplyError> {
     }
     sync_directory(dir);
     Ok(())
+}
+
+/// Named after the SOUL it belongs to, so settling one SOUL never deletes the
+/// temporary file of another SOUL in the same directory.
+fn temporary_name(target: &Path, nanos: u32) -> String {
+    format!(
+        ".soul-change.{}.{}.{nanos}.tmp",
+        target.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    )
+}
+
+/// Whether `name` is a temporary file of `target`: its prefix, then two numbers.
+fn is_temporary_of(name: &str, target: &Path) -> bool {
+    let prefix = format!(
+        ".soul-change.{}.",
+        target.file_name().unwrap_or_default().to_string_lossy()
+    );
+    name.strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .and_then(|numbers| numbers.split_once('.'))
+        .is_some_and(|(pid, nanos)| {
+            [pid, nanos]
+                .iter()
+                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
 }
 
 fn unix_seconds() -> u64 {
@@ -363,8 +389,7 @@ fn swap(target: &Path, text: &str) -> std::io::Result<()> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
-    let temporary =
-        target.with_file_name(format!(".soul-change-{}-{nanos}.tmp", std::process::id()));
+    let temporary = target.with_file_name(temporary_name(target, nanos));
     let written =
         write_synced(&temporary, text.as_bytes()).and_then(|()| fs::rename(&temporary, target));
     if written.is_err() {

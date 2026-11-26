@@ -106,8 +106,10 @@ computed. Rules:
   file (comments) shows up as removed lines.
 - Every line passes the same escaping as other model text (`printable`), and
   the frame characters (`║ ╔ ╚ ═ ↳`) in it are escaped too. Untrusted text is
-  cut into pieces of at most 64 characters, each behind a prefix the code
-  draws (`↳` marks a continuation), so a terminal never wraps it and a wrapped
+  cut into pieces of at most 64 characters, never inside an escape, each
+  behind a prefix the code draws (`↳` marks a continuation). A character that
+  may take more than one terminal cell (anything outside ASCII and Latin-1 to
+  Latin Extended-A) is escaped, so a piece is as wide as it has characters, so a terminal never wraps it and a wrapped
   piece never starts a line that looks like the panel's. A line starting with
   `+` or `-` inside the file is shown after its own prefix. The panel ends
   with the line the code draws. When the two files differ only in line endings
@@ -177,7 +179,7 @@ nothing to that and decides:
 | Crash safety | The entry is first written complete and synced as `<seq>.pending`, then the SOUL is swapped, then the entry is renamed to `<seq>.json`. A history file therefore only ever describes a change that happened. A leftover `.pending` is settled by the next operation under the lock: if the SOUL equals its `after` it is committed (the process died after the swap); otherwise it is deleted (it never took effect, and the decision log has the proposal) |
 | Undo | Reverts the most recent change **not already reverted**: walk the entries in order, a change pushes, an undo pops the `seq` it names. Two undos go back two changes. An undo entry itself cannot be undone, so there is no redo; to get a version back, propose it again. Undo writes the entry's `before` text verbatim as a new entry of kind `undo`, after checking that it still parses as a SOUL (a tampered history cannot write arbitrary text) |
 | Refusals | No entries: "there is no change to undo". The SOUL on disk is not the `after` of the entry to revert (it was changed outside the history): refused, with both versions named. Entries unreadable, a `seq` missing or repeated, an undo that names the wrong entry: "the history is damaged", names the file, changes nothing. A missing directory is an empty history, not damage |
-| Listing | `soul.history` skips `.lock` and prints every readable entry up to the first problem (seq, kind, who, when, rationale as a quoted line), then a WARNING line that says what is wrong. Listing and undo first settle a leftover `.pending` when no writer holds the lock, so a change whose process died after the swap can be seen and undone at once |
+| Listing | `soul.history` skips `.lock` and prints every readable entry up to the first problem (seq, kind, who, when, rationale as a quoted line), then a WARNING line that says what is wrong. A rationale is shown at most 40 characters long, escaped as in the panel, so a wrapped piece of a line cannot pass for an entry. Listing and undo first settle a leftover `.pending` when no writer holds the lock, so a change whose process died after the swap can be seen and undone at once |
 
 ### 7. The decision log
 

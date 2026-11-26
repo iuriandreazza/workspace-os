@@ -18,7 +18,7 @@ use crate::label::Labels;
 use crate::plan::{Origin, StepId};
 use crate::ports::{ChoiceLine, EntryKind, TREE_DEPTH, TreeEntry};
 use crate::resolve::Ambiguity;
-use crate::soul_change::{ChangeKind, Mark, Prepared};
+use crate::soul_change::{ChangeKind, Mark, Prepared, line_pieces};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -342,27 +342,10 @@ const PANEL_CHUNK: usize = 64;
 /// too so no text can draw a line of the frame, and cut into pieces that each
 /// start with a prefix the code draws.
 fn framed(first: &str, more: &str, text: &str) -> Vec<String> {
-    let safe: String = printable(text, false)
-        .chars()
-        .map(|c| match c {
-            '║' | '╔' | '╚' | '═' | '↳' => format!("\\u{{{:04x}}}", c as u32),
-            other => other.to_string(),
-        })
-        .collect();
-    let chars: Vec<char> = safe.chars().collect();
-    if chars.is_empty() {
-        return vec![first.to_owned()];
-    }
-    chars
-        .chunks(PANEL_CHUNK)
+    line_pieces(text, PANEL_CHUNK)
+        .into_iter()
         .enumerate()
-        .map(|(i, piece)| {
-            format!(
-                "{}{}",
-                if i == 0 { first } else { more },
-                piece.iter().collect::<String>()
-            )
-        })
+        .map(|(i, piece)| format!("{}{piece}", if i == 0 { first } else { more }))
         .collect()
 }
 

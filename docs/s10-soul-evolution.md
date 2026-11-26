@@ -38,7 +38,7 @@ soul undo_change
 |---|---|---|
 | Two actions | `action.rs`, `plan.rs`, `command.rs`, schema | `soul.undo_change` and `soul.history`, both without arguments. `soul.propose_change` and `soul.undo_change` are root `always`; `soul.history` only reads. Schema version stays 3 |
 | What is approved | `soul_change.rs` | The proposal is rewritten by the SOUL parser (`canonical`), checked by the file rules (2048 bytes, grammar), refused if equal to the file in place; the diff is every line of both files, each marked; `undo_target` picks the latest change no undo reverted |
-| The panel | `screen::soul_panel` | The whole diff behind marks the code draws, the model's reason quoted and labelled, what the change does to the approver's own personality, and a footer the code draws. Escaped line by line, frame characters escaped, untrusted text cut in 64-character pieces behind prefixes the code draws |
+| The panel | `screen::soul_panel` | The whole diff behind marks the code draws, the model's reason quoted and labelled, what the change does to the approver's own personality, and a footer the code draws. Escaped line by line, frame characters and characters that may be wide escaped, untrusted text cut in 64-character pieces behind prefixes the code draws |
 | The write | `soul_files.rs` | `flock` on `soul.history/.lock`; history entry written complete as `NNNNNNNN.pending`, the SOUL swapped by `rename`, the entry committed as `NNNNNNNN.json`; a leftover is settled by the next write; the base is checked again under the lock |
 | Approval | `Approval::from_root` | A value only an administrator's confirmation makes; the store cannot write without one |
 | The session | `Shell::change_soul` | Prepare, show, ask, write, and one `soul_change` log event for every end |

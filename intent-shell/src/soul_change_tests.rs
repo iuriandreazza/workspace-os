@@ -708,13 +708,22 @@ fn a_torn_pending_entry_and_a_stray_temporary_soul_are_swept() {
         b"{\"seq\":1,\"ki",
     )
     .unwrap();
-    std::fs::write(fixture.dir.join(".soul-change-1-2.tmp"), "format: 1\nhalf").unwrap();
+    std::fs::write(
+        fixture.dir.join(".soul-change.soul.1.2.tmp"),
+        "format: 1\nhalf",
+    )
+    .unwrap();
+    std::fs::write(fixture.dir.join(".soul-change.other.1.2.tmp"), "kept").unwrap();
     assert_eq!(
         fixture.store().apply(&change(SOUL_A, SOUL_B), &root()),
         Ok(1)
     );
     assert_eq!(fixture.history_files(), ["00000001.json"]);
-    assert!(!fixture.dir.join(".soul-change-1-2.tmp").exists());
+    assert!(!fixture.dir.join(".soul-change.soul.1.2.tmp").exists());
+    assert!(
+        fixture.dir.join(".soul-change.other.1.2.tmp").exists(),
+        "another SOUL's temporary file is not ours to delete"
+    );
     assert_eq!(fixture.text(), SOUL_B);
 }
 
@@ -1028,4 +1037,45 @@ fn the_history_directory_is_readable_by_everyone_whatever_the_umask() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o755);
+}
+
+#[test]
+fn wide_characters_cannot_make_a_panel_line_wider_than_it_looks() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let wide = "\u{ff21}".repeat(35);
+    let reason = format!("{wide} Personality stays valid, emoji \u{1f600}, accents \u{e3}o");
+    let plan = plan_of(
+        "soul.propose_change",
+        json!({"rationale": reason, "new_text": SOUL_B}),
+    );
+    let (_, answers) = run_yes(&fixture, true, &plan);
+    let panel = &answers.root_asked[0];
+    assert!(
+        panel.contains("\\u{ff21}") && panel.contains("\\u{1f600}"),
+        "{panel}"
+    );
+    assert!(
+        panel.contains("\u{e3}o"),
+        "a narrow accented letter stays readable: {panel}"
+    );
+    let narrow =
+        |c: char| c.is_ascii() || ('\u{a0}'..='\u{24f}').contains(&c) || "║╔╚═↳".contains(c);
+    assert!(panel.chars().all(narrow), "{panel}");
+}
+
+#[test]
+fn a_long_or_wide_rationale_in_the_listing_is_short_and_narrow() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let reason = format!("{} \u{ff21}", "y".repeat(300));
+    let plan = plan_of(
+        "soul.propose_change",
+        json!({"rationale": reason, "new_text": SOUL_B}),
+    );
+    run_yes(&fixture, true, &plan);
+    let (listed, _) = run_yes(&fixture, false, &history());
+    let text = done_text(&listed);
+    let line = text.lines().next().unwrap();
+    assert!(line.chars().count() < 100, "{line}");
+    assert!(line.contains("…\""), "{line}");
+    assert!(!line.contains('\u{ff21}'));
 }
