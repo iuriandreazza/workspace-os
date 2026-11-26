@@ -15,10 +15,15 @@ use std::path::{Path, PathBuf};
 
 use crate::ports::{ApplyError, SoulStore};
 use crate::soul::{self, Personality, Read as FileRead, Soul};
-use crate::soul_change::{Approval, Change, ChangeKind, HistoryEntry, undo_target, validate};
+use crate::soul_change::{
+    Approval, Change, ChangeKind, HistoryEntry, shortened, undo_target, validate,
+};
 
 /// An entry holds two SOULs and short strings: this only stops a runaway file.
 const MAX_ENTRY_BYTES: u64 = 64 * 1024;
+
+/// The most of something found in a history file that a message repeats.
+const SHOWN_REASON: usize = 60;
 
 pub const NO_SOUL: &str = "there is no SOUL to change; a user with root authority builds one with: intent-shell --administrator --setup-soul";
 
@@ -78,13 +83,26 @@ fn numbered(name: &str, extension: &str) -> Option<u32> {
 
 fn read_entry(path: &Path) -> Result<HistoryEntry, String> {
     let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(MAX_ENTRY_BYTES + 1).read_to_end(&mut bytes))
+    // Non-blocking and regular files only: a named pipe planted here must not
+    // hold the lock for ever (the same care as `soul::read`).
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .and_then(|file| {
+            if file.metadata()?.is_file() {
+                file.take(MAX_ENTRY_BYTES + 1).read_to_end(&mut bytes)
+            } else {
+                Err(std::io::Error::other("it is not a regular file"))
+            }
+        })
         .map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_ENTRY_BYTES {
         return Err("it is too large".to_owned());
     }
-    let entry: HistoryEntry = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    // The parser's message quotes the text it found: short, so it cannot wrap into another line.
+    let entry: HistoryEntry =
+        serde_json::from_slice(&bytes).map_err(|e| shortened(&e.to_string(), SHOWN_REASON))?;
     if entry.before.len() > soul::MAX_BYTES || entry.after.len() > soul::MAX_BYTES {
         return Err("it holds a SOUL larger than a SOUL can be".to_owned());
     }
@@ -118,7 +136,7 @@ fn read_history_partial(dir: &Path) -> Result<(Vec<HistoryEntry>, Option<String>
                     problem.get_or_insert_with(|| {
                         format!(
                             "the history is damaged: {} is not an entry name",
-                            soul::shown_path(Path::new(&name))
+                            shortened(&soul::shown_path(Path::new(&name)), SHOWN_REASON)
                         )
                     });
                 }

@@ -343,7 +343,13 @@ const SHOWN_NAME: usize = 32;
 /// A user name, which comes from the environment and is not ours to trust, made
 /// safe for a line and short: this is what the panel shows and the history keeps.
 pub fn display_name(name: &str) -> String {
-    let pieces = line_pieces(name, SHOWN_NAME);
+    shortened(name, SHOWN_NAME)
+}
+
+/// Untrusted text for one line, escaped and cut at `width` characters with an
+/// ellipsis, so it never wraps into what looks like another line.
+pub fn shortened(text: &str, width: usize) -> String {
+    let pieces = line_pieces(text, width);
     let more = if pieces.len() > 1 { "…" } else { "" };
     format!("{}{more}", pieces[0])
 }
@@ -375,7 +381,7 @@ pub fn history_text(entries: &[HistoryEntry]) -> String {
                 entry.seq,
                 entry.kind.word(),
                 utc(entry.at),
-                line_safe(&entry.by),
+                display_name(&entry.by),
                 what
             )
         })

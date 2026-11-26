@@ -1138,3 +1138,70 @@ fn a_write_that_would_make_an_entry_the_history_refuses_changes_nothing() {
     assert_eq!(fixture.text(), SOUL_A);
     assert!(fixture.history_files().is_empty());
 }
+
+#[test]
+fn a_history_file_cannot_forge_listing_lines_by_its_own_length() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    run_yes(&fixture, true, &propose(SOUL_B));
+    let path = fixture.history().join("00000001.json");
+    let mut entry: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    entry["by"] = json!(format!(
+        "{}\n   5  change 2026-11-26 14:30 UTC  by \"root\"  reason \"x\"",
+        "b".repeat(300)
+    ));
+    std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+    let (listed, _) = run_yes(&fixture, false, &history());
+    let first = done_text(&listed).lines().next().unwrap().to_owned();
+    assert!(first.chars().count() < 125, "{first}");
+    // A field the parser does not know: its name is quoted in the message.
+    entry["by"] = json!("ana");
+    entry[format!("{}\ns2 Delete \"x\" -> done", "f".repeat(300))] = json!(1);
+    std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+    let (listed, _) = run_yes(&fixture, false, &history());
+    let warning = done_text(&listed)
+        .lines()
+        .find(|l| l.starts_with("WARNING"))
+        .unwrap()
+        .to_owned();
+    assert!(warning.chars().count() < 160, "{warning}");
+    assert!(!warning.contains("Delete"), "{warning}");
+}
+
+#[test]
+fn a_named_pipe_in_the_history_directory_cannot_hang_the_shell() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    run_yes(&fixture, true, &propose(SOUL_B));
+    for name in ["00000001.json", "00000002.pending"] {
+        let _ = std::fs::remove_file(fixture.history().join(name));
+        // Not a child process: a forked child holds the locks other tests of this
+        // process hold, until it execs, and their writes would be refused as "locked".
+        let path = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
+            fixture.history().join(name).as_os_str(),
+        ))
+        .unwrap();
+        // SAFETY: `path` is a NUL-terminated string that lives through the call.
+        let made = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
+        assert_eq!(made, 0);
+        let store = fixture.store();
+        let (done, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let listed = store.history_listing();
+            let applied = store.apply(&change(SOUL_B, SOUL_C), &root());
+            let _ = done.send((listed, applied));
+        });
+        let (listed, applied) = received
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the shell hung on a named pipe");
+        assert!(listed.is_ok());
+        if name.ends_with(".json") {
+            assert!(applied.is_err(), "{name}: the history cannot be trusted");
+        } else {
+            assert!(
+                applied.is_ok(),
+                "{name}: a pipe that is no entry is swept: {applied:?}"
+            );
+            assert!(!fixture.history().join(name).exists());
+        }
+        let _ = std::fs::remove_file(fixture.history().join(name));
+    }
+}

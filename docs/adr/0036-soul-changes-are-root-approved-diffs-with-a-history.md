@@ -210,6 +210,11 @@ ellipsis); the decision log keeps it whole, as JSON. A write whose history
 entry would be larger than the history accepts (64 KiB) is refused before
 anything is written, so the writer never makes a file the reader refuses.
 
+Whatever a history file holds is untrusted too: the listing cuts the name and
+the rationale it reads, and the text of a message about a damaged file, to a
+short escaped piece. History files are opened without blocking and only if they
+are regular files, so a named pipe planted in the directory cannot hold the lock.
+
 ## What changes in ADR 0011
 
 "Emitting the action only records a pending proposal. Any user's AI may do it"
