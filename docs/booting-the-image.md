@@ -192,6 +192,12 @@ above, so the packages and the path are the ones CI uses.
 VirtualBox 7.2 runs Arm guests natively on Apple silicon. This section was run
 with VirtualBox 7.2.22.
 
+> **Since K6 the kernel does not boot here.** VirtualBox's Arm VM has a GICv3
+> and the kernel drives only a GICv2 (ADR 0035): it prints the banner and stops
+> with `interrupt controller: the controller is a GICv3, which the kernel does
+> not drive`. Run again with the K6 image on 2026-11-26 with the commands below.
+> The rest of this section describes the boot as it was before K6.
+
 ```bash
 brew install --cask virtualbox        # asks for your password; reboot if macOS asks
 ```

@@ -34,6 +34,13 @@ What the machines the gate boots have, measured with `-machine dumpdtb`:
 | default, `virtualization=on`, `secure=on`, both, `-smp 4` | `intc@8000000`, `arm,cortex-a15-gic`, GICv2, distributor `0x8000000`, CPU interface `0x8010000`, 64 KiB each | `arm,armv8-timer`, interrupts PPI 13, 14, 11, 10 |
 | through UEFI (`acpi=off`) | the same tree, copied by the bootloader | the same |
 | `gic-version=3` | `arm,gic-v3` | the same |
+| VirtualBox 7.2 Arm VM, ACPI off | a GICv3, with a device tree (`docs/k2b-bootloader-research.md`, `docs/booting-the-image.md`) | generic timer |
+
+VirtualBox on Apple silicon is a place the project runs (ADR 0004, K4d's
+criterion). Booting the K6 image there, with the commands of
+`docs/booting-the-image.md`, ends in this refusal ("the controller is a GICv3"),
+where the kernel before K6 reached its banner and self-tests. Run, not
+inferred: the panic is on the VM's serial file.
 
 With the security extensions (`secure=on`, where the kernel starts at EL3) the
 GIC has two worlds, and the kernel runs in the non-secure one. Measured, not
@@ -58,9 +65,10 @@ agree.
 Anything else ends the boot with a panic that says why, before the kernel's
 tables are built:
 
-- `arm,gic-v3`: needs redistributors, system registers and affinity routing,
-  which no board the project runs on needs yet. The gate boots
-  `-machine gic-version=3` and checks the refusal.
+- `arm,gic-v3`: needs redistributors, system registers and affinity routing.
+  Not driven in K6, although VirtualBox's Arm VM is one (above): this makes
+  the VirtualBox boot fail with a named panic until a driver exists. The gate
+  boots `-machine gic-version=3` and checks the refusal.
 - another compatible: the kernel does not know it.
 - no device tree (the bootloader's copy is optional in the boot info), no
   controller or no timer node: nothing to wire.
@@ -177,6 +185,10 @@ refusals: GICv3 and a zero frequency.
 ## Consequences
 
 - The kernel boots only on GICv2 machines until a new ADR adds another.
+  **VirtualBox's Arm VM is a GICv3: the boot of `docs/booting-the-image.md`
+  panics at the controller from K6 on**, and K4d's VirtualBox criterion cannot
+  be met before GICv3 is supported. Whether that driver belongs in K6 or in the
+  item that follows it is not decided here.
 - The device window holds the console and the controller's two blocks (about
   132 KiB with guard pages); `kernelvm`'s audit takes a list of device ranges.
 - A kernel started at EL3 carries a small monitor in the boot code. It is the
@@ -201,5 +213,7 @@ refusals: GICv3 and a zero frequency.
 - **Kernel in the secure world** (`SCR_EL3.NS=0`): the GIC would need no
   stand-in, but the tables, the memory attributes and every later device would
   differ from the non-secure case that is what firmware gives on real boards.
-- **GICv3 now.** No machine here needs it, and an unverified driver is worse
-  than a refusal by name.
+- **GICv3 now.** Needed for VirtualBox, not for QEMU's default machine. A
+  driver the gate could only exercise on QEMU's `gic-version=3` would be
+  unverified on VirtualBox, the machine that needs it. Refusing by name was
+  chosen over that; the cost is the VirtualBox boot above.

@@ -16,7 +16,7 @@ the kernel stack is valid (a guard page below the stack faults, but the report o
 
 The kernel reads the whole memory map and the reserved regions from the device
 tree and manages physical memory in 4 KiB frames. A UEFI bootloader loads it from a
-disk image (QEMU and VirtualBox on Apple silicon) and hands over the memory map.
+disk image (QEMU and VirtualBox on Apple silicon) and hands over the memory map. Since K6 the kernel drives only a GICv2, so on VirtualBox (a GICv3) it stops at the interrupt controller with a named panic until GICv3 is supported (ADR 0035).
 
 The kernel runs in the upper half of the address space on its own page tables,
 with no page both writable and executable (ADR 0019, `kernelvm/`). It reads RAM
