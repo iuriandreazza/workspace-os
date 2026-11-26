@@ -536,6 +536,13 @@ fn a_write_refuses_text_that_is_not_a_soul_even_with_an_approval() {
     assert!(matches!(result, Err(ApplyError::Failed(_))), "{result:?}");
     assert_eq!(fixture.text(), SOUL_A);
     assert!(fixture.history_files().is_empty());
+    let mut names: Vec<String> = std::fs::read_dir(&fixture.dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["soul", "soul.history"], "no temporary file is left");
 }
 
 #[test]
@@ -653,8 +660,7 @@ fn the_s8a_one_word_file_is_rewritten_in_place_as_format_one() {
 /// The file the SOUL is now, as an entry names the file it made the SOUL.
 fn soul_file_id(fixture: &Fixture) -> String {
     use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::metadata(fixture.soul()).unwrap();
-    format!("{}:{}", meta.dev(), meta.ino())
+    std::fs::metadata(fixture.soul()).unwrap().ino().to_string()
 }
 
 fn pending(fixture: &Fixture, seq: u32, before: &str, after: &str) {
@@ -701,7 +707,7 @@ fn a_change_that_died_after_the_swap_is_committed_by_the_next_one() {
 #[test]
 fn a_leftover_entry_is_not_committed_for_a_soul_someone_else_wrote() {
     // The text is what the entry says, but the file is not the one it renamed into place.
-    for file_id in [None, Some("0:0".to_owned())] {
+    for file_id in [None, Some("0".to_owned())] {
         let fixture = Fixture::with_soul(SOUL_B);
         pending_naming(&fixture, 1, SOUL_A, SOUL_B, file_id);
         assert_eq!(
@@ -1137,7 +1143,14 @@ fn a_hostile_user_name_cannot_forge_the_panel_header_or_a_history_row() {
     let row = done_text(&listed).lines().next().unwrap().to_owned();
     assert_lines_fit(done_text(&listed));
     assert!(!row.contains("preset") && !row.contains('║'), "{row}");
-    assert_eq!(fixture.entries()[0].by.chars().count(), 32);
+    let stored = fixture.entries()[0].by.clone();
+    assert_eq!(stored.chars().count(), 33, "32 characters and the ellipsis");
+    assert!(stored.ends_with('…'));
+    assert_eq!(
+        crate::soul_change::display_name(&stored),
+        stored,
+        "showing a stored name again changes nothing"
+    );
 }
 
 #[test]
@@ -1167,6 +1180,13 @@ fn a_write_that_would_make_an_entry_the_history_refuses_changes_nothing() {
     assert!(matches!(result, Err(ApplyError::Failed(_))), "{result:?}");
     assert_eq!(fixture.text(), SOUL_A);
     assert!(fixture.history_files().is_empty());
+    let mut names: Vec<String> = std::fs::read_dir(&fixture.dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["soul", "soul.history"], "no temporary file is left");
 }
 
 #[test]

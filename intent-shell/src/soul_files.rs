@@ -403,6 +403,7 @@ impl SoulStore for FileSoulStore {
         let bytes = serde_json::to_vec_pretty(&entry)
             .map_err(|e| ApplyError::Failed(format!("cannot write the history: {e}")))?;
         if bytes.len() as u64 > MAX_ENTRY_BYTES {
+            let _ = fs::remove_file(&temporary);
             return Err(ApplyError::Failed(
                 "the history entry would be larger than the history accepts; nothing was changed"
                     .to_owned(),
@@ -433,8 +434,9 @@ impl SoulStore for FileSoulStore {
     }
 }
 
-/// Which file this is, by device and inode.
+/// Which file this is, by inode: a device number may change between boots, an
+/// inode of a file that stays does not.
 fn file_id(meta: &fs::Metadata) -> String {
     use std::os::unix::fs::MetadataExt;
-    format!("{}:{}", meta.dev(), meta.ino())
+    meta.ino().to_string()
 }

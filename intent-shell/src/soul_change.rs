@@ -45,7 +45,7 @@ pub struct HistoryEntry {
     pub reverts: Option<u32>,
     pub before: String,
     pub after: String,
-    /// Which file the SOUL became (`device:inode` of the file renamed into place),
+    /// Which file the SOUL became (the inode of the file renamed into place),
     /// so a leftover entry is only committed if this very file is the SOUL now.
     pub file_id: Option<String>,
 }
@@ -72,7 +72,7 @@ pub struct Approval {
 impl Approval {
     pub fn from_root(who: &User) -> Option<Self> {
         who.administrator.then(|| Self {
-            by: line_pieces(&who.name, SHOWN_NAME).swap_remove(0),
+            by: display_name(&who.name),
         })
     }
 
@@ -320,7 +320,7 @@ fn safe_units(text: &str) -> Vec<String> {
     printable(text, false)
         .chars()
         .map(|c| {
-            let narrow = c.is_ascii() || ('\u{a0}'..='\u{24f}').contains(&c);
+            let narrow = c.is_ascii() || ('\u{a0}'..='\u{24f}').contains(&c) || c == '…';
             if narrow && !matches!(c, '║' | '╔' | '╚' | '═' | '↳') {
                 c.to_string()
             } else {

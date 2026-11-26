@@ -139,10 +139,12 @@ changing the SOUL"), never a wait.
    0032's interview) and be readable; the panel was built from exactly this
    text. If the text on disk now is not the text the panel showed, refuse:
    "the SOUL changed since you saw it; nothing was changed".
-2. Write the history entry (and `fsync` the history directory, so the entry
-cannot vanish while the swap below survives), then replace the SOUL by a write to a temporary
-   file in the same directory, `fsync`, `rename`, `fsync` of the directory. A
-   reader sees the old file or the new file, never half of one.
+2. Write the new SOUL to a temporary file beside the SOUL (`fsync`), then
+   the history entry as `<seq>.pending`, naming that file by its inode, `fsync`
+   it and the history directory (so the entry cannot vanish while the swap
+   below survives), then `rename` the temporary file over the SOUL and `fsync`
+   the directory. A reader sees the old file or the new file, never half of
+   one.
 3. Commit the history entry (section 6).
 
 The SOUL path is resolved once, links followed, and that real path is used
@@ -178,7 +180,7 @@ nothing to that and decides:
 |---|---|
 | Where | A directory beside the SOUL file: `<SOUL file name>.history/` (`soul.history/` for the default). It is derived from the path the SOUL was read from, so `--soul FILE` has its own |
 | What is an entry | One file per applied change, `00000001.json`, never rewritten. Fields: `seq`, `kind` (`change` or `undo`), `at` (Unix seconds), `by` (the confirming user's name), `rationale` (a change) or `reverts` (the `seq` an undo reverts), `file_id` (kept for the crash rule), `before` and `after` (the whole files; a SOUL is at most 2048 bytes, so a snapshot is cheaper and simpler than a patch) |
-| Crash safety | The new SOUL is first written to a temporary file beside the SOUL, and the entry (which names that file by device and inode, `file_id`) is written complete and synced as `<seq>.pending`; then the temporary file is renamed over the SOUL, then the entry is renamed to `<seq>.json`. A history file therefore only ever describes a change that happened. A leftover `.pending` is settled by the next operation under the lock: if the SOUL equals its `after` **and is the very file the entry names** it is committed (the process died after the swap; a SOUL someone else wrote with the same text is not it); otherwise it is deleted (it never took effect, and the decision log has the proposal) |
+| Crash safety | The new SOUL is first written to a temporary file beside the SOUL, and the entry (which names that file by its inode, `file_id`: a device number may change between boots, an inode of a file that stays does not) is written complete and synced as `<seq>.pending`; then the temporary file is renamed over the SOUL, then the entry is renamed to `<seq>.json`. A history file therefore only ever describes a change that happened. A leftover `.pending` is settled by the next operation under the lock: if the SOUL equals its `after` **and is the very file the entry names** it is committed (the process died after the swap; a SOUL someone else wrote with the same text is not it); otherwise it is deleted (it never took effect, and the decision log has the proposal) |
 | Undo | Reverts the most recent change **not already reverted**: walk the entries in order, a change pushes, an undo pops the `seq` it names. Two undos go back two changes. An undo entry itself cannot be undone, so there is no redo; to get a version back, propose it again. Undo writes the entry's `before` text verbatim as a new entry of kind `undo`, after checking that it still parses as a SOUL (a tampered history cannot write arbitrary text) |
 | Refusals | No entries: "there is no change to undo". The SOUL on disk is not the `after` of the entry to revert (it was changed outside the history): refused, naming the change that cannot be undone. Entries unreadable, a `seq` missing or repeated, an undo that names the wrong entry: "the history is damaged", names the entry, changes nothing. A missing directory is an empty history, not damage |
 | Listing | `soul.history` skips `.lock` and prints every readable entry up to the first problem (seq, kind, who, when, rationale as a quoted line), then a WARNING line that says what is wrong. Each entry is two lines: a short fixed row (number, kind, time, the name cut at 32 characters) and, indented, the reason cut at 40 characters or `reverts change N`. Messages never put untrusted text on a line longer than a terminal: what a message quotes (a parser's complaint about a proposal, the rationale in a step line) is cut at 60 or 36 characters and on a line of its own, and the messages about a damaged history quote nothing from the file, only entry numbers and a short word of ours ("it is not valid JSON"). Listing and undo first settle a leftover `.pending` when no writer holds the lock, so a change whose process died after the swap can be seen and undone at once |
@@ -207,8 +209,8 @@ the model the current text for this one action is a later decision.
 
 The name of the person comes from the environment (`USER` on the host) and is
 not ours to trust. The panel header, the history and the entry file hold it
-escaped like the other untrusted text and cut at 32 characters (with an
-ellipsis); the decision log keeps it whole, as JSON. A write whose history
+escaped like the other untrusted text and cut at 32 characters with an
+ellipsis (the stored name is the cut one, so showing it again changes nothing); the decision log keeps it whole, as JSON. A write whose history
 entry would be larger than the history accepts (64 KiB) is refused before
 anything is written, so the writer never makes a file the reader refuses.
 
