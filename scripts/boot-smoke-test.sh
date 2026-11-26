@@ -66,6 +66,12 @@
 #   uefi-el2  the firmware runs the bootloader at EL2, which the bootloader
 #             must leave for EL1 itself before the kernel starts
 #
+# Interrupts (ADR 0035): every boot that reaches the end counts timer ticks and
+# takes one with its whole context live. Each entry level is also booted on a
+# GICv3 (`gic-version=3`, names starting `gicv3`; `uefi-gicv3` and
+# `uefi-el2-gicv3` through the bootloader), and a tree naming a controller the
+# kernel does not know is refused (`unknown-controller`).
+#
 # The boot menu is read and driven over the serial console (ADR 0007, K2c):
 # the log is the console's output, and a script sends keys to its input once
 # the menu has been drawn. Each entry must reach the kernel with its own boot
@@ -119,12 +125,23 @@ readonly EXPECTED_BANNER="booted on aarch64 in EL1"
 readonly DEFAULT_MEMORY_MIB=128
 readonly RAM_BASE="0x40000000"
 readonly UART_REPORT="uart pl011 at 0x9000000"
-# QEMU `virt` with its default GICv2 (ADR 0035): where the device tree puts the
+# QEMU `virt` with its default GICv2, or the GICv3 of `gic-version=3` (ADR 0035): where the device tree puts the
 # distributor and the CPU interface, how big each is, the private peripheral
 # interrupt of the virtual timer (PPI 11, ID 27) and the counter's frequency.
 readonly GIC_DISTRIBUTOR=0x8000000
 readonly GIC_CPU_INTERFACE=0x8010000
 readonly GIC_BLOCK_BYTES=$((0x10000))
+# The same machine with `gic-version=3`: the redistributors are one region of
+# room for 123 cores, wherever the cores are.
+readonly GICV3_REDISTRIBUTORS=0x80a0000
+readonly GICV3_REDISTRIBUTOR_BYTES=$((0xf60000))
+# Which controller the boot being checked has, from its QEMU arguments.
+gic_version=2
+# set_gic_version QEMU_ARGS...: records which GIC the machine of these arguments has.
+set_gic_version() {
+    gic_version=2
+    [[ "$*" != *gic-version=3* ]] || gic_version=3
+}
 readonly TIMER_INTERRUPT=27
 # `-cpu max` has a counter of 1 GHz, the cortex-a72 of the other boots 62.5 MHz.
 readonly COUNTER_HZ=62500000
@@ -395,13 +412,15 @@ check_mmu() {
     # interrupt controller's two blocks, each after one unmapped guard page
     # (ADR 0033, 0035): the addresses are the device window's, not the physical
     # ones the device tree gave.
-    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: device window at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of registers, console at \(0x[0-9a-f]*\), distributor at \(0x[0-9a-f]*\), cpu interface at \(0x[0-9a-f]*\)$/\1 \2 \3 \4 \5/p')"
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: device window at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of registers, console at \(0x[0-9a-f]*\), distributor at \(0x[0-9a-f]*\), second block at \(0x[0-9a-f]*\)$/\1 \2 \3 \4 \5/p')"
     [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "device window report not found exactly once"
     local distributor cpu_interface
     read -r base device_bytes console distributor cpu_interface <<< "$line"
     local want_distributor=$((DEVICE_BASE + 2 * FRAME_SIZE))
     local want_cpu_interface=$((want_distributor + GIC_BLOCK_BYTES + FRAME_SIZE))
-    [[ $((base)) -eq $((DEVICE_BASE)) && $((device_bytes)) -eq $((FRAME_SIZE + 2 * GIC_BLOCK_BYTES)) && $((console)) -eq $((DEVICE_BASE)) ]] \
+    local second_block_bytes=$GIC_BLOCK_BYTES
+    [[ "$gic_version" -eq 2 ]] || second_block_bytes=$GICV3_REDISTRIBUTOR_BYTES
+    [[ $((base)) -eq $((DEVICE_BASE)) && $((device_bytes)) -eq $((FRAME_SIZE + GIC_BLOCK_BYTES + second_block_bytes)) && $((console)) -eq $((DEVICE_BASE)) ]] \
         || fail "device window at $base holds $device_bytes bytes with the console at $console, expected the console's page at $(hex "$DEVICE_BASE") and the controller's two blocks"
     [[ $((distributor)) -eq "$want_distributor" && $((cpu_interface)) -eq "$want_cpu_interface" ]] \
         || fail "the controller is at $distributor and $cpu_interface in the device window, expected $(hex "$want_distributor") and $(hex "$want_cpu_interface")"
@@ -486,6 +505,8 @@ check_interrupts() {
     # The whole line, not a prefix of it: with the monitor's suffix a boot
     # that went through EL3 must say so, and one that did not must not.
     local wanted="interrupts: gicv2, distributor $GIC_DISTRIBUTOR, cpu interface $GIC_CPU_INTERFACE, timer interrupt ${TIMER_INTERRUPT}${monitor}"
+    [[ "$gic_version" -eq 2 ]] \
+        || wanted="interrupts: gicv3, distributor $GIC_DISTRIBUTOR, redistributors $GICV3_REDISTRIBUTORS, timer interrupt ${TIMER_INTERRUPT}${monitor}"
     [[ "$(plain_log | sed -n 's/^  kernel  .\{4\}  //p' | grep -cxF "$wanted" || true)" -eq 1 ]] \
         || fail "interrupt controller report '$wanted' not seen exactly once as a whole line"
     line="$(plain_log | sed -n 's/^  kernel  .\{4\}  timer: virtual, \([0-9]*\) Hz, a tick every \([0-9]*\) us$/\1 \2/p')"
@@ -542,6 +563,7 @@ check_heap() {
 
 # check_boot NAME QEMU_IMAGE_ARGS...
 check_boot() {
+    set_gic_version "$@"
     local expected_memory
     expected_memory="memory $(memory_mib_of "$@") MiB at $RAM_BASE"
     start_qemu "$@"
@@ -738,6 +760,7 @@ expect_menu_entries() {
 # starts the default entry. The firmware publishes a device tree only with
 # ACPI off (ADR 0013, "What is not yet known"), hence `acpi=off`.
 check_uefi_boot() {
+    set_gic_version "${@:6}"
     local mib="$2" bootloader_el="$3" counts total reserved free copy_start copy_end
     local mode_name="$4" keys="$5" mode_number label other_label reason
     case "$mode_name" in
@@ -1086,6 +1109,13 @@ check_boot smp -machine secure=on -smp 4 -kernel "$KERNEL_ELF"
 check_boot el2 -machine virtualization=on -kernel "$KERNEL_ELF"
 check_boot el3 -machine secure=on -kernel "$KERNEL_ELF"
 check_boot el3-el2 -machine secure=on,virtualization=on -kernel "$KERNEL_ELF"
+# The same entry levels on a GICv3 (ADR 0035). EL3 starts the kernel only with
+# `secure=on`, and four cores that all enter `_start` need it too.
+check_boot gicv3 -machine gic-version=3 -kernel "$KERNEL_ELF"
+check_boot gicv3-el2 -machine gic-version=3,virtualization=on -kernel "$KERNEL_ELF"
+check_boot gicv3-el3 -machine gic-version=3,secure=on -kernel "$KERNEL_ELF"
+check_boot gicv3-el3-el2 -machine gic-version=3,secure=on,virtualization=on -kernel "$KERNEL_ELF"
+check_boot gicv3-smp -machine gic-version=3,secure=on -smp 4 -kernel "$KERNEL_ELF"
 
 # ---- A machine with RAM above 512 GiB (ADR 0033) ---------------------------
 #
@@ -1257,6 +1287,8 @@ check_uefi_boot uefi 256 1 normal ""
 check_uefi_boot uefi-768 768 1 normal enter
 check_uefi_boot uefi-el2 256 2 normal 1 -machine virtualization=on
 check_uefi_boot uefi-el2-high 3584 2 normal enter -machine virtualization=on
+check_uefi_boot uefi-gicv3 256 1 normal "" -machine gic-version=3
+check_uefi_boot uefi-el2-gicv3 256 2 normal "" -machine virtualization=on,gic-version=3
 check_uefi_boot uefi-recovery 256 1 recovery 2
 check_uefi_boot uefi-recovery-arrows 256 1 recovery down,hold,enter
 # More than 512 GiB of RAM through the bootloader (ADR 0033): its identity map
@@ -1554,9 +1586,23 @@ check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"
 # The interrupt controller and the timer are refused by name where the kernel
-# cannot drive them (ADR 0035): a GICv3 machine, and a counter whose frequency
-# firmware never programmed.
-check_panic gicv3 "$KERNEL_ELF" "interrupt controller: the controller is a GICv3, which the kernel does not drive" -machine gic-version=3
+# cannot drive them (ADR 0035): a controller it does not know (the machine's
+# tree with the GICv2 compatible string changed to one nobody defines), and a
+# counter whose frequency firmware never programmed.
+unknown_gic_dtb="$work_dir/unknown-gic.dtb"
+python3 -I - "$dtb" "$unknown_gic_dtb" <<'PY'
+import sys
+source, target = sys.argv[1:3]
+blob = open(source, "rb").read()
+# Only the used part, as for the memreserve tree: the dump is padded to 1 MiB,
+# which does not fit below the kernel once QEMU is handed it with `-dtb`.
+used = int.from_bytes(blob[12:16], "big") + int.from_bytes(blob[32:36], "big")
+blob = blob[:4] + used.to_bytes(4, "big") + blob[8:used]
+old = b"arm,cortex-a15-gic"
+assert blob.count(old) == 1
+open(target, "wb").write(blob.replace(old, b"arm,cortex-a15-gix"))
+PY
+check_panic unknown-controller "$KERNEL_ELF" "interrupt controller: the controller is neither a GICv2 nor a GICv3 the kernel knows" -dtb "$unknown_gic_dtb"
 zero_frequency_elf="$work_dir/zero-frequency.elf"
 build_with_feature selftest-zero-frequency "$zero_frequency_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
@@ -1690,6 +1736,7 @@ BOOT_TIMEOUT_SECONDS=10
 # and only a kernel that clears it passes.
 expected_extensions="$EXTENSIONS_CLEARED"
 check_boot cpu-max -cpu max -kernel "$KERNEL_ELF"
+check_boot cpu-max-gicv3 -cpu max -machine gic-version=3 -kernel "$KERNEL_ELF"
 # The same cores entered at EL2 and EL3: the writes trap there unless the drop
 # enabled them (SCR_EL3.TCR2En, HCRX_EL2.TCR2En), and nothing would be printed.
 check_boot cpu-max-el2 -cpu max -machine virtualization=on -kernel "$KERNEL_ELF"

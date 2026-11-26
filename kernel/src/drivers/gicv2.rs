@@ -11,6 +11,8 @@
 use core::fmt;
 use core::ptr::{read_volatile, write_volatile};
 
+use super::Acknowledged;
+
 const DISTRIBUTOR_CONTROL: usize = 0x000;
 const DISTRIBUTOR_TYPE: usize = 0x004;
 const SET_ENABLE: usize = 0x100;
@@ -35,8 +37,6 @@ const ENABLE_GROUP: u32 = 1;
 /// register: the number of interrupt lines is `32 * (ITLinesNumber + 1)`.
 const LINES_PER_WORD: usize = 32;
 const INTERRUPT_ID_MASK: u32 = 0x3ff;
-/// What an acknowledge returns when nothing is pending.
-const SPURIOUS: u32 = 1023;
 /// Every priority passes the mask, the lowest (255) included.
 const PRIORITY_MASK_ALL: u32 = 0xff;
 const ARCHITECTURE_GICV2: u32 = 2;
@@ -175,24 +175,12 @@ impl Gicv2 {
     /// Takes the highest priority pending interrupt, or `None` when the
     /// controller says none is (spurious), in which case nothing is to be ended.
     pub fn acknowledge(&self) -> Option<Acknowledged> {
-        let raw = self.cpu_read(CPU_ACKNOWLEDGE);
-        ((raw & INTERRUPT_ID_MASK) != SPURIOUS).then_some(Acknowledged(raw))
+        Acknowledged::from_register(self.cpu_read(CPU_ACKNOWLEDGE), INTERRUPT_ID_MASK)
     }
 
     /// Ends an interrupt `acknowledge` returned: the controller may signal it
     /// again.
     pub fn end_of_interrupt(&self, taken: Acknowledged) {
-        self.cpu_write(CPU_END_OF_INTERRUPT, taken.0);
-    }
-}
-
-/// What an acknowledge returned. The whole register goes back to end the
-/// interrupt: for an SGI it also holds the core that sent it.
-#[derive(Clone, Copy)]
-pub struct Acknowledged(u32);
-
-impl Acknowledged {
-    pub fn id(self) -> u32 {
-        self.0 & INTERRUPT_ID_MASK
+        self.cpu_write(CPU_END_OF_INTERRUPT, taken.raw());
     }
 }

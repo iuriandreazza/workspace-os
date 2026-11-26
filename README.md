@@ -16,7 +16,7 @@ the kernel stack is valid (a guard page below the stack faults, but the report o
 
 The kernel reads the whole memory map and the reserved regions from the device
 tree and manages physical memory in 4 KiB frames. A UEFI bootloader loads it from a
-disk image (QEMU and VirtualBox on Apple silicon) and hands over the memory map. Since K6 the kernel drives only a GICv2, so on VirtualBox (a GICv3) it stops at the interrupt controller with a named panic until GICv3 is supported (ADR 0035).
+disk image (QEMU and VirtualBox on Apple silicon) and hands over the memory map.
 
 The kernel runs in the upper half of the address space on its own page tables,
 with no page both writable and executable (ADR 0019, `kernelvm/`). It reads RAM
@@ -26,7 +26,7 @@ and the memory the bootloader owned goes to the frame allocator (ADR 0033). It h
 (`Box`, `Vec`) that grows on demand in a window of its own (ADR 0029,
 `kernelheap/`).
 
-The kernel drives a GICv2 (found in the device tree, mapped in the device window)
+The kernel drives a GICv2 or a GICv3 (found in the device tree, mapped in the device window; VirtualBox's is a GICv3)
 and the generic timer's virtual timer: every boot of the gate counts timer ticks and
 takes an interrupt with its whole context live (ADR 0035). Started at EL3, the boot
 code stands in for the firmware's GIC setup.

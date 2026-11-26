@@ -296,11 +296,8 @@ fn pages(region: Region) -> Range<u64> {
 /// occupy: the only Device memory the device window holds, in the order they
 /// are mapped.
 fn device_pages(board: &Board, wiring: &InterruptWiring) -> [Range<u64>; 3] {
-    [
-        pages(board.uart),
-        pages(wiring.distributor),
-        pages(wiring.cpu_interface),
-    ]
+    let [first, second] = wiring.controller.blocks();
+    [pages(board.uart), pages(first), pages(second)]
 }
 
 /// Reads `ID_AA64MMFR3_EL1`, which is zero where it does not exist.
@@ -410,17 +407,10 @@ pub fn init(
         let _ = regions;
         let mut devices = DeviceWindow::new();
         let console = devices.map(&mut mapper, board.uart.base, board.uart.size)?;
-        let distributor = devices.map(
-            &mut mapper,
-            wiring.distributor.base,
-            wiring.distributor.size,
-        )?;
-        let cpu_interface = devices.map(
-            &mut mapper,
-            wiring.cpu_interface.base,
-            wiring.cpu_interface.size,
-        )?;
-        (mapper.root(), console, (distributor, cpu_interface))
+        let [first, second] = wiring.controller.blocks();
+        let distributor = devices.map(&mut mapper, first.base, first.size)?;
+        let second_block = devices.map(&mut mapper, second.base, second.size)?;
+        (mapper.root(), console, (distributor, second_block))
     };
     // The root the lower half is pointed at when it is dropped: all zeros.
     let empty = tables.allocate().ok_or(MapError::OutOfFrames)?;
@@ -613,7 +603,7 @@ pub fn verify(
     klog!(
         Info,
         out,
-        "mmu: device window at {:#x}: {:#x} bytes of registers, console at {:#x}, distributor at {:#x}, cpu interface at {:#x}",
+        "mmu: device window at {:#x}: {:#x} bytes of registers, console at {:#x}, distributor at {:#x}, second block at {:#x}",
         kernelvm::DEVICE_BASE,
         devices.device,
         crate::board::console_base(),

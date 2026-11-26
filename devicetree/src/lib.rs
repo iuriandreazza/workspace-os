@@ -357,6 +357,8 @@ struct Node<'a> {
     interrupts: Option<&'a [u8]>,
     clock_frequency: Option<&'a [u8]>,
     interrupt_controller: bool,
+    redistributor_regions: Option<&'a [u8]>,
+    redistributor_stride: bool,
 }
 
 impl<'a> Node<'a> {
@@ -370,6 +372,8 @@ impl<'a> Node<'a> {
             interrupts: None,
             clock_frequency: None,
             interrupt_controller: false,
+            redistributor_regions: None,
+            redistributor_stride: false,
         }
     }
 
@@ -382,6 +386,8 @@ impl<'a> Node<'a> {
             b"interrupts" => self.interrupts = Some(value),
             b"clock-frequency" => self.clock_frequency = Some(value),
             b"interrupt-controller" => self.interrupt_controller = true,
+            b"#redistributor-regions" => self.redistributor_regions = Some(value),
+            b"redistributor-stride" => self.redistributor_stride = true,
             _ => {}
         }
     }
@@ -498,6 +504,19 @@ impl Device<'_> {
             number: cell(4)?,
             flags: cell(8)?,
         })
+    }
+
+    /// `#redistributor-regions` of a GICv3: how many of the `reg` entries after
+    /// the distributor are redistributor regions. One when the node says
+    /// nothing, as the binding has it.
+    pub fn redistributor_regions(&self) -> Result<u32, Error> {
+        self.0.redistributor_regions.map_or(Ok(1), single_cell)
+    }
+
+    /// Whether the node has `redistributor-stride`: the redistributors are not
+    /// laid out one after the other.
+    pub fn has_redistributor_stride(&self) -> bool {
+        self.0.redistributor_stride
     }
 
     /// `clock-frequency` in hertz, if the node has one.
@@ -1342,6 +1361,47 @@ mod tests {
         b.end();
         b.end();
         b.finish()
+    }
+
+    #[test]
+    fn a_gicv3_names_its_redistributor_region_and_count() {
+        let mut b = Builder::new();
+        b.begin("");
+        b.cells("#address-cells", &[2]).cells("#size-cells", &[2]);
+        b.begin("intc@8000000");
+        b.prop("compatible", b"arm,gic-v3\0")
+            .cells(
+                "reg",
+                &[0, 0x0800_0000, 0, 0x10000, 0, 0x080a_0000, 0, 0xf6_0000],
+            )
+            .cells("#redistributor-regions", &[1])
+            .prop("interrupt-controller", b"");
+        b.end();
+        b.begin("other");
+        b.prop("interrupt-controller", b"")
+            .cells("redistributor-stride", &[0, 0x40000])
+            .cells("#redistributor-regions", &[3]);
+        b.end();
+        b.end();
+        let blob = b.finish();
+        let fdt = Fdt::parse(&blob).unwrap();
+        let gic = fdt.find_device(|d| d.is_compatible("arm,gic-v3")).unwrap();
+        assert_eq!(gic.region(1), Ok(region(0x080a_0000, 0xf6_0000)));
+        assert_eq!(gic.redistributor_regions(), Ok(1));
+        assert!(!gic.has_redistributor_stride());
+        let other = fdt
+            .find_device(|d| d.is_interrupt_controller() && !d.is_compatible("arm,gic-v3"))
+            .unwrap();
+        assert_eq!(other.redistributor_regions(), Ok(3));
+        assert!(other.has_redistributor_stride());
+    }
+
+    #[test]
+    fn a_redistributor_count_defaults_to_one() {
+        let blob = machine_with_gic(None, &QEMU_TIMER);
+        let fdt = Fdt::parse(&blob).unwrap();
+        let gic = fdt.find_device(|d| d.is_interrupt_controller()).unwrap();
+        assert_eq!(gic.redistributor_regions(), Ok(1));
     }
 
     const QEMU_TIMER: [u32; 12] = [1, 13, 0xf04, 1, 14, 0xf04, 1, 11, 0xf04, 1, 10, 0xf04];

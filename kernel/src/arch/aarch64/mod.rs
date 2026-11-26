@@ -17,12 +17,14 @@ global_asm!(
     TCR_UPPER_MASK = const kernelvm::TCR_UPPER_HALF_MASK,
     TCR_UPPER_HALF = const kernelvm::TCR_UPPER_HALF,
     WXN = const kernelvm::SCTLR_WXN,
-    MONITOR_CALL_GIC_FOR_NON_SECURE = const MONITOR_CALL_GIC_FOR_NON_SECURE,
+    MONITOR_CALL_GICV2_FOR_NON_SECURE = const MONITOR_CALL_GICV2_FOR_NON_SECURE,
+    MONITOR_CALL_GICV3_FOR_NON_SECURE = const MONITOR_CALL_GICV3_FOR_NON_SECURE,
     SELFTEST_DIRTY_TCR2 = const cfg!(feature = "selftest-dirty-tcr2") as u64,
 );
 global_asm!(include_str!("exceptions.s"));
 
 mod exceptions;
+pub mod gic_cpu;
 pub mod mmu;
 pub mod timer;
 
@@ -130,34 +132,49 @@ pub use exceptions::raise_unhandled_class;
 pub use exceptions::raise_unhandled_vector;
 pub use exceptions::{current_el, run_interrupt_selftest, run_selftest};
 
-/// The call the boot code's monitor answers when the kernel was started at
-/// EL3 (ADR 0035): give the non-secure world the GIC. It is the Arm SMC
+/// The calls the boot code's monitor answers when the kernel was started at
+/// EL3 (ADR 0035): give the non-secure world the GIC. They are the Arm SMC
 /// Calling Convention's range for vendor-specific EL3 monitors.
-const MONITOR_CALL_GIC_FOR_NON_SECURE: u32 = 0x8700_0000;
+const MONITOR_CALL_GICV2_FOR_NON_SECURE: u32 = 0x8700_0000;
+const MONITOR_CALL_GICV3_FOR_NON_SECURE: u32 = 0x8700_0001;
 
-/// Asks the monitor of the boot code, which only exists where the kernel was
-/// started at EL3, to make the boot core's SGIs and PPIs Group 1 and open the
-/// priority mask, in the GIC whose distributor and CPU interface are at the
-/// given physical addresses. `Err` carries what the monitor answered if it was
-/// not success.
-pub fn give_interrupt_controller_to_non_secure(
-    distributor: u64,
-    cpu_interface: u64,
-) -> Result<(), i64> {
+/// What the monitor answered if it was not success.
+type MonitorAnswer = Result<(), i64>;
+
+fn call_monitor(function: u32, first: u64, second: u64) -> MonitorAnswer {
     let answer: i64;
-    // SAFETY: the caller only asks where the boot code installed the monitor.
-    // It writes the two registers the call names and returns, clobbering at
-    // most what the SMC Calling Convention lets a callee clobber.
+    // SAFETY: the callers only ask where the boot code installed the monitor.
+    // It writes the registers the call names and returns, clobbering at most
+    // what the SMC Calling Convention lets a callee clobber.
     unsafe {
         asm!(
             "smc #0",
-            inlateout("x0") u64::from(MONITOR_CALL_GIC_FOR_NON_SECURE) => answer,
-            in("x1") distributor,
-            in("x2") cpu_interface,
+            inlateout("x0") u64::from(function) => answer,
+            in("x1") first,
+            in("x2") second,
             clobber_abi("C"),
         )
     };
     if answer == 0 { Ok(()) } else { Err(answer) }
+}
+
+/// Asks the monitor, which only exists where the kernel was started at EL3, to
+/// make the boot core's SGIs and PPIs Group 1 and open the priority mask in
+/// the GICv2 whose distributor and CPU interface are at the given physical
+/// addresses.
+pub fn give_gicv2_to_non_secure(distributor: u64, cpu_interface: u64) -> MonitorAnswer {
+    call_monitor(
+        MONITOR_CALL_GICV2_FOR_NON_SECURE,
+        distributor,
+        cpu_interface,
+    )
+}
+
+/// Asks the monitor to put the GICv3 whose distributor is at the given
+/// physical address in a single security state, in which the non-secure
+/// kernel can configure it.
+pub fn give_gicv3_to_non_secure(distributor: u64) -> MonitorAnswer {
+    call_monitor(MONITOR_CALL_GICV3_FOR_NON_SECURE, distributor, 0)
 }
 
 /// Unmasks IRQs on this core: from here an interrupt is taken whenever the

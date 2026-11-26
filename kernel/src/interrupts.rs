@@ -6,17 +6,21 @@
 //! to be, and reads `ticks`.
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::arch;
-use crate::board::{self, InterruptWiring};
+use crate::board::{self, Controller, InterruptWiring};
+use crate::drivers::Acknowledged;
 use crate::drivers::gicv2::{self, Gicv2};
+use crate::drivers::gicv3::{self, Gicv3};
 use crate::log::klog;
 
 /// Ticks per second.
 const TICK_HZ: u64 = 100;
 /// Where the tick sits among priorities; any value the priority mask passes.
 const TIMER_PRIORITY: u8 = 0x80;
+/// Every priority passes the mask, the lowest included.
+const PRIORITY_MASK_ALL: u8 = 0xff;
 /// How long the wait for ticks lasts before it gives up, in seconds of the
 /// counter: ten times what the ticks it waits for take.
 const WAIT_LIMIT_SECONDS: u64 = 2;
@@ -28,6 +32,9 @@ static SPURIOUS: AtomicU64 = AtomicU64::new(0);
 /// Interrupts that were not the tick: none is enabled, so one is a fault.
 static UNEXPECTED: AtomicU64 = AtomicU64::new(0);
 static TIMER_INTERRUPT: AtomicU32 = AtomicU32::new(0);
+/// Whether the CPU interface is the GICv3's system registers and not the
+/// GICv2's memory.
+static SYSTEM_REGISTER_INTERFACE: AtomicBool = AtomicBool::new(false);
 /// The counter values the timer is next due at and the distance between ticks.
 static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(0);
 static PERIOD: AtomicU64 = AtomicU64::new(0);
@@ -42,6 +49,10 @@ pub enum Error {
     /// The monitor of the boot code answered something other than success.
     Monitor(i64),
     Controller(gicv2::Error),
+    ControllerV3(gicv3::Error),
+    /// The core has no GICv3 system register interface, or the exception level
+    /// above did not turn it on for EL1.
+    NoSystemRegisters,
     /// The controller said none was pending and the handler counted that.
     SpuriousNotCounted,
 }
@@ -57,6 +68,10 @@ impl fmt::Display for Error {
                 "the EL3 monitor refused to give the interrupt controller to the non-secure world (answer {answer})"
             ),
             Self::Controller(error) => write!(f, "{error}"),
+            Self::ControllerV3(error) => write!(f, "{error}"),
+            Self::NoSystemRegisters => f.write_str(
+                "the device tree names a GICv3 but the GIC system registers are not usable at EL1",
+            ),
             Self::SpuriousNotCounted => f.write_str(
                 "an interrupt the controller did not have pending was not counted as spurious",
             ),
@@ -70,6 +85,12 @@ impl From<gicv2::Error> for Error {
     }
 }
 
+impl From<gicv3::Error> for Error {
+    fn from(error: gicv3::Error) -> Self {
+        Self::ControllerV3(error)
+    }
+}
+
 /// What starting the interrupts settled, for the log.
 pub struct Started {
     pub frequency: u64,
@@ -77,12 +98,63 @@ pub struct Started {
     pub period_microseconds: u64,
 }
 
-fn controller() -> Gicv2 {
+fn controller_v2() -> Gicv2 {
     let (distributor, cpu_interface) = board::interrupt_controller_bases();
     // SAFETY: the two bases are the controller's registers in the device
     // window, set once the kernel's tables map them, and the kernel is the
     // only code that drives the controller.
     unsafe { Gicv2::new(distributor, cpu_interface) }
+}
+
+/// Takes the highest priority pending interrupt from the CPU interface in use.
+fn acknowledge() -> Option<Acknowledged> {
+    if SYSTEM_REGISTER_INTERFACE.load(Ordering::Relaxed) {
+        gicv3::acknowledged(arch::gic_cpu::acknowledge())
+    } else {
+        controller_v2().acknowledge()
+    }
+}
+
+fn end_of_interrupt(taken: Acknowledged) {
+    if SYSTEM_REGISTER_INTERFACE.load(Ordering::Relaxed) {
+        arch::gic_cpu::end_of_interrupt(taken.raw());
+    } else {
+        controller_v2().end_of_interrupt(taken);
+    }
+}
+
+/// Starts the controller the device tree names, from whatever state firmware
+/// left it in, and enables the timer's interrupt.
+fn start_controller(wiring: &InterruptWiring) -> Result<(), Error> {
+    match wiring.controller {
+        Controller::V2 { .. } => {
+            let controller = controller_v2();
+            controller.initialise()?;
+            controller.enable_private_interrupt(wiring.timer_interrupt, TIMER_PRIORITY)?;
+        }
+        Controller::V3 { redistributors, .. } => {
+            if !arch::gic_cpu::system_registers_present()
+                || !arch::gic_cpu::enable_system_registers()
+            {
+                return Err(Error::NoSystemRegisters);
+            }
+            let (distributor, frames) = board::interrupt_controller_bases();
+            // SAFETY: the two bases are the controller's registers in the
+            // device window, `frames` for the whole `redistributors` region,
+            // and the kernel is the only code that drives the controller.
+            let controller =
+                unsafe { Gicv3::new(distributor, frames, redistributors.size as usize) };
+            let redistributor = controller.initialise(arch::gic_cpu::affinity())?;
+            controller.enable_private_interrupt(
+                &redistributor,
+                wiring.timer_interrupt,
+                TIMER_PRIORITY,
+            )?;
+            arch::gic_cpu::enable_group_1(PRIORITY_MASK_ALL);
+            SYSTEM_REGISTER_INTERFACE.store(true, Ordering::Relaxed);
+        }
+    }
+    Ok(())
 }
 
 /// The tick count since `start`.
@@ -110,15 +182,16 @@ pub fn start(wiring: &InterruptWiring, entered_at_el3: bool) -> Result<Started, 
         return Err(Error::UnknownFrequency);
     }
     if entered_at_el3 {
-        arch::give_interrupt_controller_to_non_secure(
-            wiring.distributor.base,
-            wiring.cpu_interface.base,
-        )
-        .map_err(Error::Monitor)?;
+        let answer = match wiring.controller {
+            Controller::V2 {
+                distributor,
+                cpu_interface,
+            } => arch::give_gicv2_to_non_secure(distributor.base, cpu_interface.base),
+            Controller::V3 { distributor, .. } => arch::give_gicv3_to_non_secure(distributor.base),
+        };
+        answer.map_err(Error::Monitor)?;
     }
-    let controller = controller();
-    controller.initialise()?;
-    controller.enable_private_interrupt(wiring.timer_interrupt, TIMER_PRIORITY)?;
+    start_controller(wiring)?;
     TIMER_INTERRUPT.store(wiring.timer_interrupt, Ordering::Relaxed);
     check_spurious_is_counted()?;
 
@@ -162,8 +235,7 @@ fn check_spurious_is_counted() -> Result<(), Error> {
 /// and the exception stack in use. It prints nothing and unmasks nothing: the
 /// console's SAFETY argument and the single exception stack both rest on that.
 pub fn handle_irq() {
-    let controller = controller();
-    let Some(taken) = controller.acknowledge() else {
+    let Some(taken) = acknowledge() else {
         // Nothing to end: an acknowledge that found nothing took nothing.
         SPURIOUS.fetch_add(1, Ordering::Relaxed);
         return;
@@ -183,7 +255,7 @@ pub fn handle_irq() {
     } else {
         UNEXPECTED.fetch_add(1, Ordering::Relaxed);
     }
-    controller.end_of_interrupt(taken);
+    end_of_interrupt(taken);
 }
 
 /// What a wait for ticks measured.
@@ -239,12 +311,18 @@ pub fn wait_for_ticks(wanted: u64) -> Result<TickRun, NoTick> {
 pub fn selftest(mut out: impl Write, wiring: &InterruptWiring, entered_at_el3: bool) {
     let started =
         start(wiring, entered_at_el3).unwrap_or_else(|error| panic!("interrupts: {error}"));
+    let [first, second] = wiring.controller.blocks();
     klog!(
         Ok,
         out,
-        "interrupts: gicv2, distributor {:#x}, cpu interface {:#x}, timer interrupt {}{}",
-        wiring.distributor.base,
-        wiring.cpu_interface.base,
+        "interrupts: {}, distributor {:#x}, {} {:#x}, timer interrupt {}{}",
+        wiring.controller.name(),
+        first.base,
+        match wiring.controller {
+            Controller::V2 { .. } => "cpu interface",
+            Controller::V3 { .. } => "redistributors",
+        },
+        second.base,
         wiring.timer_interrupt,
         if entered_at_el3 {
             ", handed to the non-secure world by the EL3 monitor"

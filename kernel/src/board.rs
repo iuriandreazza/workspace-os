@@ -41,29 +41,32 @@ pub fn console_base() -> usize {
 }
 
 /// Where the interrupt controller's registers are read and written, as for the
-/// console: the distributor and the CPU interface in the device window once
-/// the kernel's tables map them (ADR 0035). Zero until then.
+/// console: the distributor, and the CPU interface of a GICv2 or the
+/// redistributors of a GICv3, in the device window once the kernel's tables map
+/// them (ADR 0035). Zero until then.
 static DISTRIBUTOR_BASE: AtomicUsize = AtomicUsize::new(0);
-static CPU_INTERFACE_BASE: AtomicUsize = AtomicUsize::new(0);
+static SECOND_BLOCK_BASE: AtomicUsize = AtomicUsize::new(0);
 
-/// Points the interrupt controller at `distributor` and `cpu_interface`. The
-/// caller makes sure both are mapped.
-pub fn use_interrupt_controller_at(distributor: usize, cpu_interface: usize) {
+/// Points the interrupt controller at its two register blocks. The caller makes
+/// sure both are mapped.
+pub fn use_interrupt_controller_at(distributor: usize, second_block: usize) {
     DISTRIBUTOR_BASE.store(distributor, Ordering::Relaxed);
-    CPU_INTERFACE_BASE.store(cpu_interface, Ordering::Relaxed);
+    SECOND_BLOCK_BASE.store(second_block, Ordering::Relaxed);
 }
 
-/// Where the distributor and the CPU interface are read and written now.
+/// Where the distributor and the second block (the CPU interface of a GICv2,
+/// the redistributors of a GICv3) are read and written now.
 pub fn interrupt_controller_bases() -> (usize, usize) {
     (
         DISTRIBUTOR_BASE.load(Ordering::Relaxed),
-        CPU_INTERFACE_BASE.load(Ordering::Relaxed),
+        SECOND_BLOCK_BASE.load(Ordering::Relaxed),
     )
 }
 
 /// Compatible strings of the GICv2 the kernel drives: the one QEMU `virt`
 /// publishes and the one most boards with a GIC-400 publish.
 const GICV2_COMPATIBLE: [&str; 2] = ["arm,cortex-a15-gic", "arm,gic-400"];
+/// What the device tree calls a GICv3 and a GICv4 alike.
 const GICV3_COMPATIBLE: &str = "arm,gic-v3";
 const TIMER_COMPATIBLE: &str = "arm,armv8-timer";
 /// The order of the timer node's interrupts: secure physical, non-secure
@@ -75,12 +78,48 @@ const PRIVATE_PERIPHERAL_BASE_ID: u32 = 16;
 const PRIVATE_PERIPHERAL_COUNT: u32 = 16;
 const MIN_CONTROLLER_REGISTERS: u64 = 0x1000;
 
-/// What the device tree says about interrupts: the controller's two register
-/// blocks and the virtual timer's interrupt.
+/// The interrupt controller the device tree names and where its registers are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Controller {
+    V2 {
+        distributor: Region,
+        cpu_interface: Region,
+    },
+    V3 {
+        distributor: Region,
+        /// The one region that holds every core's redistributor frames.
+        redistributors: Region,
+    },
+}
+
+impl Controller {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::V2 { .. } => "gicv2",
+            Self::V3 { .. } => "gicv3",
+        }
+    }
+
+    /// The distributor and the second block, in the order they are mapped.
+    pub fn blocks(&self) -> [Region; 2] {
+        match *self {
+            Self::V2 {
+                distributor,
+                cpu_interface,
+            } => [distributor, cpu_interface],
+            Self::V3 {
+                distributor,
+                redistributors,
+            } => [distributor, redistributors],
+        }
+    }
+}
+
+/// What the device tree says about interrupts: the controller and the virtual
+/// timer's interrupt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InterruptWiring {
-    pub distributor: Region,
-    pub cpu_interface: Region,
+    pub controller: Controller,
     /// The interrupt ID of the virtual timer.
     pub timer_interrupt: u32,
     /// `clock-frequency` of the timer node, for a `CNTFRQ_EL0` firmware left
@@ -93,10 +132,11 @@ pub struct InterruptWiring {
 pub enum WiringError {
     NoDeviceTree,
     NoController,
-    /// A GICv3: it needs redistributors and system registers the kernel does
-    /// not drive (ADR 0035).
-    GicV3,
+    /// Neither a GICv2 nor a GICv3 the kernel knows by its `compatible`.
     UnknownController,
+    /// A GICv3 whose redistributors are in several regions or not laid out one
+    /// after the other: the walk of the kernel does not follow either.
+    RedistributorLayout,
     BadController(Error),
     NoTimer,
     BadTimer(Error),
@@ -105,16 +145,10 @@ pub enum WiringError {
 impl fmt::Display for WiringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoDeviceTree => {
-                f.write_str("there is no device tree to find the interrupt controller in")
-            }
+            Self::NoDeviceTree => f.write_str("there is no device tree to find the interrupt controller in"),
             Self::NoController => f.write_str("the device tree has no interrupt controller"),
-            Self::GicV3 => {
-                f.write_str("the controller is a GICv3, which the kernel does not drive (ADR 0035)")
-            }
-            Self::UnknownController => {
-                f.write_str("the controller is not a GICv2 the kernel knows (ADR 0035)")
-            }
+            Self::UnknownController => f.write_str("the controller is neither a GICv2 nor a GICv3 the kernel knows (ADR 0035)"),
+            Self::RedistributorLayout => f.write_str("the GICv3's redistributors are in several regions or have a stride, which the kernel does not follow (ADR 0035)"),
             Self::BadController(error) => write!(f, "the controller's registers: {error}"),
             Self::NoTimer => f.write_str("the device tree has no armv8 timer"),
             Self::BadTimer(error) => write!(f, "the timer's interrupts: {error}"),
@@ -154,21 +188,13 @@ pub struct Board {
 impl Board {
     /// The interrupt controller and the virtual timer, read from the device
     /// tree on both paths: the bootloader copies it and the kernel does not
-    /// look anywhere else. A controller that is not a GICv2 is refused by name.
+    /// look anywhere else. A controller that is neither a GICv2 nor a GICv3 is
+    /// refused by name.
     pub fn interrupt_wiring(&self) -> Result<InterruptWiring, WiringError> {
         let fdt = self.fdt.as_ref().ok_or(WiringError::NoDeviceTree)?;
         let controller = fdt
             .find_device(|device| device.is_interrupt_controller())
             .map_err(|_| WiringError::NoController)?;
-        if controller.is_compatible(GICV3_COMPATIBLE) {
-            return Err(WiringError::GicV3);
-        }
-        if !GICV2_COMPATIBLE
-            .iter()
-            .any(|compatible| controller.is_compatible(compatible))
-        {
-            return Err(WiringError::UnknownController);
-        }
         let registers = |index| {
             controller
                 .region(index)
@@ -180,6 +206,28 @@ impl Board {
                         .map(|_| region)
                         .ok_or(WiringError::BadController(Error::MalformedReg))
                 })
+        };
+        let controller = if controller.is_compatible(GICV3_COMPATIBLE) {
+            let regions = controller
+                .redistributor_regions()
+                .map_err(WiringError::BadController)?;
+            if regions != 1 || controller.has_redistributor_stride() {
+                return Err(WiringError::RedistributorLayout);
+            }
+            Controller::V3 {
+                distributor: registers(0)?,
+                redistributors: registers(1)?,
+            }
+        } else if GICV2_COMPATIBLE
+            .iter()
+            .any(|compatible| controller.is_compatible(compatible))
+        {
+            Controller::V2 {
+                distributor: registers(0)?,
+                cpu_interface: registers(1)?,
+            }
+        } else {
+            return Err(WiringError::UnknownController);
         };
         let timer = fdt
             .find_device(|device| device.is_compatible(TIMER_COMPATIBLE))
@@ -193,8 +241,7 @@ impl Board {
             return Err(WiringError::BadTimer(Error::MalformedReg));
         }
         Ok(InterruptWiring {
-            distributor: registers(0)?,
-            cpu_interface: registers(1)?,
+            controller,
             timer_interrupt: PRIVATE_PERIPHERAL_BASE_ID + interrupt.number,
             timer_frequency: timer.clock_frequency().map_err(WiringError::BadTimer)?,
         })
