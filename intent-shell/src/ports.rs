@@ -138,6 +138,9 @@ pub enum ApplyError {
     /// The history cannot be trusted.
     Damaged(String),
     Failed(String),
+    /// The SOUL was replaced, but the history entry is not committed yet; the
+    /// next operation under the lock settles it.
+    AppliedUncommitted(String),
 }
 
 impl ApplyError {
@@ -147,6 +150,7 @@ impl ApplyError {
             Self::Locked => "locked",
             Self::Damaged(_) => "damaged",
             Self::Failed(_) => "failed",
+            Self::AppliedUncommitted(_) => "applied_uncommitted",
         }
     }
 
@@ -158,7 +162,7 @@ impl ApplyError {
                     .to_owned()
             }
             Self::Damaged(why) => format!("the history is damaged:\n{why}"),
-            Self::Failed(why) => why.clone(),
+            Self::Failed(why) | Self::AppliedUncommitted(why) => why.clone(),
         }
     }
 }

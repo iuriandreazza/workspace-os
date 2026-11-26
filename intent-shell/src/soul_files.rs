@@ -299,6 +299,43 @@ fn is_temporary_of(name: &str, target: &Path) -> bool {
         })
 }
 
+/// Whether the history directory is there: a link is refused, so nothing is
+/// ever written or changed in a place the link leads to.
+fn real_directory(dir: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => Ok(true),
+        Ok(_) => Err(format!(
+            "the history {} is not a plain directory (a link or a file); refused",
+            soul::shown_path(dir)
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!(
+            "cannot look at the history {}: {e}",
+            soul::shown_path(dir)
+        )),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes the commit of history entries fail, on this thread.
+    static FAIL_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_commits(on: bool) {
+    FAIL_COMMIT.with(|f| f.set(on));
+}
+
+/// Makes the entry part of the history. The test build can be told to fail here.
+fn commit(pending: &Path, entry: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_COMMIT.with(std::cell::Cell::get) {
+        return Err(std::io::Error::other("injected"));
+    }
+    fs::rename(pending, entry)
+}
+
 fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -323,7 +360,7 @@ impl SoulStore for FileSoulStore {
         // A writer that died between the swap and the commit left a change that
         // already happened: if nobody is writing now, settle it before reading, so
         // it can be seen and undone. Who may not write here just reads what is there.
-        if dir.is_dir()
+        if real_directory(&dir)?
             && let Ok(_lock) = Lock::acquire(&dir.join(".lock"))
             && let Ok(current) = read_text(&target)
         {
@@ -355,6 +392,7 @@ impl SoulStore for FileSoulStore {
     fn apply(&self, change: &Change, approval: &Approval) -> Result<u32, ApplyError> {
         let target = self.target().map_err(ApplyError::Failed)?;
         let dir = history_dir(&target);
+        real_directory(&dir).map_err(ApplyError::Failed)?;
         fs::create_dir_all(&dir).map_err(|e| {
             ApplyError::Failed(format!("cannot create {}: {e}", soul::shown_path(&dir)))
         })?;
@@ -430,9 +468,9 @@ impl SoulStore for FileSoulStore {
         if let Some(parent) = target.parent() {
             sync_directory(parent);
         }
-        fs::rename(&pending, dir.join(entry_name(seq, "json"))).map_err(|e| {
-            ApplyError::Failed(format!(
-                "the SOUL was changed but its history entry could not be committed ({e}); the next change settles it"
+        commit(&pending, &dir.join(entry_name(seq, "json"))).map_err(|e| {
+            ApplyError::AppliedUncommitted(format!(
+                "its history entry {seq} is not committed yet ({e}); the next operation on the SOUL settles it"
             ))
         })?;
         sync_directory(&dir);

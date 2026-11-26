@@ -15,7 +15,8 @@ use crate::command::{self, Parsed};
 use crate::label::Labels;
 use crate::plan::{Document, Origin, Plan, StepId, parse_checked};
 use crate::ports::{
-    Confirm, DecisionLog, EntryKind, Host, Output, Planner, Retry, Search, SoulStore, TreeEntry,
+    ApplyError, Confirm, DecisionLog, EntryKind, Host, Output, Planner, Retry, Search, SoulStore,
+    TreeEntry,
 };
 use crate::reference::Place;
 use crate::resolve::Choices;
@@ -567,6 +568,17 @@ impl Shell<'_> {
                 Ok(ItemResult::Done(Output {
                     text: format!(
                         "The SOUL was changed: history entry {seq}. The new SOUL is read at the next start."
+                    ),
+                    ..Output::default()
+                }))
+            }
+            // Done, though not yet in the history: the SOUL is already the new one.
+            Ok(Err(error @ ApplyError::AppliedUncommitted(_))) => {
+                self.record(ended(error.outcome(), &error.message()))?;
+                Ok(ItemResult::Done(Output {
+                    text: format!(
+                        "The SOUL was changed, but {} The new SOUL is read at the next start.",
+                        error.message()
                     ),
                     ..Output::default()
                 }))

@@ -1322,3 +1322,54 @@ fn a_byte_order_mark_is_not_part_of_the_text_that_is_compared() {
     assert!(failed_text(&ran).contains("already in place"));
     assert!(answers.root_asked.is_empty());
 }
+
+#[test]
+fn a_change_whose_entry_could_not_be_committed_is_done_and_logged_as_such() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    crate::soul_files::fail_commits(true);
+    let (ran, _) = run_yes(&fixture, true, &propose(SOUL_B));
+    crate::soul_files::fail_commits(false);
+    assert!(
+        done_text(&ran).contains("The SOUL was changed, but"),
+        "{}",
+        done_text(&ran)
+    );
+    assert_eq!(fixture.text(), SOUL_B);
+    assert_eq!(
+        soul_events(&ran).last().unwrap()["outcome"],
+        "applied_uncommitted"
+    );
+    // Listing settles it, and the change can be undone.
+    let (listed, _) = run_yes(&fixture, false, &history());
+    assert!(
+        done_text(&listed).contains("   1  change"),
+        "{}",
+        done_text(&listed)
+    );
+    let (undone, _) = run_yes(&fixture, true, &undo());
+    assert!(done_text(&undone).contains("history entry 2"));
+    assert_eq!(fixture.text(), SOUL_A);
+}
+
+#[test]
+fn a_history_directory_that_is_a_link_is_refused_and_nothing_is_touched() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::with_soul(SOUL_A);
+    let elsewhere = fixture.dir.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+    symlink(&elsewhere, fixture.history()).unwrap();
+    let (changed, answers) = run_yes(&fixture, true, &propose(SOUL_B));
+    assert!(
+        failed_text(&changed).contains("not a plain directory"),
+        "{}",
+        failed_text(&changed)
+    );
+    let _ = answers;
+    let (listed, _) = run_yes(&fixture, true, &history());
+    assert!(failed_text(&listed).contains("not a plain directory"));
+    assert_eq!(fixture.text(), SOUL_A);
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    let mode = std::fs::metadata(&elsewhere).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+}
