@@ -459,9 +459,14 @@ impl Shell<'_> {
                 self.record(
                     json!({"event": "execute", "step": step.as_str(), "action": rendering}),
                 )?;
-                match self.soul_store().and_then(|store| store.history()) {
-                    Ok(entries) => ItemResult::Done(Output {
-                        text: history_text(&entries),
+                match self.soul_store().and_then(|store| store.history_listing()) {
+                    Ok((entries, problem)) => ItemResult::Done(Output {
+                        text: match problem {
+                            Some(problem) => {
+                                format!("{}\nWARNING: {problem}", history_text(&entries))
+                            }
+                            None => history_text(&entries),
+                        },
                         ..Output::default()
                     }),
                     Err(why) => ItemResult::Failed(why),
@@ -546,12 +551,16 @@ impl Shell<'_> {
             self.record(ended("not_administrator", ""))?;
             return Ok(ItemResult::NotRun(Refusal::NotAdministrator.to_string()));
         };
+        // On record before the write: the shell changes nothing while the log cannot be written.
+        self.record(json!({"event": "soul_change", "step": step.as_str(), "kind": kind, "by": who.name, "outcome": "writing", "written": prepared.change.after}))?;
         let applied = self
             .soul_store()
             .map(|store| store.apply(&prepared.change, &approval));
         match applied {
             Ok(Ok(seq)) => {
-                self.record(json!({"event": "soul_change", "step": step.as_str(), "kind": kind, "by": who.name, "outcome": "applied", "seq": seq, "written": prepared.change.after}))?;
+                // The SOUL is changed whatever happens to the log now; the result
+                // event that follows reports a log that fails, with this step done.
+                let _ = self.record(json!({"event": "soul_change", "step": step.as_str(), "kind": kind, "by": who.name, "outcome": "applied", "seq": seq}));
                 Ok(ItemResult::Done(Output {
                     text: format!(
                         "The SOUL was changed: history entry {seq}. The new SOUL is read at the next start."

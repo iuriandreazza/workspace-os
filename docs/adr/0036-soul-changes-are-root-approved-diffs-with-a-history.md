@@ -71,7 +71,7 @@ uses. The broker decides it from the action table (`RootRule::Always`), as for
 on the capability and on `administrator`, so the same request gives the same
 verdicts, `review` events and `describe()` under any SOUL (ADR 0006, ADR 0028
 section 5: the tests that compare them stay and cover these actions).
-`describe()` carries the canonical new text only, never the current file. Every
+`describe()` carries the text the model proposed and never the current file, so it does not vary with the SOUL. Every
 result that depends on the file (stale, nothing changes, unreadable SOUL,
 damaged history, lock held, the effect on a personality) happens when the step
 runs and is a failed step with a `soul_change` event, never a broker verdict.
@@ -104,10 +104,14 @@ computed. Rules:
   do not exist in what is approved or written.
 - The current side is the file's real bytes, so what is lost from a hand-edited
   file (comments) shows up as removed lines.
-- Every line passes the same escaping as other model text (`printable`); a
-  line starting with `+` or `-` inside the file is shown after its own prefix,
-  so no line of text can pass for a line of the panel. The panel ends with the
-  line the code draws.
+- Every line passes the same escaping as other model text (`printable`), and
+  the frame characters (`║ ╔ ╚ ═ ↳`) in it are escaped too. Untrusted text is
+  cut into pieces of at most 64 characters, each behind a prefix the code
+  draws (`↳` marks a continuation), so a terminal never wraps it and a wrapped
+  piece never starts a line that looks like the panel's. A line starting with
+  `+` or `-` inside the file is shown after its own prefix. The panel ends
+  with the line the code draws. When the two files differ only in line endings
+  or the final newline, the panel says so, because the line diff is empty.
 - The model's `rationale` is shown once, quoted and labelled as the model's
   words, never as part of the diff.
 - An undo shows the same panel, from the current file to the file it restores.
@@ -173,14 +177,14 @@ nothing to that and decides:
 | Crash safety | The entry is first written complete and synced as `<seq>.pending`, then the SOUL is swapped, then the entry is renamed to `<seq>.json`. A history file therefore only ever describes a change that happened. A leftover `.pending` is settled by the next operation under the lock: if the SOUL equals its `after` it is committed (the process died after the swap); otherwise it is deleted (it never took effect, and the decision log has the proposal) |
 | Undo | Reverts the most recent change **not already reverted**: walk the entries in order, a change pushes, an undo pops the `seq` it names. Two undos go back two changes. An undo entry itself cannot be undone, so there is no redo; to get a version back, propose it again. Undo writes the entry's `before` text verbatim as a new entry of kind `undo`, after checking that it still parses as a SOUL (a tampered history cannot write arbitrary text) |
 | Refusals | No entries: "there is no change to undo". The SOUL on disk is not the `after` of the entry to revert (it was changed outside the history): refused, with both versions named. Entries unreadable, a `seq` missing or repeated, an undo that names the wrong entry: "the history is damaged", names the file, changes nothing. A missing directory is an empty history, not damage |
-| Listing | `soul.history` skips `.lock` and prints every readable entry (seq, kind, who, when, rationale as a quoted line) and says when it could not read one |
+| Listing | `soul.history` skips `.lock` and prints every readable entry up to the first problem (seq, kind, who, when, rationale as a quoted line), then a WARNING line that says what is wrong. Listing and undo first settle a leftover `.pending` when no writer holds the lock, so a change whose process died after the swap can be seen and undone at once |
 
 ### 7. The decision log
 
 ADR 0002 logs every model decision. Beside the existing events (`review`,
 `plan_confirmation`, `root_confirmation`), a SOUL change adds one event after
 the attempt: `soul_change` with `kind`, `by`, `seq`, `outcome` (`applied`, or
-the refusal such as `stale`, `locked`, `invalid`, `no_soul`, `damaged`) and,
+the refusal such as `stale`, `locked`, `invalid`, `no_change`, `unavailable`, `nothing_to_undo`, `declined`, `damaged`). The event with outcome `writing` and the file about to be written is recorded **before** the write, and the shell writes nothing when the log cannot take it (ADR 0002); a log that fails after the write is reported by the result event, with the change done and,
 when applied, the file written. The SOUL holds no secret (it is read by every
 user), so the file is logged whole; nothing the person typed as a password
 exists in this flow.

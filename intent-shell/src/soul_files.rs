@@ -91,13 +91,14 @@ fn read_entry(path: &Path) -> Result<HistoryEntry, String> {
     Ok(entry)
 }
 
-/// The committed entries, oldest first. They must be numbered 1, 2, 3... with
-/// none missing, each file's number must be the entry's own, and every file
-/// named `*.json` must be an entry.
-fn read_history(dir: &Path) -> Result<Vec<HistoryEntry>, String> {
+/// The committed entries, oldest first, up to the first thing wrong with the
+/// history, which is said. They must be numbered 1, 2, 3... with none missing,
+/// each file's number must be the entry's own, and every file named `*.json`
+/// must be an entry.
+fn read_history_partial(dir: &Path) -> Result<(Vec<HistoryEntry>, Option<String>), String> {
     let listing = match fs::read_dir(dir) {
         Ok(listing) => listing,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), None)),
         Err(e) => {
             return Err(format!(
                 "cannot read the history {}: {e}",
@@ -106,17 +107,22 @@ fn read_history(dir: &Path) -> Result<Vec<HistoryEntry>, String> {
         }
     };
     let mut numbers = Vec::new();
+    let mut problem = None;
     for item in listing {
         let item = item.map_err(|e| format!("cannot read the history: {e}"))?;
         let name = item.file_name().to_string_lossy().into_owned();
         if name.ends_with(".json") {
-            let number = numbered(&name, "json").ok_or_else(|| {
-                format!(
-                    "the history is damaged: {} is not an entry name",
-                    soul::shown_path(Path::new(&name))
-                )
-            })?;
-            numbers.push(number);
+            match numbered(&name, "json") {
+                Some(number) => numbers.push(number),
+                None => {
+                    problem.get_or_insert_with(|| {
+                        format!(
+                            "the history is damaged: {} is not an entry name",
+                            soul::shown_path(Path::new(&name))
+                        )
+                    });
+                }
+            }
         }
     }
     numbers.sort_unstable();
@@ -124,23 +130,39 @@ fn read_history(dir: &Path) -> Result<Vec<HistoryEntry>, String> {
     for (index, number) in numbers.into_iter().enumerate() {
         let expected = index as u32 + 1;
         if number != expected {
-            return Err(format!(
-                "the history is damaged: entry {expected} is missing"
-            ));
+            problem.get_or_insert_with(|| {
+                format!("the history is damaged: entry {expected} is missing")
+            });
+            break;
         }
-        let name = entry_name(number, "json");
-        let entry = read_entry(&dir.join(&name)).map_err(|why| {
-            format!("the history is damaged: entry {number} cannot be used ({why})")
-        })?;
-        if entry.seq != number {
-            return Err(format!(
-                "the history is damaged: file {number} holds entry {}",
-                entry.seq
-            ));
-        }
+        let entry = match read_entry(&dir.join(entry_name(number, "json"))) {
+            Ok(entry) if entry.seq == number => entry,
+            Ok(entry) => {
+                problem.get_or_insert_with(|| {
+                    format!(
+                        "the history is damaged: file {number} holds entry {}",
+                        entry.seq
+                    )
+                });
+                break;
+            }
+            Err(why) => {
+                problem.get_or_insert_with(|| {
+                    format!("the history is damaged: entry {number} cannot be used ({why})")
+                });
+                break;
+            }
+        };
         entries.push(entry);
     }
-    Ok(entries)
+    Ok((entries, problem))
+}
+
+fn read_history(dir: &Path) -> Result<Vec<HistoryEntry>, String> {
+    match read_history_partial(dir)? {
+        (entries, None) => Ok(entries),
+        (_, Some(problem)) => Err(problem),
+    }
 }
 
 /// Written whole and synced before it is named for what it is.
@@ -237,7 +259,25 @@ impl SoulStore for FileSoulStore {
     }
 
     fn history(&self) -> Result<Vec<HistoryEntry>, String> {
-        read_history(&history_dir(&self.target()?))
+        match self.history_listing()? {
+            (entries, None) => Ok(entries),
+            (_, Some(problem)) => Err(problem),
+        }
+    }
+
+    fn history_listing(&self) -> Result<(Vec<HistoryEntry>, Option<String>), String> {
+        let target = self.target()?;
+        let dir = history_dir(&target);
+        // A writer that died between the swap and the commit left a change that
+        // already happened: if nobody is writing now, settle it before reading, so
+        // it can be seen and undone. Who may not write here just reads what is there.
+        if dir.is_dir()
+            && let Ok(_lock) = Lock::acquire(&dir.join(".lock"))
+            && let Ok(current) = read_text(&target)
+        {
+            let _ = settle(&dir, &target, &current);
+        }
+        read_history_partial(&dir)
     }
 
     fn personality_effect(&self, soul: &Soul) -> String {
@@ -266,6 +306,8 @@ impl SoulStore for FileSoulStore {
         fs::create_dir_all(&dir).map_err(|e| {
             ApplyError::Failed(format!("cannot create {}: {e}", soul::shown_path(&dir)))
         })?;
+        // The directory is the machine's, read by everyone, whatever the umask.
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
         let _lock = Lock::acquire(&dir.join(".lock"))?;
         let current = read_text(&target).map_err(ApplyError::Failed)?;
         settle(&dir, &target, &current)?;

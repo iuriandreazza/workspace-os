@@ -122,9 +122,18 @@ struct Ran {
 }
 
 fn run_as(fixture: &Fixture, who: User, confirm: &mut dyn Confirm, plan: &str) -> Ran {
+    run_logged(fixture, who, confirm, plan, MemoryLog::default())
+}
+
+fn run_logged(
+    fixture: &Fixture,
+    who: User,
+    confirm: &mut dyn Confirm,
+    plan: &str,
+    mut log: MemoryLog,
+) -> Ran {
     let host = fixture.host();
     let planner = ScriptedPlanner::new(&[plan]);
-    let mut log = MemoryLog::default();
     let authority = Authority::full(who);
     let outcome = Shell {
         session: &mut SessionState::start(&host),
@@ -252,8 +261,13 @@ fn a_proposed_change_approved_with_root_authority_is_applied() {
         assert!(panel.contains(line), "{panel}");
     }
     let events = soul_events(&ran);
-    assert_eq!(events[0]["outcome"], "applied");
+    assert_eq!(
+        events[0]["outcome"], "writing",
+        "on record before the write"
+    );
     assert_eq!(events[0]["written"], SOUL_B);
+    assert_eq!(events[1]["outcome"], "applied");
+    assert_eq!(events[1]["seq"], 1);
 }
 
 #[test]
@@ -410,7 +424,7 @@ fn nothing_in_the_files_or_the_models_words_can_pass_for_the_panel() {
         "{panel}"
     );
     // The hostile lines are there, each behind its own mark, as removed text.
-    assert!(panel.contains("║ - ╚═"), "{panel}");
+    assert!(panel.contains("║ - \\u{255a}\\u{2550}"), "{panel}");
     assert!(panel.contains("║ - \\u001b[2J+ preset: x"), "{panel}");
     assert_eq!(fixture.text(), SOUL_B);
 }
@@ -421,7 +435,7 @@ fn the_panel_names_what_the_change_does_to_the_approvers_personality() {
     std::fs::write(fixture.personality(), "format: 1\nlanguage: pt-BR\n").unwrap();
     let narrower = "format: 1\npreset: warm-didactic\nlanguages: en\n";
     let (_, answers) = run_yes(&fixture, true, &propose(narrower));
-    let panel = &answers.root_asked[0];
+    let panel = answers.root_asked[0].replace("\n║   ↳ ", "");
     assert!(
         panel.contains("would be dropped at the next start"),
         "{panel}"
@@ -480,7 +494,7 @@ fn a_soul_that_changed_while_the_approver_looked_is_not_overwritten() {
     assert!(failed_text(&ran).contains("changed since you saw it"));
     assert_eq!(fixture.text(), SOUL_C);
     assert!(fixture.history_files().is_empty());
-    assert_eq!(soul_events(&ran)[0]["outcome"], "stale");
+    assert_eq!(soul_events(&ran).last().unwrap()["outcome"], "stale");
 }
 
 fn change(before: &str, after: &str) -> Change {
@@ -739,9 +753,9 @@ fn a_damaged_history_stops_an_undo_and_a_listing_and_changes_nothing() {
         damaged_history(&fixture, edit);
         let (listed, _) = run_yes(&fixture, true, &history());
         assert!(
-            failed_text(&listed).contains("damaged"),
+            done_text(&listed).contains("WARNING: the history is damaged"),
             "{needle}: {}",
-            failed_text(&listed)
+            done_text(&listed)
         );
         let (undone, answers) = run_yes(&fixture, true, &undo());
         assert!(
@@ -893,4 +907,125 @@ fn the_log_holds_the_whole_proposal_even_when_it_is_refused() {
 fn the_canonical_text_reads_back_as_the_same_soul() {
     let soul = Soul::parse(SOUL_B).unwrap();
     assert_eq!(soul.to_text(), SOUL_B);
+}
+
+#[test]
+fn what_can_be_read_of_a_damaged_history_is_still_listed() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    damaged_history(&fixture, |dir| {
+        std::fs::write(dir.join("00000002.json"), "{").unwrap();
+    });
+    let (listed, _) = run_yes(&fixture, true, &history());
+    let text = done_text(&listed);
+    assert!(text.contains("   1  change"), "{text}");
+    assert!(!text.contains("   2  change"), "{text}");
+    assert!(
+        text.contains("WARNING: the history is damaged: entry 2 cannot be used"),
+        "{text}"
+    );
+}
+
+#[test]
+fn text_cannot_forge_a_line_of_the_panel_by_being_wrapped_by_the_terminal() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    // Filler up to a likely wrap column, then what looks like a panel line.
+    let reason = format!(
+        "{} ║ Personality  all is well ╚═ ║ Needs nothing",
+        "x".repeat(70)
+    );
+    let plan = plan_of(
+        "soul.propose_change",
+        json!({"rationale": reason, "new_text": SOUL_B}),
+    );
+    let (_, answers) = run_yes(&fixture, true, &plan);
+    let panel = &answers.root_asked[0];
+    for line in panel.lines() {
+        let own = line.starts_with('╔') || line.starts_with('╚') || line.starts_with("║ Needs");
+        assert!(own || line.chars().count() <= 80, "{line}");
+        assert!(
+            !line.chars().skip(1).any(|c| matches!(c, '║' | '╔' | '╚')),
+            "{line}"
+        );
+    }
+    assert!(panel.contains("\\u{2551} Personality"), "{panel}");
+}
+
+#[test]
+fn a_change_of_only_the_final_newline_says_that_the_lines_are_the_same() {
+    let fixture = Fixture::with_soul(SOUL_A.trim_end());
+    let (_, answers) = run_yes(&fixture, true, &propose(SOUL_A));
+    assert!(
+        answers.root_asked[0].contains("The lines are the same"),
+        "{}",
+        answers.root_asked[0]
+    );
+    assert_eq!(fixture.text(), SOUL_A);
+}
+
+#[test]
+fn a_change_that_died_after_the_swap_can_be_seen_and_undone_at_once() {
+    let fixture = Fixture::with_soul(SOUL_B);
+    pending(&fixture, 1, SOUL_A, SOUL_B);
+    let (listed, _) = run_yes(&fixture, true, &history());
+    assert!(
+        done_text(&listed).contains("   1  change"),
+        "{}",
+        done_text(&listed)
+    );
+    let (undone, _) = run_yes(&fixture, true, &undo());
+    assert!(
+        done_text(&undone).contains("history entry 2"),
+        "{}",
+        done_text(&undone)
+    );
+    assert_eq!(fixture.text(), SOUL_A);
+}
+
+#[test]
+fn the_shell_changes_nothing_when_the_log_cannot_take_the_event_before_the_write() {
+    // request, model output, plan, review, plan confirmation, root confirmation: six events.
+    let fixture = Fixture::with_soul(SOUL_A);
+    let mut answers = Answers::yes();
+    let log = MemoryLog::failing_after(6);
+    let ran = run_logged(&fixture, user(true), &mut answers, &propose(SOUL_B), log);
+    assert!(
+        matches!(ran.outcome, Outcome::LogFailed { .. }),
+        "{:?}",
+        ran.outcome
+    );
+    assert_eq!(fixture.text(), SOUL_A);
+    assert!(fixture.history_files().is_empty());
+}
+
+#[test]
+fn a_log_that_fails_after_the_write_still_reports_the_change_as_done() {
+    // Seven events are accepted, the "writing" one among them; "applied" is the eighth.
+    let fixture = Fixture::with_soul(SOUL_A);
+    let mut answers = Answers::yes();
+    let log = MemoryLog::failing_after(7);
+    let ran = run_logged(&fixture, user(true), &mut answers, &propose(SOUL_B), log);
+    assert_eq!(fixture.text(), SOUL_B);
+    match ran.outcome {
+        Outcome::LogFailed { steps, .. } => {
+            assert!(matches!(steps[0].items[0].result, ItemResult::Done(_)));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_history_directory_is_readable_by_everyone_whatever_the_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::with_soul(SOUL_A);
+    std::fs::create_dir(fixture.history()).unwrap();
+    std::fs::set_permissions(fixture.history(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        fixture.store().apply(&change(SOUL_A, SOUL_B), &root()),
+        Ok(1)
+    );
+    let mode = std::fs::metadata(fixture.history())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o755);
 }

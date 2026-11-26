@@ -169,6 +169,8 @@ pub trait SoulStore {
     /// Every applied change, oldest first, or what is wrong with the history.
     /// A missing history is an empty one.
     fn history(&self) -> Result<Vec<HistoryEntry>, String>;
+    /// The entries up to the first thing wrong with the history, and what that is.
+    fn history_listing(&self) -> Result<(Vec<HistoryEntry>, Option<String>), String>;
     /// What a SOUL would do to the personality of the person at the keyboard.
     fn personality_effect(&self, soul: &Soul) -> String;
     /// Write the change and its history entry, all or nothing, and give the

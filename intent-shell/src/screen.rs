@@ -306,10 +306,8 @@ pub fn soul_panel(who: &str, step: &StepId, prepared: &Prepared) -> String {
         format!("║ Action  {what}"),
     ];
     if let Some(reason) = &change.rationale {
-        lines.push(format!(
-            "║ The model's reason, in its words and not part of the change: {}",
-            quoted(reason)
-        ));
+        lines.push("║ The model's reason, in its words and not part of the change:".to_owned());
+        lines.extend(framed("║   ", "║   ↳ ", &quoted(reason)));
     }
     lines.push(format!(
         "║ The whole file, line by line: {} removed (-), {} added (+), {} kept",
@@ -317,22 +315,55 @@ pub fn soul_panel(who: &str, step: &StepId, prepared: &Prepared) -> String {
         count(Mark::Added),
         count(Mark::Kept)
     ));
-    lines.extend(
-        prepared
-            .diff
-            .iter()
-            .map(|line| format!("║ {} {}", line.mark.symbol(), printable(&line.text, false))),
-    );
-    lines.push(format!(
-        "║ Personality  {}",
-        printable(&prepared.personality, false)
-    ));
+    if count(Mark::Removed) + count(Mark::Added) == 0 {
+        lines.push(
+            "║ The lines are the same: only line endings or the final newline change.".to_owned(),
+        );
+    }
+    for line in &prepared.diff {
+        let first = format!("║ {} ", line.mark.symbol());
+        let more = format!("║ {} ↳ ", line.mark.symbol());
+        lines.extend(framed(&first, &more, &line.text));
+    }
+    lines.extend(framed("║ Personality  ", "║   ↳ ", &prepared.personality));
     lines.push(format!(
         "║ Needs   {}, as root. This is written exactly as shown, and the new SOUL is read at the next start.",
         Capability::SoulPropose
     ));
     lines.push("╚═".to_owned());
     printable(&lines.join("\n"), true)
+}
+
+/// Longest stretch of untrusted text on one panel line: shorter than a terminal,
+/// so the terminal never wraps it and a wrapped piece never starts a line of its own.
+const PANEL_CHUNK: usize = 64;
+
+/// Untrusted text as panel lines: escaped, with the frame characters escaped
+/// too so no text can draw a line of the frame, and cut into pieces that each
+/// start with a prefix the code draws.
+fn framed(first: &str, more: &str, text: &str) -> Vec<String> {
+    let safe: String = printable(text, false)
+        .chars()
+        .map(|c| match c {
+            '║' | '╔' | '╚' | '═' | '↳' => format!("\\u{{{:04x}}}", c as u32),
+            other => other.to_string(),
+        })
+        .collect();
+    let chars: Vec<char> = safe.chars().collect();
+    if chars.is_empty() {
+        return vec![first.to_owned()];
+    }
+    chars
+        .chunks(PANEL_CHUNK)
+        .enumerate()
+        .map(|(i, piece)| {
+            format!(
+                "{}{}",
+                if i == 0 { first } else { more },
+                piece.iter().collect::<String>()
+            )
+        })
+        .collect()
 }
 
 /// The question for a reference that matched several things, and the
