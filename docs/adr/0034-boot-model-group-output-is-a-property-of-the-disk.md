@@ -1,9 +1,9 @@
 ---
 title: "ADR 0034: The boot model's group output is a property of the disk, not of a candidate"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-23
-updated: 2026-11-23
+updated: 2026-11-26
 tags: [boot, bootloader, model, amendment, entries]
 ---
 
@@ -26,9 +26,9 @@ on a disk where three others sort before it, and nothing in its 512 bytes says w
 entries in a random order, so the measurements below show the consequence of that, **not an empirical property of real
 disks**; the argument rests on the structure, and a deterministic numbering was not trained.
 
-This ADR changes no decision of ADR 0027 except that one output and what depends on it: section 3 ("an entry is assembled from one group") and section 4, item 1 ("a group with two kernels" is rejected) would be read as applying to the entries the loader assembles, not to a model output. If accepted, ADR 0027 is amended by this ADR, as it is by ADR 0030. It is `proposed`: it
+This ADR changes no decision of ADR 0027 except that one output and what depends on it: section 3 ("an entry is assembled from one group") and section 4, item 1 ("a group with two kernels" is rejected) would be read as applying to the entries the loader assembles, not to a model output. ADR 0027 is amended by this ADR, as it is by ADR 0030. The project owner accepted it on 2026-11-26: it
 changes how entries are assembled, which touches ADR 0009 ("no rule based scanner runs
-beside the model to overrule it"), and that is the project owner's call.
+beside the model to overrule it"), and that was theirs to decide.
 
 ## What B2 measured
 
@@ -47,7 +47,7 @@ build the loader on: entry text in the Boot Loader Specification layout lives in
 `\loader\entries`, away from the kernel it names, and several layouts keep two kernels in
 one directory.
 
-## Decision proposed
+## Decision
 
 1. **The group output is not used.** `\WSOS.MDL` keeps the 34-score layout (changing it
    would change the file for nothing), the group slice is trained with a low weight and
@@ -69,14 +69,13 @@ one directory.
 |---|---|---|
 | Keep the 16-slot group as specified | Nothing to change | 25 % on entry files, but with the generator's random numbering, which makes chance accuracy certain; a wrong slot puts a kernel with the wrong initrd |
 | Replace the group with a pair score trained jointly with the trunk | Keeps assembly inside the model | Not measured here: the baseline on frozen trunk features failed, a joint model needs its own corpus of pairs, its own validation and 256 candidates make up to tens of thousands of pairs |
-| Assembly by code from the model's labels (proposed) | Deterministic, testable on the host, exact where the entry text names paths | A rule beside the model, which the owner must accept; layouts with two kernels in one directory need the version suffix rule, and neither was validated at corpus scale |
+| Assembly by code from the model's labels (chosen) | Deterministic, testable on the host, exact where the entry text names paths | A rule beside the model, which the owner accepted; layouts with two kernels in one directory need the version suffix rule, and neither was validated at corpus scale |
 | Generate paths instead of choosing among candidates | Would not need pairing | Rejected by ADR 0027 itself: free text is what the typed decision avoids |
 
 ## Consequences
 
-- If accepted, B3 specifies the assembly rule with tests on the host (BLS parsing and the
+- B3 specifies the assembly rule with tests on the host (BLS parsing and the
   same-directory rule) and measures it on layouts whose entry text names the files of the disk (the B2 generator
   does not write that yet) and, where one is at hand, on real disks. B2's report is the evidence that the rule is needed.
-- If rejected, ADR 0027 stands as written and its group output has no known way to be
-  trained; B3 cannot use it.
+- The group output of ADR 0027 has no known way to be trained, so B3 does not use it.
 - The group slice stays in the file so a later model can use it without a format change.
