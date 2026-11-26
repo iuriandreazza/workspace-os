@@ -54,6 +54,13 @@ _start:
 .Lfrom_el3:
     adr  x0, el3_vectors
     msr  vbar_el3, x0
+    // The monitor reads and writes device registers with the MMU off: the
+    // byte order and alignment checks of SCTLR_EL3 are unknown at reset, so it
+    // is set to its reserved-as-one bits and nothing else (little endian).
+    movz x0, #0x30c5, lsl #16
+    movk x0, #0x0830
+    msr  sctlr_el3, x0
+    isb
     mov  x20, #1
     // A GICv3's system registers are off for the lower levels until EL3 allows
     // them (ICC_SRE_EL3: SRE, DFB, DIB and Enable), and the register does not

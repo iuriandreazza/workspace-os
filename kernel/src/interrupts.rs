@@ -244,6 +244,13 @@ pub fn handle_irq() {
         return;
     };
     if taken.id() == TIMER_INTERRUPT.load(Ordering::Relaxed) {
+        // A signal the timer no longer stands behind (a controller slow to see
+        // the line drop) is not a tick, and must not move the deadline again.
+        if !arch::timer::is_firing() {
+            SPURIOUS.fetch_add(1, Ordering::Relaxed);
+            end_of_interrupt(taken);
+            return;
+        }
         // The line is level: until the deadline moves past the count the timer
         // keeps it asserted, so this comes before the end of the interrupt.
         let now = arch::timer::count();

@@ -126,7 +126,9 @@ A tick is 10 ms (100 Hz): enough resolution for a scheduler, cheap under
 emulation. The deadline moves by one period in each interrupt from the previous
 deadline (`CNTV_CVAL_EL0`), so the period does not drift with the time the
 handler takes; a core that fell more than a period behind skips the ticks it
-missed and does not fire them back to back. The line is level-sensitive, so the
+missed and does not fire them back to back, and an interrupt the timer no longer
+stands behind (its condition bit is clear) is counted as spurious and does not
+move the deadline. The line is level-sensitive, so the
 deadline moves before the end of the interrupt; the other order would make the
 controller signal it again at once.
 
@@ -200,10 +202,16 @@ The kernel only calls it when the boot code went through EL3 (`x20`, passed to
 non-secure world the controller, and an enable that did not take is a panic with
 a message, not a silent hang.
 
+The boot code sets `SCTLR_EL3` to its reserved-as-one bits before it leaves
+(little endian, no alignment checks, MMU and caches off): the monitor reads and
+writes device registers and its reset value is unknown.
+
 Limits: the monitor's code is read by EL3 with the MMU off, from the physical
 address of the image, so on hardware with caches the code must be clean to the
 point of coherency; the kernel's tables never change it, and QEMU's TCG models
-no cache.
+no cache. Any synchronous exception that reaches EL3 other than the monitor
+call stops in a loop with no output: before the monitor `VBAR_EL3` was unset and
+that hung too, and a message would need a console at EL3.
 
 ### The gate
 
@@ -254,6 +262,8 @@ ACPI-only machines at any controller), VirtualBox (it cannot run in the gate).
   ("the timer's interrupts") until the names are read.
 - The context test may return without a tick (a `wfi` is allowed to), and is
   tried up to three times before the boot gives up.
+- A `clock-frequency` that is not one cell is ignored: it is read only when
+  `CNTFRQ_EL0` is zero.
 - The fallback to the tree's `clock-frequency` has no boot of its own: neither
   QEMU's tree nor VirtualBox's has one, so only the refusal is exercised.
 

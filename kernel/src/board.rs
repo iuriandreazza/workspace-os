@@ -248,7 +248,9 @@ impl Board {
         Ok(InterruptWiring {
             controller,
             timer_interrupt: PRIVATE_PERIPHERAL_BASE_ID + interrupt.number,
-            timer_frequency: timer.clock_frequency().map_err(WiringError::BadTimer)?,
+            // Only read when the counter frequency register is zero: a property that
+            // is not one cell is no reason to refuse a machine that does not need it.
+            timer_frequency: timer.clock_frequency().ok().flatten(),
         })
     }
 

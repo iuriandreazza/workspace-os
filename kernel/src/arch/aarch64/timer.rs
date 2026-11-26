@@ -9,6 +9,7 @@ use core::arch::asm;
 
 const CONTROL_ENABLE: u64 = 1 << 0;
 const CONTROL_MASK: u64 = 1 << 1;
+const CONTROL_CONDITION_MET: u64 = 1 << 2;
 
 /// `CNTFRQ_EL0`: the counter's frequency in hertz as firmware programmed it.
 /// Zero where firmware never did.
@@ -49,6 +50,17 @@ pub fn set_deadline(count: u64) {
     unsafe {
         asm!("msr cntv_cval_el0, {}", "isb", in(reg) count, options(nomem, nostack, preserves_flags))
     };
+}
+
+/// Whether the timer's condition is met (`ISTATUS`): the count has reached the
+/// deadline and the line it drives is asserted.
+pub fn is_firing() -> bool {
+    let control: u64;
+    // SAFETY: reading `CNTV_CTL_EL0` has no side effects.
+    unsafe {
+        asm!("mrs {}, cntv_ctl_el0", out(reg) control, options(nomem, nostack, preserves_flags))
+    };
+    control & CONTROL_CONDITION_MET != 0
 }
 
 fn set_control(value: u64) {
