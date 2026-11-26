@@ -18,7 +18,7 @@ use crate::label::Labels;
 use crate::plan::{Origin, StepId};
 use crate::ports::{ChoiceLine, EntryKind, TREE_DEPTH, TreeEntry};
 use crate::resolve::Ambiguity;
-use crate::soul_change::{ChangeKind, Mark, Prepared, display_name, line_pieces};
+use crate::soul_change::{ChangeKind, Mark, Prepared, display_name, line_pieces, shortened};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -106,7 +106,11 @@ pub fn say(action: &Action, labels: &Labels) -> String {
             format!("Set {} to {}", quoted(key), quoted(value))
         }
         Action::SoulProposeChange { rationale, .. } => {
-            format!("Propose a change to the SOUL: {}", quoted(rationale))
+            // Short, so the line of the report that holds it ends before a terminal wraps it.
+            format!(
+                "Propose a change to the SOUL: \"{}\"",
+                shortened(rationale, 36)
+            )
         }
         Action::SoulUndoChange => "Undo the latest change to the SOUL".to_owned(),
         Action::SoulHistory => "Show the history of changes to the SOUL".to_owned(),

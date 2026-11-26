@@ -463,7 +463,10 @@ impl Shell<'_> {
                     Ok((entries, problem)) => ItemResult::Done(Output {
                         text: match problem {
                             Some(problem) => {
-                                format!("{}\nWARNING: {problem}", history_text(&entries))
+                                format!(
+                                    "{}\nWARNING: the history is damaged:\n{problem}",
+                                    history_text(&entries)
+                                )
                             }
                             None => history_text(&entries),
                         },

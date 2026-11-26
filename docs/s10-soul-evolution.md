@@ -128,6 +128,7 @@ so it keeps the name only because the request says so.
 - `--administrator` is a flag, not authentication (ADR 0032). Anyone who can run the shell with the flag can approve; S11b and S12 are what change that.
 - The host prototype keeps the SOUL in the user's own `~/.config`, so the user can edit the file by hand with no panel. The history refuses an undo after such an edit rather than hide it. The root-owned system path comes with the installer (ADR 0028).
 - No stored queue of proposals: a non-administrator's proposal is refused at review and stays in the log (ADR 0036, "What changes in ADR 0011").
+- The panel assumes the Latin letters are drawn one cell wide; a terminal set to draw East Asian ambiguous-width characters wide can still wrap a line inside a piece of untrusted text (ADR 0036, section 3).
 - A diff that is long does not fit a short terminal, and the interface then offers only to refuse; `--plain` or a taller terminal is the way.
 - A running session keeps the persona it started with; the new SOUL is read at the next start.
 - The model writes a proposal blind. A proposal that drops the name shows as a removed line, and the person refuses it.

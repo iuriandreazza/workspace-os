@@ -157,7 +157,8 @@ impl ApplyError {
                 "another session is changing the SOUL; try again in a moment, nothing was changed"
                     .to_owned()
             }
-            Self::Damaged(why) | Self::Failed(why) => why.clone(),
+            Self::Damaged(why) => format!("the history is damaged:\n{why}"),
+            Self::Failed(why) => why.clone(),
         }
     }
 }

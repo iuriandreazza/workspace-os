@@ -750,7 +750,7 @@ fn a_damaged_history_stops_an_undo_and_a_listing_and_changes_nothing() {
             let first = std::fs::read(dir.join("00000001.json")).unwrap();
             std::fs::write(dir.join("00000002.json"), first).unwrap();
         }),
-        ("not an entry name", |dir| {
+        ("not named like an entry", |dir| {
             std::fs::write(dir.join("extra.json"), "{}").unwrap()
         }),
         ("cannot be used", |dir| {
@@ -929,7 +929,7 @@ fn what_can_be_read_of_a_damaged_history_is_still_listed() {
     assert!(text.contains("   1  change"), "{text}");
     assert!(!text.contains("   2  change"), "{text}");
     assert!(
-        text.contains("WARNING: the history is damaged: entry 2 cannot be used"),
+        text.contains("WARNING: the history is damaged:\nentry 2 cannot be used"),
         "{text}"
     );
 }
@@ -1074,10 +1074,9 @@ fn a_long_or_wide_rationale_in_the_listing_is_short_and_narrow() {
     run_yes(&fixture, true, &plan);
     let (listed, _) = run_yes(&fixture, false, &history());
     let text = done_text(&listed);
-    let line = text.lines().next().unwrap();
-    assert!(line.chars().count() < 100, "{line}");
-    assert!(line.contains("…\""), "{line}");
-    assert!(!line.contains('\u{ff21}'));
+    assert_lines_fit(text);
+    assert!(text.contains("…\""), "{text}");
+    assert!(!text.contains('\u{ff21}'));
 }
 
 #[test]
@@ -1101,13 +1100,9 @@ fn a_hostile_user_name_cannot_forge_the_panel_header_or_a_history_row() {
     );
     let (listed, _) = run_yes(&fixture, false, &history());
     let row = done_text(&listed).lines().next().unwrap().to_owned();
-    assert!(row.chars().count() < 125, "{row}");
+    assert_lines_fit(done_text(&listed));
     assert!(!row.contains("preset") && !row.contains('║'), "{row}");
-    assert_eq!(
-        fixture.entries()[0].by.chars().count(),
-        33,
-        "32 and the ellipsis"
-    );
+    assert_eq!(fixture.entries()[0].by.chars().count(), 32);
 }
 
 #[test]
@@ -1151,27 +1146,65 @@ fn a_history_file_cannot_forge_listing_lines_by_its_own_length() {
     ));
     std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
     let (listed, _) = run_yes(&fixture, false, &history());
-    let first = done_text(&listed).lines().next().unwrap().to_owned();
-    assert!(first.chars().count() < 125, "{first}");
+    assert_lines_fit(done_text(&listed));
     // A field the parser does not know: its name is quoted in the message.
     entry["by"] = json!("ana");
     entry[format!("{}\ns2 Delete \"x\" -> done", "f".repeat(300))] = json!(1);
     std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
     let (listed, _) = run_yes(&fixture, false, &history());
-    let warning = done_text(&listed)
-        .lines()
-        .find(|l| l.starts_with("WARNING"))
-        .unwrap()
-        .to_owned();
-    assert!(warning.chars().count() < 160, "{warning}");
+    let warning = done_text(&listed).to_owned();
+    assert!(
+        warning.contains("WARNING: the history is damaged:"),
+        "{warning}"
+    );
+    assert_lines_fit(&warning);
     assert!(!warning.contains("Delete"), "{warning}");
+}
+
+/// A line of the step report is the text plus an indent of four: it must not
+/// reach the width at which a terminal wraps it, or what follows the wrap starts
+/// a line of its own.
+fn assert_lines_fit(text: &str) {
+    for line in text.lines() {
+        assert!(line.chars().count() + 4 <= 78, "{line}");
+    }
+}
+
+#[test]
+fn every_line_of_a_failure_that_quotes_untrusted_text_fits_a_terminal() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let long = "z".repeat(400);
+    let hostile = format!("format: 1\npreset: {long}\n");
+    let (invalid, _) = run_yes(&fixture, true, &propose(&hostile));
+    assert!(failed_text(&invalid).starts_with("the proposed SOUL is not valid:\n"));
+    assert_lines_fit(failed_text(&invalid));
+    // The report line that names the step quotes the rationale: short as well.
+    let plan = plan_of(
+        "soul.propose_change",
+        json!({"rationale": long, "new_text": hostile}),
+    );
+    let (ran, _) = run_yes(&fixture, true, &plan);
+    for line in ran.outcome.render().lines() {
+        // What follows the closing quote is ours; the quoted text ends before the wrap.
+        let end = line.rfind('"').map_or(0, |i| line[..i].chars().count());
+        assert!(end < 78, "{line}");
+    }
+    // A history entry that holds text that is not a SOUL.
+    run_yes(&fixture, true, &propose(SOUL_B));
+    let path = fixture.history().join("00000001.json");
+    let mut entry: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    entry["before"] = json!(format!("{long}: x"));
+    std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+    let (undone, _) = run_yes(&fixture, true, &undo());
+    assert!(failed_text(&undone).contains("the history was edited"));
+    assert_lines_fit(failed_text(&undone));
 }
 
 #[test]
 fn a_named_pipe_in_the_history_directory_cannot_hang_the_shell() {
     let fixture = Fixture::with_soul(SOUL_A);
     run_yes(&fixture, true, &propose(SOUL_B));
-    for name in ["00000001.json", "00000002.pending"] {
+    for name in ["00000001.json", "00000002.pending", ".lock"] {
         let _ = std::fs::remove_file(fixture.history().join(name));
         // Not a child process: a forked child holds the locks other tests of this
         // process hold, until it execs, and their writes would be refused as "locked".
@@ -1193,14 +1226,14 @@ fn a_named_pipe_in_the_history_directory_cannot_hang_the_shell() {
             .recv_timeout(std::time::Duration::from_secs(20))
             .expect("the shell hung on a named pipe");
         assert!(listed.is_ok());
-        if name.ends_with(".json") {
-            assert!(applied.is_err(), "{name}: the history cannot be trusted");
-        } else {
+        if name == "00000002.pending" {
             assert!(
                 applied.is_ok(),
                 "{name}: a pipe that is no entry is swept: {applied:?}"
             );
             assert!(!fixture.history().join(name).exists());
+        } else {
+            assert!(applied.is_err(), "{name}: the history cannot be trusted");
         }
         let _ = std::fs::remove_file(fixture.history().join(name));
     }

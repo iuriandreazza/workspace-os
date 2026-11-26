@@ -69,7 +69,7 @@ pub struct Approval {
 impl Approval {
     pub fn from_root(who: &User) -> Option<Self> {
         who.administrator.then(|| Self {
-            by: display_name(&who.name),
+            by: line_pieces(&who.name, SHOWN_NAME).swap_remove(0),
         })
     }
 
@@ -162,8 +162,15 @@ pub fn prepare_change(
     let before = store
         .current()
         .map_err(|why| Failure::new("unavailable", why))?;
-    let after = canonical(new_text)
-        .map_err(|why| Failure::new("invalid", format!("the proposed SOUL is not valid: {why}")))?;
+    let after = canonical(new_text).map_err(|why| {
+        Failure::new(
+            "invalid",
+            format!(
+                "the proposed SOUL is not valid:\n{}",
+                shortened(&why, DETAIL)
+            ),
+        )
+    })?;
     if after == before {
         return Err(Failure::new(
             "no_change",
@@ -189,9 +196,9 @@ pub fn prepare_undo(store: &dyn SoulStore) -> Result<Prepared, Failure> {
         .map_err(|why| Failure::new("unavailable", why))?;
     let entries = store
         .history()
-        .map_err(|why| Failure::new("damaged", why))?;
+        .map_err(|why| Failure::new("damaged", format!("the history is damaged:\n{why}")))?;
     let target = undo_target(&entries)
-        .map_err(|why| Failure::new("damaged", why))?
+        .map_err(|why| Failure::new("damaged", format!("the history is damaged:\n{why}")))?
         .ok_or_else(|| Failure::new("nothing_to_undo", "there is no change to undo"))?;
     if target.after != current {
         return Err(Failure::new(
@@ -206,8 +213,9 @@ pub fn prepare_undo(store: &dyn SoulStore) -> Result<Prepared, Failure> {
         Failure::new(
             "damaged",
             format!(
-                "the SOUL that change {} replaced is not valid now ({why}); the history was edited",
-                target.seq
+                "the history was edited:\nchange {} holds a SOUL that is not valid:\n{}",
+                target.seq,
+                shortened(&why, DETAIL)
             ),
         )
     })?;
@@ -245,10 +253,7 @@ pub fn undo_target(entries: &[HistoryEntry]) -> Result<Option<&HistoryEntry>, St
                 match open.pop() {
                     Some(top) if Some(top.seq) == named => {}
                     _ => {
-                        return Err(format!(
-                            "the history is damaged: entry {} is an undo that does not revert the latest open change",
-                            entry.seq
-                        ));
+                        return Err(format!("entry {} undoes the wrong change", entry.seq));
                     }
                 }
             }
@@ -354,6 +359,10 @@ pub fn shortened(text: &str, width: usize) -> String {
     format!("{}{more}", pieces[0])
 }
 
+/// The most of untrusted text a message carries on a line of its own: with the
+/// indent of the report it stays under 80 columns, so a terminal does not wrap it.
+pub const DETAIL: usize = 60;
+
 /// The most of a rationale the listing shows: a line of the listing stays
 /// shorter than a terminal, so a wrapped piece cannot pass for an entry.
 const LISTED_REASON: usize = 40;
@@ -376,13 +385,13 @@ pub fn history_text(entries: &[HistoryEntry]) -> String {
                 }
                 (ChangeKind::Change, _, None) => "no reason given".to_owned(),
             };
+            // The row is fixed and short; the part the model wrote is on its own line.
             format!(
-                "{:>4}  {:<6} {}  by \"{}\"  {}",
+                "{:>4}  {:<6} {}  by \"{}\"\n      {what}",
                 entry.seq,
                 entry.kind.word(),
                 utc(entry.at),
                 display_name(&entry.by),
-                what
             )
         })
         .collect();
@@ -528,7 +537,11 @@ mod tests {
             ],
             vec![entry(1, Change, None), entry(2, Undo, None)],
         ] {
-            assert!(undo_target(&entries).unwrap_err().contains("damaged"));
+            assert!(
+                undo_target(&entries)
+                    .unwrap_err()
+                    .contains("undoes the wrong change")
+            );
         }
     }
 

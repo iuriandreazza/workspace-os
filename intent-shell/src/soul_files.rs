@@ -15,15 +15,10 @@ use std::path::{Path, PathBuf};
 
 use crate::ports::{ApplyError, SoulStore};
 use crate::soul::{self, Personality, Read as FileRead, Soul};
-use crate::soul_change::{
-    Approval, Change, ChangeKind, HistoryEntry, shortened, undo_target, validate,
-};
+use crate::soul_change::{Approval, Change, ChangeKind, HistoryEntry, undo_target, validate};
 
 /// An entry holds two SOULs and short strings: this only stops a runaway file.
 const MAX_ENTRY_BYTES: u64 = 64 * 1024;
-
-/// The most of something found in a history file that a message repeats.
-const SHOWN_REASON: usize = 60;
 
 pub const NO_SOUL: &str = "there is no SOUL to change; a user with root authority builds one with: intent-shell --administrator --setup-soul";
 
@@ -81,7 +76,9 @@ fn numbered(name: &str, extension: &str) -> Option<u32> {
         .flatten()
 }
 
-fn read_entry(path: &Path) -> Result<HistoryEntry, String> {
+/// An entry, or in a few words of ours why it cannot be used: nothing the file
+/// says is repeated, because what a message repeats the file's author chose.
+fn read_entry(path: &Path) -> Result<HistoryEntry, &'static str> {
     let mut bytes = Vec::new();
     // Non-blocking and regular files only: a named pipe planted here must not
     // hold the lock for ever (the same care as `soul::read`).
@@ -96,15 +93,18 @@ fn read_entry(path: &Path) -> Result<HistoryEntry, String> {
                 Err(std::io::Error::other("it is not a regular file"))
             }
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "it is not a regular file that can be read")?;
     if bytes.len() as u64 > MAX_ENTRY_BYTES {
-        return Err("it is too large".to_owned());
+        return Err("it is too large");
     }
-    // The parser's message quotes the text it found: short, so it cannot wrap into another line.
-    let entry: HistoryEntry =
-        serde_json::from_slice(&bytes).map_err(|e| shortened(&e.to_string(), SHOWN_REASON))?;
+    let entry: HistoryEntry = serde_json::from_slice(&bytes).map_err(|e| match e.classify() {
+        serde_json::error::Category::Syntax => "it is not valid JSON",
+        serde_json::error::Category::Eof => "it ends too soon",
+        serde_json::error::Category::Data => "its fields are not those of an entry",
+        serde_json::error::Category::Io => "it cannot be read",
+    })?;
     if entry.before.len() > soul::MAX_BYTES || entry.after.len() > soul::MAX_BYTES {
-        return Err("it holds a SOUL larger than a SOUL can be".to_owned());
+        return Err("it holds a SOUL larger than a SOUL can be");
     }
     Ok(entry)
 }
@@ -134,10 +134,7 @@ fn read_history_partial(dir: &Path) -> Result<(Vec<HistoryEntry>, Option<String>
                 Some(number) => numbers.push(number),
                 None => {
                     problem.get_or_insert_with(|| {
-                        format!(
-                            "the history is damaged: {} is not an entry name",
-                            shortened(&soul::shown_path(Path::new(&name)), SHOWN_REASON)
-                        )
+                        "a file ending in .json is not named like an entry".to_owned()
                     });
                 }
             }
@@ -148,26 +145,17 @@ fn read_history_partial(dir: &Path) -> Result<(Vec<HistoryEntry>, Option<String>
     for (index, number) in numbers.into_iter().enumerate() {
         let expected = index as u32 + 1;
         if number != expected {
-            problem.get_or_insert_with(|| {
-                format!("the history is damaged: entry {expected} is missing")
-            });
+            problem.get_or_insert_with(|| format!("entry {expected} is missing"));
             break;
         }
         let entry = match read_entry(&dir.join(entry_name(number, "json"))) {
             Ok(entry) if entry.seq == number => entry,
             Ok(entry) => {
-                problem.get_or_insert_with(|| {
-                    format!(
-                        "the history is damaged: file {number} holds entry {}",
-                        entry.seq
-                    )
-                });
+                problem.get_or_insert_with(|| format!("file {number} holds entry {}", entry.seq));
                 break;
             }
             Err(why) => {
-                problem.get_or_insert_with(|| {
-                    format!("the history is damaged: entry {number} cannot be used ({why})")
-                });
+                problem.get_or_insert_with(|| format!("entry {number} cannot be used: {why}"));
                 break;
             }
         };
@@ -208,13 +196,21 @@ struct Lock {
 
 impl Lock {
     fn acquire(path: &Path) -> Result<Self, ApplyError> {
+        // Non-blocking, and only a regular file: a named pipe planted as the
+        // lock must not freeze every operation.
         let file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o644)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
             .open(path)
             .map_err(|e| ApplyError::Failed(format!("cannot open the lock: {e}")))?;
+        if !file.metadata().is_ok_and(|m| m.is_file()) {
+            return Err(ApplyError::Failed(
+                "the lock is not a regular file".to_owned(),
+            ));
+        }
         // SAFETY: the descriptor belongs to `file`, which is open for the whole call.
         let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if locked == 0 {

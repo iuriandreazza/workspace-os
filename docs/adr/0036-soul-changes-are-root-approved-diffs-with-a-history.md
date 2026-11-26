@@ -108,8 +108,7 @@ computed. Rules:
   the frame characters (`║ ╔ ╚ ═ ↳`) in it are escaped too. Untrusted text is
   cut into pieces of at most 64 characters, never inside an escape, each
   behind a prefix the code draws (`↳` marks a continuation). A character that
-  may take more than one terminal cell (anything outside ASCII and Latin-1 to
-  Latin Extended-A) is escaped, so a piece is as wide as it has characters, so a terminal never wraps it and a wrapped
+  may take more than one terminal cell (anything outside ASCII and U+00A0 to U+024F, the Latin letters) is escaped, so a piece is as wide as it has characters (the Latin letters are assumed narrow, as terminals draw them unless set to draw East Asian ambiguous-width characters wide; in such a terminal a line can still wrap inside a piece, a limit this ADR accepts), so a terminal never wraps it and a wrapped
   piece never starts a line that looks like the panel's. A line starting with
   `+` or `-` inside the file is shown after its own prefix. The panel ends
   with the line the code draws. When the two files differ only in line endings
@@ -179,7 +178,7 @@ nothing to that and decides:
 | Crash safety | The entry is first written complete and synced as `<seq>.pending`, then the SOUL is swapped, then the entry is renamed to `<seq>.json`. A history file therefore only ever describes a change that happened. A leftover `.pending` is settled by the next operation under the lock: if the SOUL equals its `after` it is committed (the process died after the swap); otherwise it is deleted (it never took effect, and the decision log has the proposal) |
 | Undo | Reverts the most recent change **not already reverted**: walk the entries in order, a change pushes, an undo pops the `seq` it names. Two undos go back two changes. An undo entry itself cannot be undone, so there is no redo; to get a version back, propose it again. Undo writes the entry's `before` text verbatim as a new entry of kind `undo`, after checking that it still parses as a SOUL (a tampered history cannot write arbitrary text) |
 | Refusals | No entries: "there is no change to undo". The SOUL on disk is not the `after` of the entry to revert (it was changed outside the history): refused, naming the change that cannot be undone. Entries unreadable, a `seq` missing or repeated, an undo that names the wrong entry: "the history is damaged", names the entry, changes nothing. A missing directory is an empty history, not damage |
-| Listing | `soul.history` skips `.lock` and prints every readable entry up to the first problem (seq, kind, who, when, rationale as a quoted line), then a WARNING line that says what is wrong. A rationale is shown at most 40 characters long, escaped as in the panel, so a wrapped piece of a line cannot pass for an entry. Listing and undo first settle a leftover `.pending` when no writer holds the lock, so a change whose process died after the swap can be seen and undone at once |
+| Listing | `soul.history` skips `.lock` and prints every readable entry up to the first problem (seq, kind, who, when, rationale as a quoted line), then a WARNING line that says what is wrong. Each entry is two lines: a short fixed row (number, kind, time, the name cut at 32 characters) and, indented, the reason cut at 40 characters or `reverts change N`. Messages never put untrusted text on a line longer than a terminal: what a message quotes (a parser's complaint about a proposal, the rationale in a step line) is cut at 60 or 36 characters and on a line of its own, and the messages about a damaged history quote nothing from the file, only entry numbers and a short word of ours ("it is not valid JSON"). Listing and undo first settle a leftover `.pending` when no writer holds the lock, so a change whose process died after the swap can be seen and undone at once |
 
 ### 7. The decision log
 
@@ -213,7 +212,7 @@ anything is written, so the writer never makes a file the reader refuses.
 Whatever a history file holds is untrusted too: the listing cuts the name and
 the rationale it reads, and the text of a message about a damaged file, to a
 short escaped piece. History files are opened without blocking and only if they
-are regular files, so a named pipe planted in the directory cannot hold the lock.
+are regular files, and so is the lock file (opened without following links), so a named pipe planted in the directory cannot hold the lock or freeze a listing.
 
 ## What changes in ADR 0011
 
