@@ -365,6 +365,12 @@ impl SoulStore for FileSoulStore {
         };
         let bytes = serde_json::to_vec_pretty(&entry)
             .map_err(|e| ApplyError::Failed(format!("cannot write the history: {e}")))?;
+        if bytes.len() as u64 > MAX_ENTRY_BYTES {
+            return Err(ApplyError::Failed(
+                "the history entry would be larger than the history accepts; nothing was changed"
+                    .to_owned(),
+            ));
+        }
         let pending = dir.join(entry_name(seq, "pending"));
         write_synced(&pending, &bytes)
             .map_err(|e| ApplyError::Failed(format!("cannot write the history: {e}")))?;

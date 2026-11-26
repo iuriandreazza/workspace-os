@@ -68,6 +68,7 @@ was confirmed by breaking the behaviour (below).
 | Personalities | The SOUL wins; no personality file is written; the panel says whether the approver's own stays valid; undo restores validity without work (`the_panel_names_what_the_change_does_to_the_approvers_personality`) |
 | The broker and the SOUL | Verdicts and `review` events are the same under any SOUL (`the_broker_gives_the_same_verdicts_and_log_under_any_soul`) |
 | What the log holds | The whole proposal, even when refused (`the_log_holds_the_whole_proposal_even_when_it_is_refused`); the file written when applied; the outcome word for every refusal |
+| The user name | Comes from `USER`: escaped, cut at 32 characters in the panel header, the history and the entry; a huge one cannot make an entry the history refuses (`a_hostile_user_name_cannot_forge_the_panel_header_or_a_history_row`, `a_huge_user_name_cannot_poison_the_history`) |
 | Links, the S8a file | A link is followed and stays a link; one that leads nowhere is refused; the one-word file is rewritten in place as format 1 |
 
 ## Mutation checks

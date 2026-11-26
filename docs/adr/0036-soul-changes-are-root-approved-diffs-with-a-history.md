@@ -133,7 +133,7 @@ leaves nothing to clean). So two sessions
 at once never interleave and a held lock is a refusal ("another session is
 changing the SOUL"), never a wait.
 
-1. Recover (section 6), then read the SOUL. It must exist (first use is ADR
+1. Read the SOUL and settle what a dead process left (section 6; settling needs the text). The SOUL must exist (first use is ADR
    0032's interview) and be readable; the panel was built from exactly this
    text. If the text on disk now is not the text the panel showed, refuse:
    "the SOUL changed since you saw it; nothing was changed".
@@ -178,7 +178,7 @@ nothing to that and decides:
 | What is an entry | One file per applied change, `00000001.json`, never rewritten. Fields: `seq`, `kind` (`change` or `undo`), `at` (Unix seconds), `by` (the confirming user's name), `rationale` (a change) or `reverts` (the `seq` an undo reverts), `before` and `after` (the whole files; a SOUL is at most 2048 bytes, so a snapshot is cheaper and simpler than a patch) |
 | Crash safety | The entry is first written complete and synced as `<seq>.pending`, then the SOUL is swapped, then the entry is renamed to `<seq>.json`. A history file therefore only ever describes a change that happened. A leftover `.pending` is settled by the next operation under the lock: if the SOUL equals its `after` it is committed (the process died after the swap); otherwise it is deleted (it never took effect, and the decision log has the proposal) |
 | Undo | Reverts the most recent change **not already reverted**: walk the entries in order, a change pushes, an undo pops the `seq` it names. Two undos go back two changes. An undo entry itself cannot be undone, so there is no redo; to get a version back, propose it again. Undo writes the entry's `before` text verbatim as a new entry of kind `undo`, after checking that it still parses as a SOUL (a tampered history cannot write arbitrary text) |
-| Refusals | No entries: "there is no change to undo". The SOUL on disk is not the `after` of the entry to revert (it was changed outside the history): refused, with both versions named. Entries unreadable, a `seq` missing or repeated, an undo that names the wrong entry: "the history is damaged", names the file, changes nothing. A missing directory is an empty history, not damage |
+| Refusals | No entries: "there is no change to undo". The SOUL on disk is not the `after` of the entry to revert (it was changed outside the history): refused, naming the change that cannot be undone. Entries unreadable, a `seq` missing or repeated, an undo that names the wrong entry: "the history is damaged", names the entry, changes nothing. A missing directory is an empty history, not damage |
 | Listing | `soul.history` skips `.lock` and prints every readable entry up to the first problem (seq, kind, who, when, rationale as a quoted line), then a WARNING line that says what is wrong. A rationale is shown at most 40 characters long, escaped as in the panel, so a wrapped piece of a line cannot pass for an entry. Listing and undo first settle a leftover `.pending` when no writer holds the lock, so a change whose process died after the swap can be seen and undone at once |
 
 ### 7. The decision log
@@ -186,7 +186,7 @@ nothing to that and decides:
 ADR 0002 logs every model decision. Beside the existing events (`review`,
 `plan_confirmation`, `root_confirmation`), a SOUL change adds one event after
 the attempt: `soul_change` with `kind`, `by`, `seq`, `outcome` (`applied`, or
-the refusal such as `stale`, `locked`, `invalid`, `no_change`, `unavailable`, `nothing_to_undo`, `declined`, `damaged`). The event with outcome `writing` and the file about to be written is recorded **before** the write, and the shell writes nothing when the log cannot take it (ADR 0002); a log that fails after the write is reported by the result event, with the change done and,
+the refusal such as `stale`, `locked`, `invalid`, `no_change`, `unavailable`, `nothing_to_undo`, `declined`, `not_administrator`, `failed`, `damaged`). The event with outcome `writing` and the file about to be written is recorded **before** the write, and the shell writes nothing when the log cannot take it (ADR 0002); a log that fails after the write is reported by the result event, with the change done and,
 when applied, the file written. The SOUL holds no secret (it is read by every
 user), so the file is logged whole; nothing the person typed as a password
 exists in this flow.
@@ -200,6 +200,15 @@ The model is **not** told the current SOUL: the planner never receives a SOUL
 sees what it costs in the diff. A model that proposes a SOUL without the name
 the machine has will show that as a removed line; the person refuses it. Giving
 the model the current text for this one action is a later decision.
+
+## The user name
+
+The name of the person comes from the environment (`USER` on the host) and is
+not ours to trust. The panel header, the history and the entry file hold it
+escaped like the other untrusted text and cut at 32 characters (with an
+ellipsis); the decision log keeps it whole, as JSON. A write whose history
+entry would be larger than the history accepts (64 KiB) is refused before
+anything is written, so the writer never makes a file the reader refuses.
 
 ## What changes in ADR 0011
 

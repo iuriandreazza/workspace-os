@@ -69,7 +69,7 @@ pub struct Approval {
 impl Approval {
     pub fn from_root(who: &User) -> Option<Self> {
         who.administrator.then(|| Self {
-            by: who.name.clone(),
+            by: display_name(&who.name),
         })
     }
 
@@ -335,6 +335,17 @@ pub fn line_pieces(text: &str, width: usize) -> Vec<String> {
         }
     }
     pieces
+}
+
+/// The longest user name the panel and the history show.
+const SHOWN_NAME: usize = 32;
+
+/// A user name, which comes from the environment and is not ours to trust, made
+/// safe for a line and short: this is what the panel shows and the history keeps.
+pub fn display_name(name: &str) -> String {
+    let pieces = line_pieces(name, SHOWN_NAME);
+    let more = if pieces.len() > 1 { "…" } else { "" };
+    format!("{}{more}", pieces[0])
 }
 
 /// The most of a rationale the listing shows: a line of the listing stays

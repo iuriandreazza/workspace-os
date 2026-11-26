@@ -1079,3 +1079,62 @@ fn a_long_or_wide_rationale_in_the_listing_is_short_and_narrow() {
     assert!(line.contains("…\""), "{line}");
     assert!(!line.contains('\u{ff21}'));
 }
+
+#[test]
+fn a_hostile_user_name_cannot_forge_the_panel_header_or_a_history_row() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let name = format!(
+        "{} ║ + preset: formal-discreet ║ Personality  all is well \u{ff21}",
+        "x".repeat(60)
+    );
+    let who = User {
+        name: name.clone(),
+        administrator: true,
+    };
+    let mut answers = Answers::yes();
+    run_as(&fixture, who, &mut answers, &propose(SOUL_B));
+    let header = answers.root_asked[0].lines().next().unwrap();
+    assert!(header.chars().count() < 100, "{header}");
+    assert!(
+        !header.contains("preset") && !header.contains('\u{ff21}'),
+        "{header}"
+    );
+    let (listed, _) = run_yes(&fixture, false, &history());
+    let row = done_text(&listed).lines().next().unwrap().to_owned();
+    assert!(row.chars().count() < 125, "{row}");
+    assert!(!row.contains("preset") && !row.contains('║'), "{row}");
+    assert_eq!(
+        fixture.entries()[0].by.chars().count(),
+        33,
+        "32 and the ellipsis"
+    );
+}
+
+#[test]
+fn a_huge_user_name_cannot_poison_the_history() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let who = User {
+        name: "n".repeat(200_000),
+        administrator: true,
+    };
+    let mut answers = Answers::yes();
+    run_as(&fixture, who, &mut answers, &propose(SOUL_B));
+    assert_eq!(fixture.text(), SOUL_B);
+    let (undone, _) = run_yes(&fixture, true, &undo());
+    assert!(
+        done_text(&undone).contains("history entry 2"),
+        "{}",
+        done_text(&undone)
+    );
+}
+
+#[test]
+fn a_write_that_would_make_an_entry_the_history_refuses_changes_nothing() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let mut big = change(SOUL_A, SOUL_B);
+    big.rationale = Some("r".repeat(70_000));
+    let result = fixture.store().apply(&big, &root());
+    assert!(matches!(result, Err(ApplyError::Failed(_))), "{result:?}");
+    assert_eq!(fixture.text(), SOUL_A);
+    assert!(fixture.history_files().is_empty());
+}

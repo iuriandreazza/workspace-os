@@ -18,7 +18,7 @@ use crate::label::Labels;
 use crate::plan::{Origin, StepId};
 use crate::ports::{ChoiceLine, EntryKind, TREE_DEPTH, TreeEntry};
 use crate::resolve::Ambiguity;
-use crate::soul_change::{ChangeKind, Mark, Prepared, line_pieces};
+use crate::soul_change::{ChangeKind, Mark, Prepared, display_name, line_pieces};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -300,8 +300,8 @@ pub fn soul_panel(who: &str, step: &StepId, prepared: &Prepared) -> String {
     let count = |mark| prepared.diff.iter().filter(|l| l.mark == mark).count();
     let mut lines = vec![
         format!(
-            "╔═ ROOT CONFIRMATION ═ SOUL change ═ asked of {} ═ step {step}",
-            quoted(who)
+            "╔═ ROOT CONFIRMATION ═ SOUL change ═ asked of \"{}\" ═ step {step}",
+            display_name(who)
         ),
         format!("║ Action  {what}"),
     ];
