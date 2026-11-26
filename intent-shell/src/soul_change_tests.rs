@@ -1293,3 +1293,32 @@ fn a_named_pipe_in_the_history_directory_cannot_hang_the_shell() {
         let _ = std::fs::remove_file(fixture.history().join(name));
     }
 }
+
+#[test]
+fn the_plan_details_show_a_proposal_cut_and_on_lines_of_its_own() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let long = "q".repeat(400);
+    let plan = plan_of(
+        "soul.propose_change",
+        json!({"rationale": long, "new_text": format!("{SOUL_B}# {long}\n")}),
+    );
+    let (_, answers) = run_yes(&fixture, true, &plan);
+    let details = &answers.screens[0].1;
+    assert!(details.contains("exact: soul.propose_change"), "{details}");
+    assert!(details.contains("rationale: \"qqq"), "{details}");
+    for line in details
+        .lines()
+        .filter(|l| l.contains("rationale:") || l.contains("new_text:"))
+    {
+        assert!(line.chars().count() < 100, "{line}");
+    }
+    assert!(!details.contains(&"q".repeat(100)), "{details}");
+}
+
+#[test]
+fn a_byte_order_mark_is_not_part_of_the_text_that_is_compared() {
+    let fixture = Fixture::with_soul(&format!("\u{feff}{SOUL_A}"));
+    let (ran, answers) = run_yes(&fixture, true, &propose(SOUL_A));
+    assert!(failed_text(&ran).contains("already in place"));
+    assert!(answers.root_asked.is_empty());
+}

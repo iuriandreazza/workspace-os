@@ -18,7 +18,9 @@ use crate::label::Labels;
 use crate::plan::{Origin, StepId};
 use crate::ports::{ChoiceLine, EntryKind, TREE_DEPTH, TreeEntry};
 use crate::resolve::Ambiguity;
-use crate::soul_change::{ChangeKind, Mark, Prepared, display_name, line_pieces, shortened};
+use crate::soul_change::{
+    ChangeKind, DETAIL, Mark, Prepared, display_name, line_pieces, shortened,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -163,7 +165,19 @@ fn rows(step: &ReviewedStep, labels: &Labels, view: View) -> Vec<Row> {
         let (verdict, reason) = verdict_of(item, labels);
         let mut under: Vec<String> = reason.into_iter().collect();
         if view == View::Details {
-            under.push(format!("exact: {}", item.action.describe()));
+            match &item.action {
+                // What the model wrote is on lines of its own, cut short: the root
+                // panel shows the whole diff, and no wrapped piece starts a row here.
+                Action::SoulProposeChange {
+                    rationale,
+                    new_text,
+                } => {
+                    under.push("exact: soul.propose_change".to_owned());
+                    under.push(format!("  rationale: \"{}\"", shortened(rationale, DETAIL)));
+                    under.push(format!("  new_text: \"{}\"", shortened(new_text, DETAIL)));
+                }
+                other => under.push(format!("exact: {}", other.describe())),
+            }
         }
         out.push(Row {
             step: if index == 0 {

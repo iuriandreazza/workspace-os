@@ -257,10 +257,16 @@ fn settle(dir: &Path, target: &Path, current: &str) -> Result<(), ApplyError> {
                 && e.file_id.is_some()
                 && e.file_id == fs::metadata(target).ok().map(|m| file_id(&m))
         });
-        if applied && fs::rename(&path, dir.join(entry_name(number, "json"))).is_ok() {
+        if !applied {
+            let _ = fs::remove_file(&path);
+        } else if fs::rename(&path, dir.join(entry_name(number, "json"))).is_ok() {
             next += 1;
         } else {
-            let _ = fs::remove_file(&path);
+            // The change happened: its entry stays where it is for the next try.
+            return Err(ApplyError::Failed(
+                "a change that was applied has an entry that could not be committed; nothing was changed now"
+                    .to_owned(),
+            ));
         }
     }
     sync_directory(dir);
@@ -439,4 +445,51 @@ impl SoulStore for FileSoulStore {
 fn file_id(meta: &fs::Metadata) -> String {
     use std::os::unix::fs::MetadataExt;
     meta.ino().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::soul_change::ChangeKind;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn an_entry_that_could_not_be_committed_is_kept_and_not_deleted() {
+        // A directory that cannot be written is no obstacle to the superuser.
+        // SAFETY: `geteuid` reads the process's user id and touches no memory.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("intent-shell-settle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let history = dir.join("soul.history");
+        fs::create_dir_all(&history).unwrap();
+        let soul = dir.join("soul");
+        fs::write(&soul, "format: 1\npreset: warm-didactic\nlanguages: any\n").unwrap();
+        let current = fs::read_to_string(&soul).unwrap();
+        let entry = HistoryEntry {
+            seq: 1,
+            kind: ChangeKind::Change,
+            at: 1,
+            by: "ana".into(),
+            rationale: None,
+            reverts: None,
+            before: "format: 1\npreset: direct-technical\nlanguages: any\n".into(),
+            after: current.clone(),
+            file_id: Some(fs::metadata(&soul).unwrap().ino().to_string()),
+        };
+        let pending = history.join("00000001.pending");
+        fs::write(&pending, serde_json::to_vec(&entry).unwrap()).unwrap();
+        fs::set_permissions(&history, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = settle(&history, &soul, &current);
+        fs::set_permissions(&history, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(result, Err(ApplyError::Failed(_))), "{result:?}");
+        assert!(
+            pending.exists(),
+            "the entry of a change that happened is kept"
+        );
+        assert_eq!(settle(&history, &soul, &current), Ok(()));
+        assert!(history.join("00000001.json").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

@@ -99,10 +99,10 @@ computed. Rules:
   bytes, UTF-8, a leading byte-order mark ignored (the plan allows 16384 bytes
   of `new_text`, so the limit is checked here). A proposal that fails any of
   it is refused with the message and never reaches the panel. A proposal whose
-  canonical text equals the current file byte for byte is refused as "no
+  canonical text equals the current file's text (a leading byte-order mark is not text, ADR 0028) is refused as "no
   change". So comments, odd spacing and unknown keys the model wrote
   do not exist in what is approved or written.
-- The current side is the file's real bytes, so what is lost from a hand-edited
+- The current side is the file's text as the shell reads it (a leading byte-order mark dropped, nothing else), so what is lost from a hand-edited
   file (comments) shows up as removed lines.
 - Every line passes the same escaping as other model text (`printable`), and
   the frame characters (`║ ╔ ╚ ═ ↳`) in it are escaped too. Untrusted text is
@@ -124,6 +124,7 @@ computed. Rules:
   way. In `--plain` only the end of a long panel stays above the question, so
   the panel repeats the counts of the diff just after the last diff line.
   Refusing stays possible.
+- The plan screen's details view shows a proposal's rationale and text each on a line of its own, cut at 60 characters; the whole text is only in the root panel.
 - What the change does to the approver's own personality (section 5).
 
 ### 4. Applying
