@@ -249,8 +249,14 @@ fn settle(dir: &Path, target: &Path, current: &str) -> Result<(), ApplyError> {
         let path = dir.join(entry_name(number, "pending"));
         // It counts only if it is whole, is the next number, and the SOUL is
         // what it says the SOUL became: then the process died after the swap.
-        let applied = read_entry(&path)
-            .is_ok_and(|e| e.seq == number && number == next && e.after == current);
+        // A SOUL that merely has the same text, written by someone else, is not it.
+        let applied = read_entry(&path).is_ok_and(|e| {
+            e.seq == number
+                && number == next
+                && e.after == current
+                && e.file_id.is_some()
+                && e.file_id == fs::metadata(target).ok().map(|m| file_id(&m))
+        });
         if applied && fs::rename(&path, dir.join(entry_name(number, "json"))).is_ok() {
             next += 1;
         } else {
@@ -376,6 +382,23 @@ impl SoulStore for FileSoulStore {
             reverts: change.reverts,
             before: change.before.clone(),
             after: change.after.clone(),
+            file_id: None,
+        };
+        // The new SOUL is written first, beside the old one, so the entry can say
+        // which file it is; the entry is complete before the file takes the SOUL's place.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let temporary = target.with_file_name(temporary_name(&target, nanos));
+        let identified = write_synced(&temporary, change.after.as_bytes())
+            .and_then(|()| fs::metadata(&temporary))
+            .map_err(|e| {
+                let _ = fs::remove_file(&temporary);
+                ApplyError::Failed(format!("cannot write the SOUL: {e}; nothing was changed"))
+            })?;
+        let entry = HistoryEntry {
+            file_id: Some(file_id(&identified)),
+            ..entry
         };
         let bytes = serde_json::to_vec_pretty(&entry)
             .map_err(|e| ApplyError::Failed(format!("cannot write the history: {e}")))?;
@@ -386,13 +409,20 @@ impl SoulStore for FileSoulStore {
             ));
         }
         let pending = dir.join(entry_name(seq, "pending"));
-        write_synced(&pending, &bytes)
-            .map_err(|e| ApplyError::Failed(format!("cannot write the history: {e}")))?;
+        write_synced(&pending, &bytes).map_err(|e| {
+            let _ = fs::remove_file(&temporary);
+            ApplyError::Failed(format!("cannot write the history: {e}"))
+        })?;
         sync_directory(&dir);
-        swap(&target, &change.after).map_err(|e| {
+        // A reader sees the old file or the new one, and a crash leaves one of them.
+        fs::rename(&temporary, &target).map_err(|e| {
+            let _ = fs::remove_file(&temporary);
             let _ = fs::remove_file(&pending);
             ApplyError::Failed(format!("cannot write the SOUL: {e}; nothing was changed"))
         })?;
+        if let Some(parent) = target.parent() {
+            sync_directory(parent);
+        }
         fs::rename(&pending, dir.join(entry_name(seq, "json"))).map_err(|e| {
             ApplyError::Failed(format!(
                 "the SOUL was changed but its history entry could not be committed ({e}); the next change settles it"
@@ -403,19 +433,8 @@ impl SoulStore for FileSoulStore {
     }
 }
 
-/// The new text goes to a file beside the SOUL and is renamed over it, so a
-/// reader sees the old file or the new one and a crash leaves one of them.
-fn swap(target: &Path, text: &str) -> std::io::Result<()> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let temporary = target.with_file_name(temporary_name(target, nanos));
-    let written =
-        write_synced(&temporary, text.as_bytes()).and_then(|()| fs::rename(&temporary, target));
-    if written.is_err() {
-        let _ = fs::remove_file(&temporary);
-    } else if let Some(parent) = target.parent() {
-        sync_directory(parent);
-    }
-    written
+/// Which file this is, by device and inode.
+fn file_id(meta: &fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!("{}:{}", meta.dev(), meta.ino())
 }

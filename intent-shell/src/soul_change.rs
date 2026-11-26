@@ -45,6 +45,9 @@ pub struct HistoryEntry {
     pub reverts: Option<u32>,
     pub before: String,
     pub after: String,
+    /// Which file the SOUL became (`device:inode` of the file renamed into place),
+    /// so a leftover entry is only committed if this very file is the SOUL now.
+    pub file_id: Option<String>,
 }
 
 /// What is to be written, before anyone approved it.
@@ -497,6 +500,7 @@ mod tests {
             reverts,
             before: format!("b{seq}"),
             after: format!("a{seq}"),
+            file_id: None,
         }
     }
 

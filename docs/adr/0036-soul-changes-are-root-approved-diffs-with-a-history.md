@@ -118,9 +118,12 @@ computed. Rules:
 - An undo shows the same panel, from the current file to the file it restores.
 - A panel that does not fit the terminal cannot be confirmed (the existing
   rule of the interface, ADR 0015, which limits height as well as width). A
-  SOUL is at most 2048 bytes, but its diff can be about a hundred lines: on a
-  short terminal approval is impossible and `--plain` (or a taller terminal)
-  is the way. Refusing stays possible.
+  SOUL is at most 2048 bytes, but blank and comment lines are allowed in a
+  hand-edited one, so its diff can be about two thousand lines: on a short
+  terminal approval is impossible and `--plain` (or a taller terminal) is the
+  way. In `--plain` only the end of a long panel stays above the question, so
+  the panel repeats the counts of the diff just after the last diff line.
+  Refusing stays possible.
 - What the change does to the approver's own personality (section 5).
 
 ### 4. Applying
@@ -174,8 +177,8 @@ nothing to that and decides:
 | Question | Decision |
 |---|---|
 | Where | A directory beside the SOUL file: `<SOUL file name>.history/` (`soul.history/` for the default). It is derived from the path the SOUL was read from, so `--soul FILE` has its own |
-| What is an entry | One file per applied change, `00000001.json`, never rewritten. Fields: `seq`, `kind` (`change` or `undo`), `at` (Unix seconds), `by` (the confirming user's name), `rationale` (a change) or `reverts` (the `seq` an undo reverts), `before` and `after` (the whole files; a SOUL is at most 2048 bytes, so a snapshot is cheaper and simpler than a patch) |
-| Crash safety | The entry is first written complete and synced as `<seq>.pending`, then the SOUL is swapped, then the entry is renamed to `<seq>.json`. A history file therefore only ever describes a change that happened. A leftover `.pending` is settled by the next operation under the lock: if the SOUL equals its `after` it is committed (the process died after the swap); otherwise it is deleted (it never took effect, and the decision log has the proposal) |
+| What is an entry | One file per applied change, `00000001.json`, never rewritten. Fields: `seq`, `kind` (`change` or `undo`), `at` (Unix seconds), `by` (the confirming user's name), `rationale` (a change) or `reverts` (the `seq` an undo reverts), `file_id` (kept for the crash rule), `before` and `after` (the whole files; a SOUL is at most 2048 bytes, so a snapshot is cheaper and simpler than a patch) |
+| Crash safety | The new SOUL is first written to a temporary file beside the SOUL, and the entry (which names that file by device and inode, `file_id`) is written complete and synced as `<seq>.pending`; then the temporary file is renamed over the SOUL, then the entry is renamed to `<seq>.json`. A history file therefore only ever describes a change that happened. A leftover `.pending` is settled by the next operation under the lock: if the SOUL equals its `after` **and is the very file the entry names** it is committed (the process died after the swap; a SOUL someone else wrote with the same text is not it); otherwise it is deleted (it never took effect, and the decision log has the proposal) |
 | Undo | Reverts the most recent change **not already reverted**: walk the entries in order, a change pushes, an undo pops the `seq` it names. Two undos go back two changes. An undo entry itself cannot be undone, so there is no redo; to get a version back, propose it again. Undo writes the entry's `before` text verbatim as a new entry of kind `undo`, after checking that it still parses as a SOUL (a tampered history cannot write arbitrary text) |
 | Refusals | No entries: "there is no change to undo". The SOUL on disk is not the `after` of the entry to revert (it was changed outside the history): refused, naming the change that cannot be undone. Entries unreadable, a `seq` missing or repeated, an undo that names the wrong entry: "the history is damaged", names the entry, changes nothing. A missing directory is an empty history, not damage |
 | Listing | `soul.history` skips `.lock` and prints every readable entry up to the first problem (seq, kind, who, when, rationale as a quoted line), then a WARNING line that says what is wrong. Each entry is two lines: a short fixed row (number, kind, time, the name cut at 32 characters) and, indented, the reason cut at 40 characters or `reverts change N`. Messages never put untrusted text on a line longer than a terminal: what a message quotes (a parser's complaint about a proposal, the rationale in a step line) is cut at 60 or 36 characters and on a line of its own, and the messages about a damaged history quote nothing from the file, only entry numbers and a short word of ours ("it is not valid JSON"). Listing and undo first settle a leftover `.pending` when no writer holds the lock, so a change whose process died after the swap can be seen and undone at once |

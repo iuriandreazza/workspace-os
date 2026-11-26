@@ -253,6 +253,10 @@ fn a_proposed_change_approved_with_root_authority_is_applied() {
     assert_eq!(entry.rationale.as_deref(), Some("The user asked for it."));
     // The approver saw every line of the diff, and the log says what was written.
     let panel = &answers.root_asked[0];
+    assert!(
+        panel.contains("║ End of the file: 1 removed (-), 1 added (+), 2 kept"),
+        "{panel}"
+    );
     for line in [
         "║ - preset: direct-technical",
         "║ + preset: warm-didactic",
@@ -646,7 +650,18 @@ fn the_s8a_one_word_file_is_rewritten_in_place_as_format_one() {
 
 // What a process that died leaves behind.
 
+/// The file the SOUL is now, as an entry names the file it made the SOUL.
+fn soul_file_id(fixture: &Fixture) -> String {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(fixture.soul()).unwrap();
+    format!("{}:{}", meta.dev(), meta.ino())
+}
+
 fn pending(fixture: &Fixture, seq: u32, before: &str, after: &str) {
+    pending_naming(fixture, seq, before, after, Some(soul_file_id(fixture)));
+}
+
+fn pending_naming(fixture: &Fixture, seq: u32, before: &str, after: &str, file_id: Option<String>) {
     let entry = HistoryEntry {
         seq,
         kind: ChangeKind::Change,
@@ -656,6 +671,7 @@ fn pending(fixture: &Fixture, seq: u32, before: &str, after: &str) {
         reverts: None,
         before: before.into(),
         after: after.into(),
+        file_id,
     };
     std::fs::create_dir_all(fixture.history()).unwrap();
     std::fs::write(
@@ -680,6 +696,25 @@ fn a_change_that_died_after_the_swap_is_committed_by_the_next_one() {
         (SOUL_B, SOUL_B)
     );
     assert_eq!(fixture.history_files(), ["00000001.json", "00000002.json"]);
+}
+
+#[test]
+fn a_leftover_entry_is_not_committed_for_a_soul_someone_else_wrote() {
+    // The text is what the entry says, but the file is not the one it renamed into place.
+    for file_id in [None, Some("0:0".to_owned())] {
+        let fixture = Fixture::with_soul(SOUL_B);
+        pending_naming(&fixture, 1, SOUL_A, SOUL_B, file_id);
+        assert_eq!(
+            fixture.store().apply(&change(SOUL_B, SOUL_C), &root()),
+            Ok(1)
+        );
+        let entries = fixture.entries();
+        assert_eq!(entries.len(), 1, "the leftover is not in the history");
+        assert_eq!(
+            (entries[0].before.as_str(), entries[0].after.as_str()),
+            (SOUL_B, SOUL_C)
+        );
+    }
 }
 
 #[test]

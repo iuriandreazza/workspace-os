@@ -329,6 +329,13 @@ pub fn soul_panel(who: &str, step: &StepId, prepared: &Prepared) -> String {
         let more = format!("║ {} ↳ ", line.mark.symbol());
         lines.extend(framed(&first, &more, &line.text));
     }
+    // The end of a long diff is what stays on a plain terminal above the question.
+    lines.push(format!(
+        "║ End of the file: {} removed (-), {} added (+), {} kept",
+        count(Mark::Removed),
+        count(Mark::Added),
+        count(Mark::Kept)
+    ));
     lines.extend(framed("║ Personality  ", "║   ↳ ", &prepared.personality));
     lines.push(format!(
         "║ Needs   {}, as root. This is written exactly as shown, and the new SOUL is read at the next start.",
