@@ -87,10 +87,7 @@ fn controller() -> Gicv2 {
 
 /// The tick count since `start`.
 pub fn ticks() -> u64 {
-    // SAFETY: `as_ptr` is the address of a live atomic. The read is volatile
-    // because the interrupt handler, which the compiler cannot see being
-    // called, changes the value between two reads.
-    unsafe { TICKS.as_ptr().read_volatile() }
+    TICKS.load(Ordering::Relaxed)
 }
 
 /// Sets the controller and the timer up and unmasks IRQs on this core, from
@@ -283,6 +280,8 @@ pub fn selftest(mut out: impl Write, wiring: &InterruptWiring, entered_at_el3: b
         run.spurious,
         run.unexpected
     );
+    // Masked, so that a tick can only be the one the test itself waits for.
+    arch::disable_interrupts();
     let before = ticks();
     arch::run_interrupt_selftest();
     assert!(

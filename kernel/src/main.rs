@@ -253,6 +253,8 @@ pub extern "C" fn kernel_main(
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    // A tick must not arrive while the report is written.
+    arch::disable_interrupts();
     let mut console = board::console();
     klog!(Error, console, "kernel panic: {info}");
     #[cfg(feature = "selftest-stack-overflow")]
