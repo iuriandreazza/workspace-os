@@ -18,6 +18,10 @@ const CLEAR_ENABLE: usize = 0x180;
 const CLEAR_PENDING: usize = 0x280;
 const CLEAR_ACTIVE: usize = 0x380;
 const PRIORITY: usize = 0x400;
+/// `GICD_CPENDSGIR`: the only way to clear a pending SGI; its bits in
+/// `ICPENDR0` are read-only.
+const CLEAR_PENDING_SGI: usize = 0xf10;
+const CLEAR_PENDING_SGI_WORDS: usize = 4;
 const PERIPHERAL_ID_2: usize = 0xfe8;
 
 const CPU_CONTROL: usize = 0x00;
@@ -128,6 +132,9 @@ impl Gicv2 {
             self.distributor_write(CLEAR_PENDING + offset, u32::MAX);
             self.distributor_write(CLEAR_ACTIVE + offset, u32::MAX);
         }
+        for word in 0..CLEAR_PENDING_SGI_WORDS {
+            self.distributor_write(CLEAR_PENDING_SGI + 4 * word, u32::MAX);
+        }
         // Written whole: bits firmware set, such as the EOI mode that splits
         // the end of an interrupt in two, go back to their reset meaning.
         self.cpu_write(CPU_CONTROL, ENABLE_GROUP);
@@ -136,7 +143,7 @@ impl Gicv2 {
         // An interrupt the interface already signalled stays pending there.
         for _ in 0..words * LINES_PER_WORD {
             match self.acknowledge() {
-                Some(id) => self.end_of_interrupt(id),
+                Some(taken) => self.end_of_interrupt(taken),
                 None => break,
             }
         }
@@ -165,17 +172,27 @@ impl Gicv2 {
         Ok(())
     }
 
-    /// Takes the highest priority pending interrupt: its ID, or `None` when
-    /// the controller says none is (spurious), in which case nothing is to be
-    /// ended.
-    pub fn acknowledge(&self) -> Option<u32> {
-        let id = self.cpu_read(CPU_ACKNOWLEDGE) & INTERRUPT_ID_MASK;
-        (id != SPURIOUS).then_some(id)
+    /// Takes the highest priority pending interrupt, or `None` when the
+    /// controller says none is (spurious), in which case nothing is to be ended.
+    pub fn acknowledge(&self) -> Option<Acknowledged> {
+        let raw = self.cpu_read(CPU_ACKNOWLEDGE);
+        ((raw & INTERRUPT_ID_MASK) != SPURIOUS).then_some(Acknowledged(raw))
     }
 
-    /// Ends interrupt `id`, which `acknowledge` returned: the controller may
-    /// signal it again.
-    pub fn end_of_interrupt(&self, id: u32) {
-        self.cpu_write(CPU_END_OF_INTERRUPT, id);
+    /// Ends an interrupt `acknowledge` returned: the controller may signal it
+    /// again.
+    pub fn end_of_interrupt(&self, taken: Acknowledged) {
+        self.cpu_write(CPU_END_OF_INTERRUPT, taken.0);
+    }
+}
+
+/// What an acknowledge returned. The whole register goes back to end the
+/// interrupt: for an SGI it also holds the core that sent it.
+#[derive(Clone, Copy)]
+pub struct Acknowledged(u32);
+
+impl Acknowledged {
+    pub fn id(self) -> u32 {
+        self.0 & INTERRUPT_ID_MASK
     }
 }

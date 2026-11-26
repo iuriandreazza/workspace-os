@@ -483,8 +483,11 @@ check_interrupts() {
     local monitor="" line frequency ticks elapsed period spurious unexpected counter_hz="$COUNTER_HZ"
     [[ "$*" != *"-cpu max"* ]] || counter_hz="$COUNTER_HZ_CPU_MAX"
     [[ "${1:-}" != monitor ]] || monitor=", handed to the non-secure world by the EL3 monitor"
-    expect_once "interrupts: gicv2, distributor $GIC_DISTRIBUTOR, cpu interface $GIC_CPU_INTERFACE, timer interrupt ${TIMER_INTERRUPT}${monitor}" \
-        "interrupt controller report"
+    # The whole line, not a prefix of it: with the monitor's suffix a boot
+    # that went through EL3 must say so, and one that did not must not.
+    local wanted="interrupts: gicv2, distributor $GIC_DISTRIBUTOR, cpu interface $GIC_CPU_INTERFACE, timer interrupt ${TIMER_INTERRUPT}${monitor}"
+    [[ "$(plain_log | sed -n 's/^  kernel  .\{4\}  //p' | grep -cxF "$wanted" || true)" -eq 1 ]] \
+        || fail "interrupt controller report '$wanted' not seen exactly once as a whole line"
     line="$(plain_log | sed -n 's/^  kernel  .\{4\}  timer: virtual, \([0-9]*\) Hz, a tick every \([0-9]*\) us$/\1 \2/p')"
     [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "timer report not found exactly once"
     read -r frequency period <<< "$line"
@@ -497,6 +500,10 @@ check_interrupts() {
     [[ "$ticks" -ge "$TICKS_TO_WAIT" ]] || fail "$ticks ticks arrived, expected $TICKS_TO_WAIT"
     [[ $((ticks * period)) -le $((elapsed + period)) ]] \
         || fail "$ticks ticks in $elapsed us with a tick every $period us: they came faster than the timer fires (an interrupt storm)"
+    # And not much slower than it fires: a period that drifts or is too long
+    # lets the wait take several times as long as the ticks it waits for.
+    [[ "$elapsed" -le $((5 * ticks * period)) ]] \
+        || fail "$ticks ticks took $elapsed us with a tick every $period us: the timer is too slow"
     [[ "$spurious" -eq 0 && "$unexpected" -eq 0 ]] \
         || fail "$spurious spurious and $unexpected unexpected interrupts, expected none"
     expect_once "interrupts: context intact across a tick: registers, flags, SP, SP_EL0 and the stack below SP" \

@@ -184,6 +184,12 @@ refusals: GICv3 and a zero frequency.
 - The tick is stopped again at the end of the boot's own test (IRQs masked, timer
   stopped) until K7 starts it for the scheduler.
 - Cores other than the boot core have no interrupt setup; K11 brings them up.
+- The controller and the timer are looked up among the direct children of the
+  root, and the timer's `interrupts` are read as the GIC's three cells. A board
+  whose GIC sits under another bus is refused ("no interrupt controller") until the
+  reader follows `interrupt-parent` and `#interrupt-cells`.
+- The fallback to the tree's `clock-frequency` has no boot of its own: QEMU's
+  tree has none, so only the refusal is exercised.
 
 ## Alternatives considered
 

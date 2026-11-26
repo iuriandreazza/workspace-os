@@ -166,12 +166,12 @@ fn check_spurious_is_counted() -> Result<(), Error> {
 /// console's SAFETY argument and the single exception stack both rest on that.
 pub fn handle_irq() {
     let controller = controller();
-    let Some(id) = controller.acknowledge() else {
+    let Some(taken) = controller.acknowledge() else {
         // Nothing to end: an acknowledge that found nothing took nothing.
         SPURIOUS.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    if id == TIMER_INTERRUPT.load(Ordering::Relaxed) {
+    if taken.id() == TIMER_INTERRUPT.load(Ordering::Relaxed) {
         // The line is level: until the deadline moves past the count the timer
         // keeps it asserted, so this comes before the end of the interrupt.
         let now = arch::timer::count();
@@ -186,7 +186,7 @@ pub fn handle_irq() {
     } else {
         UNEXPECTED.fetch_add(1, Ordering::Relaxed);
     }
-    controller.end_of_interrupt(id);
+    controller.end_of_interrupt(taken);
 }
 
 /// What a wait for ticks measured.

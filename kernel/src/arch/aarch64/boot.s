@@ -493,7 +493,7 @@ el3_vectors:
 
 el3_monitor_call:
     mrs  x16, esr_el3
-    lsr  x16, x16, #26
+    ubfx x16, x16, #26, #6          // EC: the bits above ISS are not all zero everywhere
     cmp  x16, #0x17                 // SMC from AArch64
     b.ne .
     ldr  w16, ={MONITOR_CALL_GIC_FOR_NON_SECURE}
