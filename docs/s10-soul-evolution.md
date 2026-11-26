@@ -89,6 +89,28 @@ Every row: the line was broken, the named tests failed, the line was restored.
 | Panel lines not escaped | the hostile-text test |
 | No size limit, no "no change" check, diff without kept lines, a fixed personality line, no base check on undo, no gap check or number check in the history | one named test each |
 
+## Local adversarial review
+
+Twelve rounds, each with a reviewer subagent of fresh context given the diff and the ADRs and not the author's reasoning. Rounds 1 to 11 each confirmed at least one finding; every one was verified against the code, fixed, covered by a test and confirmed by breaking the fix. **Round 12 found nothing.**
+
+| Rounds | Findings fixed |
+|---|---|
+| 1 | Wrapped text forging panel lines; an undo unable to reach a change whose process died after the swap; the log written only after the write; a diff of only line endings; a damaged history blocking the whole listing; the history directory's mode |
+| 2 | Wide characters wrapping inside a panel piece; the rationale in the listing; the sweep of temporary files not scoped to the SOUL |
+| 3 | The user name from `USER` unbounded and unescaped (panel header, history, an entry the history then refuses) |
+| 4 | Stored text trusted by the listing (name, parser messages); a named pipe in the history directory hanging a read under the lock |
+| 5 | A named pipe as `.lock`; untrusted text on lines wider than a terminal in messages and in the step line |
+| 6 | A leftover entry committed for a SOUL someone else wrote with the same text (the entry now names the file by inode); the length of a panel |
+| 7 | The stored name, the ADR's write order, a temporary file left after a refused entry, device numbers that change between boots |
+| 8 | An entry deleted when its commit failed; the plan details view of a proposal |
+| 9 | A change whose entry could not be committed logged as failed; a history directory that is a link |
+| 10 | The log failing after an uncommitted entry hid the step |
+| 11 | A proposal held back by an earlier step printed whole on the plan screen; an entry waiting to be settled not said, with undo then guessing |
+
+Two things it did not settle: the wide-character assumption (a terminal set to draw ambiguous-width characters wide, accepted in ADR 0036) and the flaky tests below.
+
+**Flaky tests, said plainly.** `model::tests::nothing_listening_is_an_error_at_once` fails now and then (a port race, known and not this item's). During the gate run of the round 10 commit, `two_undos_go_back_two_changes_and_a_third_has_nothing_to_undo` failed once and then passed in 30 runs of the SOUL tests and 40 runs of all the unit tests; its cause is not found (the assertion now prints the outcome of the step, so a repeat explains itself). One earlier flake was a test of mine that started a child process while other tests held locks, and was fixed by not starting one.
+
 ## With the real model
 
 `llama-server` was available, with Bonsai 8B, started by this session on port
