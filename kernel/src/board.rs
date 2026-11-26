@@ -76,7 +76,12 @@ const VIRTUAL_TIMER_INTERRUPT: usize = 2;
 const PRIVATE_PERIPHERAL_INTERRUPT: u32 = 1;
 const PRIVATE_PERIPHERAL_BASE_ID: u32 = 16;
 const PRIVATE_PERIPHERAL_COUNT: u32 = 16;
-const MIN_CONTROLLER_REGISTERS: u64 = 0x1000;
+/// What the kernel reads from each block of a controller: a GICv2's two blocks
+/// one page each, a GICv3's distributor 64 KiB (its ID registers are at
+/// 0xffe8) and its redistributors at least one frame of 128 KiB.
+const GICV2_BLOCK_BYTES: u64 = 0x1000;
+const GICV3_DISTRIBUTOR_BYTES: u64 = 0x10000;
+const GICV3_REDISTRIBUTOR_BYTES: u64 = 0x20000;
 
 /// The interrupt controller the device tree names and where its registers are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,14 +200,14 @@ impl Board {
         let controller = fdt
             .find_device(|device| device.is_interrupt_controller())
             .map_err(|_| WiringError::NoController)?;
-        let registers = |index| {
+        let registers = |index, at_least| {
             controller
                 .region(index)
                 .map_err(WiringError::BadController)
                 .and_then(|region| {
                     usize::try_from(region.base)
                         .ok()
-                        .filter(|_| region.size >= MIN_CONTROLLER_REGISTERS)
+                        .filter(|_| region.size >= at_least)
                         .map(|_| region)
                         .ok_or(WiringError::BadController(Error::MalformedReg))
                 })
@@ -215,16 +220,16 @@ impl Board {
                 return Err(WiringError::RedistributorLayout);
             }
             Controller::V3 {
-                distributor: registers(0)?,
-                redistributors: registers(1)?,
+                distributor: registers(0, GICV3_DISTRIBUTOR_BYTES)?,
+                redistributors: registers(1, GICV3_REDISTRIBUTOR_BYTES)?,
             }
         } else if GICV2_COMPATIBLE
             .iter()
             .any(|compatible| controller.is_compatible(compatible))
         {
             Controller::V2 {
-                distributor: registers(0)?,
-                cpu_interface: registers(1)?,
+                distributor: registers(0, GICV2_BLOCK_BYTES)?,
+                cpu_interface: registers(1, GICV2_BLOCK_BYTES)?,
             }
         } else {
             return Err(WiringError::UnknownController);

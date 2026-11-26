@@ -92,12 +92,16 @@ parked in the boot code with IRQs masked, so nothing is routed to them.
 
 The controller's state is never assumed to be the reset state. Firmware (the
 UEFI path) uses the timer and the controller, so before anything is enabled the
-driver disables the distributor, clears every enable, pending and active bit
+driver disables the distributor's groups (keeping affinity routing as firmware
+left it, since turning it off under a core that uses the system registers is not
+something the architecture promises), clears every enable, pending and active bit
 (and a GICv2's pending SGIs through `GICD_CPENDSGIR`), writes the CPU interface
 control register whole (which clears an EOI mode firmware may have set), sets the
 priority mask and binary point, and drains what the interface already signalled.
 A GICv3's redistributor is found by walking its region for this core's affinity
-(`MPIDR_EL1`), woken (`GICR_WAKER`, polled a bounded number of times), and its
+(`MPIDR_EL1`; the walk and the packing are the `giclayout` crate, tested on the
+host with fake regions, because no QEMU boot has its core anywhere but in the
+first slot; a slot whose ID registers do not say GICv3 is never matched), woken (`GICR_WAKER`, polled a bounded number of times), and its
 SGIs and PPIs are made Group 1 and cleared; the distributor gets affinity routing
 and Group 1, in the bit that the controller's security state says (`DS`).
 
@@ -245,6 +249,11 @@ ACPI-only machines at any controller), VirtualBox (it cannot run in the gate).
   root, and the timer's `interrupts` are read as the GIC's three cells. A board
   whose GIC sits under another bus is refused ("no interrupt controller") until the
   reader follows `interrupt-parent` and `#interrupt-cells`.
+- The virtual timer is the third `interrupts` entry of the timer node, as the
+  binding orders them; a tree with `interrupt-names` and fewer entries is refused
+  ("the timer's interrupts") until the names are read.
+- The context test may return without a tick (a `wfi` is allowed to), and is
+  tried up to three times before the boot gives up.
 - The fallback to the tree's `clock-frequency` has no boot of its own: neither
   QEMU's tree nor VirtualBox's has one, so only the refusal is exercised.
 

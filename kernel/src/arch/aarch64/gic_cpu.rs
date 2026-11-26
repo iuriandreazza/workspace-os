@@ -55,6 +55,9 @@ pub fn enable_group_1(priority_mask: u8) {
     // set what the interface signals to this core.
     unsafe {
         asm!(
+            // The redistributor's and the distributor's writes are complete
+            // before the interface starts signalling.
+            "dsb sy",
             "msr S3_0_C4_C6_0, {mask}",
             "msr S3_0_C12_C12_3, xzr",
             "msr S3_0_C12_C12_4, {control}",
@@ -89,11 +92,11 @@ pub fn end_of_interrupt(raw: u32) {
     };
 }
 
-/// This core's affinity as a redistributor's `GICR_TYPER` names it: Aff3 in
-/// bits 31:24, then Aff2, Aff1 and Aff0 (bits 7:0), from `MPIDR_EL1`.
+/// This core's affinity as a redistributor's `GICR_TYPER` names it, from
+/// `MPIDR_EL1`.
 pub fn affinity() -> u32 {
     let mpidr: u64;
     // SAFETY: reading `MPIDR_EL1` has no side effects.
     unsafe { asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack, preserves_flags)) };
-    (((mpidr >> 32) & 0xff) << 24 | (mpidr & 0x00ff_ffff)) as u32
+    giclayout::affinity(mpidr)
 }

@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 bootinfo = { path = "../bootinfo" }
 devicetree = { path = "../devicetree" }
+giclayout = { path = "../giclayout" }
 kernelheap = { path = "../kernelheap" }
 kernelvm = { path = "../kernelvm" }
 physmem = { path = "../physmem" }

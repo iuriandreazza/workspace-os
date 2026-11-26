@@ -26,6 +26,9 @@ const PRIORITY_MASK_ALL: u8 = 0xff;
 const WAIT_LIMIT_SECONDS: u64 = 2;
 /// The number of ticks the boot waits for.
 pub const TICKS_TO_WAIT: u64 = 20;
+/// How many times the context test may return without a tick before the boot
+/// gives up on it.
+const CONTEXT_TEST_ATTEMPTS: u32 = 3;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
 static SPURIOUS: AtomicU64 = AtomicU64::new(0);
@@ -358,14 +361,23 @@ pub fn selftest(mut out: impl Write, wiring: &InterruptWiring, entered_at_el3: b
         run.spurious,
         run.unexpected
     );
-    // Masked, so that a tick can only be the one the test itself waits for.
+    // Masked, so that a tick can only be the one the test itself waits for. A
+    // `wfi` may return without an interrupt, which leaves the context intact and
+    // is tried again; a few misses in a row are a timer that stopped.
     arch::disable_interrupts();
-    let before = ticks();
-    arch::run_interrupt_selftest();
-    assert!(
-        ticks() > before,
-        "interrupts: the context test returned without a tick"
-    );
+    let mut attempts = 0;
+    loop {
+        let before = ticks();
+        arch::run_interrupt_selftest();
+        if ticks() > before {
+            break;
+        }
+        attempts += 1;
+        assert!(
+            attempts < CONTEXT_TEST_ATTEMPTS,
+            "interrupts: the context test returned without a tick {attempts} times"
+        );
+    }
     klog!(
         Ok,
         out,

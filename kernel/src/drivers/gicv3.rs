@@ -28,11 +28,7 @@ const CONTROL_AFFINITY_ROUTING: u32 = 1 << 4;
 const CONTROL_DISABLE_SECURITY: u32 = 1 << 6;
 const CONTROL_WRITE_PENDING: u32 = 1 << 31;
 
-const REDISTRIBUTOR_TYPE: usize = 0x08;
 const REDISTRIBUTOR_WAKER: usize = 0x14;
-const REDISTRIBUTOR_FRAME: usize = 0x20000;
-const REDISTRIBUTOR_TYPE_LAST: u64 = 1 << 4;
-const REDISTRIBUTOR_TYPE_VIRTUAL_LPIS: u64 = 1 << 1;
 const WAKER_PROCESSOR_SLEEP: u32 = 1 << 1;
 const WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
 
@@ -183,7 +179,12 @@ impl Gicv3 {
         // bit turns Group 1 on, and is read before anything is written.
         let single_state =
             self.read32(self.distributor + DISTRIBUTOR_CONTROL) & CONTROL_DISABLE_SECURITY != 0;
-        self.write32(self.distributor + DISTRIBUTOR_CONTROL, 0);
+        // Only the group enables go: a controller whose affinity routing firmware
+        // turned on keeps it, since turning it off under a core that uses the
+        // system registers is not something the architecture promises to do.
+        let kept = self.read32(self.distributor + DISTRIBUTOR_CONTROL)
+            & (CONTROL_AFFINITY_ROUTING | CONTROL_DISABLE_SECURITY);
+        self.write32(self.distributor + DISTRIBUTOR_CONTROL, kept);
         self.wait_for_distributor()?;
         let words = (self.read32(self.distributor + DISTRIBUTOR_TYPE) & 0x1f) as usize + 1;
         // Word 0 is the SGIs and PPIs, which live in the redistributor.
@@ -216,28 +217,17 @@ impl Gicv3 {
         Ok(Redistributor { sgi_frame })
     }
 
-    /// The frame of the redistributor whose affinity is `affinity`: they follow
-    /// one another from the start of the region, each ending with the next one's
-    /// start unless its `Last` bit is set.
+    /// The frame of the redistributor whose affinity is `affinity`, found by
+    /// walking the region (`giclayout`, tested on the host).
     fn find_redistributor(&self, affinity: u32) -> Result<usize, Error> {
-        let end = self.redistributors + self.redistributors_size;
-        let mut frame = self.redistributors;
-        while frame + REDISTRIBUTOR_FRAME <= end {
-            let typer = self.read64(frame + REDISTRIBUTOR_TYPE);
-            if (typer >> 32) as u32 == affinity {
-                return Ok(frame);
-            }
-            if typer & REDISTRIBUTOR_TYPE_LAST != 0 {
-                break;
-            }
-            // With virtual LPIs each redistributor has two more pages.
-            frame += if typer & REDISTRIBUTOR_TYPE_VIRTUAL_LPIS != 0 {
-                2 * REDISTRIBUTOR_FRAME
-            } else {
-                REDISTRIBUTOR_FRAME
-            };
-        }
-        Err(Error::NoRedistributor { affinity })
+        giclayout::find_redistributor(
+            self.redistributors_size,
+            affinity,
+            |offset| self.read64(self.redistributors + offset),
+            |offset| self.read32(self.redistributors + offset),
+        )
+        .map(|offset| self.redistributors + offset)
+        .ok_or(Error::NoRedistributor { affinity })
     }
 
     fn wake(&self, frame: usize) -> Result<(), Error> {
