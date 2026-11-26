@@ -12,12 +12,13 @@ use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::action::{Action, UserOperation, WriteMode, is_hidden, printable, quoted};
+use crate::action::{Action, Capability, UserOperation, WriteMode, is_hidden, printable, quoted};
 use crate::broker::{Review, ReviewedAction, ReviewedStep, Verdict};
 use crate::label::Labels;
 use crate::plan::{Origin, StepId};
 use crate::ports::{ChoiceLine, EntryKind, TREE_DEPTH, TreeEntry};
 use crate::resolve::Ambiguity;
+use crate::soul_change::{ChangeKind, Mark, Prepared};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -107,6 +108,8 @@ pub fn say(action: &Action, labels: &Labels) -> String {
         Action::SoulProposeChange { rationale, .. } => {
             format!("Propose a change to the SOUL: {}", quoted(rationale))
         }
+        Action::SoulUndoChange => "Undo the latest change to the SOUL".to_owned(),
+        Action::SoulHistory => "Show the history of changes to the SOUL".to_owned(),
     }
 }
 
@@ -281,6 +284,55 @@ pub fn root_panel(who: &str, step: &StepId, action: &Action, labels: &Labels) ->
         ),
         true,
     )
+}
+
+/// The root confirmation of a SOUL change or undo: the whole diff, each line
+/// after a mark the code draws, so no line of the SOUL or of the model's text can
+/// pass for a line of the panel (ADR 0036, section 3).
+pub fn soul_panel(who: &str, step: &StepId, prepared: &Prepared) -> String {
+    let change = &prepared.change;
+    let what = match (change.kind, change.reverts) {
+        (ChangeKind::Undo, Some(seq)) => {
+            format!("Undo change {seq}: restore the SOUL as it was before it")
+        }
+        _ => "Replace the SOUL".to_owned(),
+    };
+    let count = |mark| prepared.diff.iter().filter(|l| l.mark == mark).count();
+    let mut lines = vec![
+        format!(
+            "╔═ ROOT CONFIRMATION ═ SOUL change ═ asked of {} ═ step {step}",
+            quoted(who)
+        ),
+        format!("║ Action  {what}"),
+    ];
+    if let Some(reason) = &change.rationale {
+        lines.push(format!(
+            "║ The model's reason, in its words and not part of the change: {}",
+            quoted(reason)
+        ));
+    }
+    lines.push(format!(
+        "║ The whole file, line by line: {} removed (-), {} added (+), {} kept",
+        count(Mark::Removed),
+        count(Mark::Added),
+        count(Mark::Kept)
+    ));
+    lines.extend(
+        prepared
+            .diff
+            .iter()
+            .map(|line| format!("║ {} {}", line.mark.symbol(), printable(&line.text, false))),
+    );
+    lines.push(format!(
+        "║ Personality  {}",
+        printable(&prepared.personality, false)
+    ));
+    lines.push(format!(
+        "║ Needs   {}, as root. This is written exactly as shown, and the new SOUL is read at the next start.",
+        Capability::SoulPropose
+    ));
+    lines.push("╚═".to_owned());
+    printable(&lines.join("\n"), true)
 }
 
 /// The question for a reference that matched several things, and the

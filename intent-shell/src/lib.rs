@@ -23,6 +23,8 @@ pub mod screen;
 pub mod session;
 pub mod setup;
 pub mod soul;
+pub mod soul_change;
+pub mod soul_files;
 
 #[cfg(feature = "tui")]
 pub mod tui;
@@ -47,6 +49,9 @@ mod soul_tests;
 
 #[cfg(test)]
 mod interview_tests;
+
+#[cfg(test)]
+mod soul_change_tests;
 
 #[cfg(test)]
 mod directories_tests;

@@ -1,7 +1,7 @@
 ---
 title: "ADR 0036: A SOUL change is a root-approved diff, kept in a history that can be undone"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-26
 updated: 2026-11-26
 tags: [soul, plan, broker, root, history, undo, shell]
@@ -11,7 +11,7 @@ tags: [soul, plan, broker, root, history, undo, shell]
 
 ## Status
 
-**Proposed.** It fills what ADR 0006 point 4 and ADR 0011 ("Proposing a change
+**Accepted by the project owner on 2026-11-26** (the six departures were put to them and answered "Aceitar"). It fills what ADR 0006 point 4 and ADR 0011 ("Proposing a change
 to the SOUL") leave open for roadmap item S10: where the history lives, its
 format, how undo works, what the approver sees, and two small additions to the
 plan format. The decisions the project owner must accept are

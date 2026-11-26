@@ -249,6 +249,18 @@ static COMMANDS: &[Command] = &[
         elevate: false,
         args: &[Arg::Text("rationale"), Arg::Text("new_text")],
     },
+    Command {
+        group: "soul",
+        verb: "undo_change",
+        elevate: false,
+        args: &[],
+    },
+    Command {
+        group: "soul",
+        verb: "history",
+        elevate: false,
+        args: &[],
+    },
 ];
 
 /// The action names the commands reach, for the test that compares them with the schema.

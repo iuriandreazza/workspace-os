@@ -104,7 +104,7 @@ fn gate(path: &Path, named: bool, administrator: bool) -> Result<(), String> {
     }
     match existing(path, named) {
         Lookup::Found(found) => Err(format!(
-            "a SOUL already exists at {}. It is fixed at installation (ADR 0006); changing it later is a proposal a user with root authority approves (roadmap S10, not built yet). Nothing was changed",
+            "a SOUL already exists at {}. It is fixed at installation (ADR 0006); changing it later is a proposal a user with root authority approves (ADR 0036): ask for the change in the shell. Nothing was changed",
             soul::shown_path(&found)
         )),
         Lookup::Unknown(why) => Err(format!(

@@ -592,7 +592,7 @@ pub fn legacy_path(soul: &Path) -> PathBuf {
     soul.with_file_name("voice-profile")
 }
 
-enum Read {
+pub(crate) enum Read {
     Absent,
     Text(String),
     Problem(String),
@@ -606,7 +606,7 @@ pub(crate) fn shown_path(path: &Path) -> String {
 /// Only the start is read: a device or a huge file must not be read to its end.
 /// Non-blocking, so a named pipe with no writer is an empty file, not a hang.
 /// A file the person named that does not exist is an error: they asked for it.
-fn read(path: &Path, what: &str, named_by_person: bool) -> Result<Read, String> {
+pub(crate) fn read(path: &Path, what: &str, named_by_person: bool) -> Result<Read, String> {
     let bytes = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)

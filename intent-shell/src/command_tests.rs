@@ -101,8 +101,10 @@ const EXAMPLES: &[(&str, &str)] = &[
     (
         "soul-propose-change.json",
         "soul propose_change --rationale 'The user asked for shorter answers.' \
-         --new-text 'I am the system. I answer briefly and precisely.'",
+         --new-text \"format: 1\\npreset: direct-technical\\nlanguages: any\\n\"",
     ),
+    ("soul-undo-change.json", "soul undo_change"),
+    ("soul-history.json", "soul history"),
     (
         "system-configure.json",
         "system configure --key machine.name --value atlas",

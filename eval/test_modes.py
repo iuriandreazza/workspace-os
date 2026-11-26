@@ -53,7 +53,7 @@ class Prompts(unittest.TestCase):
 class Tools(unittest.TestCase):
     def test_there_is_one_tool_per_action_and_one_to_ask(self):
         names = [t["function"]["name"] for t in TOOLS]
-        self.assertEqual(len(names), 13)
+        self.assertEqual(len(names), 15)
         self.assertEqual(names[-1], "clarify")
         in_the_schema = sorted(
             SCHEMA["$defs"][ref["$ref"].rsplit("/", 1)[1]]["properties"]["action"]["const"] for ref in SCHEMA["$defs"]["step"]["oneOf"])
@@ -63,7 +63,7 @@ class Tools(unittest.TestCase):
         self.assertNotIn("$ref", json.dumps(TOOLS))
 
     def test_the_actions_without_an_elevate_field_get_none(self):
-        for name in ("user_manage", "system_configure", "soul_propose_change", "session_cd"):
+        for name in ("user_manage", "system_configure", "soul_propose_change", "soul_undo_change", "soul_history", "session_cd"):
             self.assertFalse(BY_NAME[name]["has_elevate"])
             parameters = next(t for t in TOOLS if t["function"]["name"] == name)["function"]["parameters"]
             self.assertNotIn("elevate", parameters["properties"])

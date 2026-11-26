@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Show the history of SOUL changes","steps":[
+ {"id":"s1","action":"soul.history","args":{},"depends_on":[]}]}

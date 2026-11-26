@@ -517,6 +517,11 @@ struct SoulArgs {
     new_text: String,
 }
 
+/// The arguments of an action that takes none: only `{}` is accepted.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoArgs {}
+
 fn convert_step(raw: RawStep) -> Result<Step, PlanError> {
     let id = StepId::parse(&raw.id)?;
     if raw.depends_on.len() > MAX_DEPENDENCIES {
@@ -668,6 +673,14 @@ fn convert_spec(name: &str, args: Value) -> Result<Spec, PlanError> {
                 rationale: a.rationale,
                 new_text: a.new_text,
             })
+        }
+        "soul.undo_change" => {
+            from_value::<NoArgs>(args)?;
+            plain(Action::SoulUndoChange)
+        }
+        "soul.history" => {
+            from_value::<NoArgs>(args)?;
+            plain(Action::SoulHistory)
         }
         other => Err(PlanError::new(format!("unknown action {other:?}"))),
     }

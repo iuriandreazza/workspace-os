@@ -178,7 +178,9 @@
         { "$ref": "#/$defs/processRun" },
         { "$ref": "#/$defs/userManage" },
         { "$ref": "#/$defs/systemConfigure" },
-        { "$ref": "#/$defs/soulProposeChange" }
+        { "$ref": "#/$defs/soulProposeChange" },
+        { "$ref": "#/$defs/soulUndoChange" },
+        { "$ref": "#/$defs/soulHistory" }
       ]
     },
     "fsList": {
@@ -410,6 +412,28 @@
             "new_text": { "type": "string", "minLength": 1, "maxLength": 16384 }
           }
         },
+        "depends_on": { "$ref": "#/$defs/dependsOn" }
+      }
+    },
+    "soulUndoChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "soul.undo_change" },
+        "args": { "type": "object", "additionalProperties": false, "required": [], "properties": {} },
+        "depends_on": { "$ref": "#/$defs/dependsOn" }
+      }
+    },
+    "soulHistory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "args", "depends_on"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "action": { "const": "soul.history" },
+        "args": { "type": "object", "additionalProperties": false, "required": [], "properties": {} },
         "depends_on": { "$ref": "#/$defs/dependsOn" }
       }
     }

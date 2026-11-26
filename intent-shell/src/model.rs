@@ -28,7 +28,8 @@ Relative paths start at the current directory as it was when the request was mad
 Actions and their args:
 fs.list {target: place, path, name, under_home or from_step}; fs.stat {target: path, name, under_home or from_step}; fs.read {target: path, name, under_home or from_step}; fs.find_largest {target: place, path, name or under_home, count}; fs.write {target: path, name, under_home or new_name, content, mode: create|overwrite|append}; fs.move {from: path, name, under_home or from_step, to: place, path, folder name or new_name}; fs.delete {target: path, name, under_home or from_step}; process.run {program,argv}
 session.cd {target: place, path or folder name}: changes the current directory for the next request.
-user.manage {operation: add|remove|add_to_group|remove_from_group,user,group or null}, system.configure {key,value}, soul.propose_change {rationale,new_text} and session.cd have no elevate field.
+user.manage {operation: add|remove|add_to_group|remove_from_group,user,group or null}, system.configure {key,value}, soul.propose_change {rationale,new_text}, soul.undo_change {}, soul.history {} and session.cd have no elevate field.
+soul.propose_change: new_text is the whole new SOUL file, one `key: value` per line, nothing else, the first line `format: 1`. For example: "format: 1\npreset: formal-discreet\nname: Atlas\nlanguages: any". Keys: preset (direct-technical|warm-didactic|formal-discreet|good-humoured, required), name, formality (casual|neutral|formal), humour (none|light|marked), detail (minimal|brief|explained), languages (en, pt-BR or any). Use soul.undo_change only when the user asks to go back to the previous SOUL.
 Rules: ids are s1, s2, ...; depends_on lists the step ids a step needs; elevate is true only when the user asks for administrator rights.
 A from_step reference only works after an fs.list or fs.find_largest step.
 Do not ask a question when the request is clear."#;

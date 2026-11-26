@@ -19,6 +19,7 @@ use intent_shell::plain;
 use intent_shell::ports::{DecisionLog, User};
 use intent_shell::setup::Setup;
 use intent_shell::soul::{self, Persona, Source};
+use intent_shell::soul_files::FileSoulStore;
 
 const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--soul FILE] [--personality FILE] [--setup-soul]";
 
@@ -270,7 +271,10 @@ fn run() -> Result<(), String> {
             name: std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()),
             administrator: options.administrator,
         }),
-        host: UnixHost::from_environment(),
+        host: UnixHost::from_environment().with_soul_store(FileSoulStore::new(
+            soul_path(&options),
+            options.personality.0.clone(),
+        )),
         planner: options.model.map(|address| LlamaPlanner { address }),
         log,
         reply,

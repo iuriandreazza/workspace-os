@@ -1,0 +1,2 @@
+{"kind":"plan","version":3,"summary":"Go back to the previous SOUL","steps":[
+ {"id":"s1","action":"soul.undo_change","args":{},"depends_on":[]}]}
