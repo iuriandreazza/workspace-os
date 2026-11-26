@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::action::{Action, RootRule, WriteMode, quoted};
 use crate::plan::StepId;
+use crate::soul_change::shortened;
 
 /// The places a plan may name. The adapter decides where each one lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -312,6 +313,11 @@ impl Spec {
             Self::Move { from, to } => {
                 format!("Move {} to {}", from.describe(), to.describe())
             }
+            // The rows of the plan screen: a proposal's words are cut, on every path to the screen.
+            Self::Plain(Action::SoulProposeChange { rationale, .. }) => format!(
+                "Propose a change to the SOUL: \"{}\"",
+                shortened(rationale, 36)
+            ),
             Self::Plain(action) => action.describe(),
         }
     }

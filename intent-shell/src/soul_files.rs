@@ -366,7 +366,22 @@ impl SoulStore for FileSoulStore {
         {
             let _ = settle(&dir, &target, &current);
         }
-        read_history_partial(&dir)
+        let (entries, problem) = read_history_partial(&dir)?;
+        // An entry still waiting after the attempt to settle it: a change may have
+        // happened that this list cannot show yet, and undo must not guess.
+        let waiting = fs::read_dir(&dir).is_ok_and(|listing| {
+            listing
+                .flatten()
+                .any(|e| numbered(&e.file_name().to_string_lossy(), "pending").is_some())
+        });
+        let problem = match (problem, waiting) {
+            (None, true) => Some(
+                "an entry is waiting to be settled; a change may have been applied that this list does not show yet"
+                    .to_owned(),
+            ),
+            (problem, _) => problem,
+        };
+        Ok((entries, problem))
     }
 
     fn personality_effect(&self, soul: &Soul) -> String {

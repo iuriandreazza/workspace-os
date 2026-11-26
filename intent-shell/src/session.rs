@@ -574,7 +574,8 @@ impl Shell<'_> {
             }
             // Done, though not yet in the history: the SOUL is already the new one.
             Ok(Err(error @ ApplyError::AppliedUncommitted(_))) => {
-                self.record(ended(error.outcome(), &error.message()))?;
+                // As with "applied": the SOUL is changed whatever happens to the log.
+                let _ = self.record(ended(error.outcome(), &error.message()));
                 Ok(ItemResult::Done(Output {
                     text: format!(
                         "The SOUL was changed, but {} The new SOUL is read at the next start.",

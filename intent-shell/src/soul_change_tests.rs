@@ -36,6 +36,8 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
+        // A directory a killed run left under the same process number is not ours.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Self { dir }
     }
@@ -303,10 +305,10 @@ fn two_undos_go_back_two_changes_and_a_third_has_nothing_to_undo() {
     let fixture = Fixture::with_soul(SOUL_A);
     run_yes(&fixture, true, &propose(SOUL_B));
     run_yes(&fixture, true, &propose(SOUL_C));
-    run_yes(&fixture, true, &undo());
-    assert_eq!(fixture.text(), SOUL_B);
-    run_yes(&fixture, true, &undo());
-    assert_eq!(fixture.text(), SOUL_A);
+    let (first, _) = run_yes(&fixture, true, &undo());
+    assert_eq!(fixture.text(), SOUL_B, "{:?}", first.outcome);
+    let (second, _) = run_yes(&fixture, true, &undo());
+    assert_eq!(fixture.text(), SOUL_A, "{:?}", second.outcome);
     let (third, answers) = run_yes(&fixture, true, &undo());
     assert_eq!(failed_text(&third), "there is no change to undo");
     assert!(answers.root_asked.is_empty());
@@ -1372,4 +1374,81 @@ fn a_history_directory_that_is_a_link_is_refused_and_nothing_is_touched() {
     assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
     let mode = std::fs::metadata(&elsewhere).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o700);
+}
+
+#[test]
+fn a_log_that_fails_when_an_entry_is_left_uncommitted_still_shows_the_step_as_done() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let mut answers = Answers::yes();
+    crate::soul_files::fail_commits(true);
+    // Seven events are accepted, the "writing" one among them; the next is not.
+    let log = MemoryLog::failing_after(7);
+    let ran = run_logged(&fixture, user(true), &mut answers, &propose(SOUL_B), log);
+    crate::soul_files::fail_commits(false);
+    assert_eq!(fixture.text(), SOUL_B);
+    match ran.outcome {
+        Outcome::LogFailed { steps, .. } => {
+            assert!(
+                matches!(steps[0].items[0].result, ItemResult::Done(_)),
+                "{steps:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_proposal_held_back_by_an_earlier_step_is_cut_on_the_plan_screen_too() {
+    let fixture = Fixture::with_soul(SOUL_A);
+    let long = "w".repeat(5000);
+    let plan = json!({"kind": "plan", "version": 3, "summary": "test", "steps": [
+        {"id": "s1", "action": "fs.read", "args": {"target": {"path": "/nonexistent/zzz"}},
+         "depends_on": [], "elevate": false},
+        {"id": "s2", "action": "soul.propose_change",
+         "args": {"rationale": &long[..500], "new_text": format!("{SOUL_B}# {long}\n")},
+         "depends_on": ["s1"]}]})
+    .to_string();
+    let (ran, _) = run_yes(&fixture, true, &plan);
+    let rendered = ran.outcome.render();
+    assert!(rendered.contains("s2"), "{rendered}");
+    for line in rendered.lines() {
+        assert!(line.chars().count() < 160, "{}", line.chars().count());
+    }
+    assert_eq!(fixture.text(), SOUL_A);
+}
+
+#[test]
+fn an_entry_that_could_not_be_settled_is_said_and_undo_does_not_guess() {
+    let fixture = Fixture::with_soul(SOUL_B);
+    pending(&fixture, 1, SOUL_A, SOUL_B);
+    std::fs::write(fixture.history().join(".lock"), "").unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.history().join(".lock"))
+        .unwrap();
+    use std::os::fd::AsRawFd;
+    // SAFETY: the descriptor belongs to `lock`, which is open for the whole test.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let (listed, _) = run_yes(&fixture, false, &history());
+    assert!(
+        done_text(&listed).contains("an entry is waiting to be settled"),
+        "{}",
+        done_text(&listed)
+    );
+    let (undone, answers) = run_yes(&fixture, true, &undo());
+    assert!(
+        failed_text(&undone).contains("waiting to be settled"),
+        "{}",
+        failed_text(&undone)
+    );
+    assert!(answers.root_asked.is_empty());
+    assert_eq!(fixture.text(), SOUL_B);
+    drop(lock);
+    let (undone, _) = run_yes(&fixture, true, &undo());
+    assert!(
+        done_text(&undone).contains("history entry 2"),
+        "{}",
+        done_text(&undone)
+    );
+    assert_eq!(fixture.text(), SOUL_A);
 }
