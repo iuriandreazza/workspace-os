@@ -213,8 +213,16 @@ extern "C" fn unhandled_exception(vector: u64, esr: u64, elr: u64, far: u64) -> 
     );
 }
 
+/// Entered from `irq_exception_entry` with the context of the interrupted code
+/// saved on the exception stack. Returning resumes it where it was.
+#[unsafe(no_mangle)]
+extern "C" fn handle_irq_exception() {
+    crate::interrupts::handle_irq();
+}
+
 unsafe extern "C" {
     fn exception_selftest() -> u64;
+    fn interrupt_selftest() -> u64;
 }
 
 /// Takes a breakpoint and checks that the interrupted code resumes with its
@@ -224,6 +232,17 @@ pub fn run_selftest() {
     // changes, and the vector table installed by the boot code handles BRK.
     let failed = unsafe { exception_selftest() };
     assert!(failed == 0, "context changed across a handled exception");
+}
+
+/// Takes a timer interrupt with distinct values in every register, in the
+/// flags and just below the stack pointer, and checks that all of them came
+/// back. The caller has seen ticks arrive, so the wait ends; the pattern
+/// below SP is what the interrupt's own stack must leave alone (ADR 0026).
+pub fn run_interrupt_selftest() {
+    // SAFETY: `interrupt_selftest` saves and restores every register it
+    // changes, and masks IRQs again before it returns.
+    let failed = unsafe { interrupt_selftest() };
+    assert!(failed == 0, "context changed across an interrupt");
 }
 
 pub fn current_el() -> u64 {

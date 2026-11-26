@@ -62,7 +62,7 @@ fn open() -> Expectation<'static> {
         types: TYPES,
         window: None,
         forbidden: &(0..0),
-        device: &(0..0),
+        device: &[],
         known: None,
     }
 }
@@ -450,7 +450,7 @@ fn device_registers_map_as_device_without_execute() {
         root,
         0,
         &Expectation {
-            device: &device,
+            device: core::slice::from_ref(&device),
             ..open()
         },
     );
@@ -849,7 +849,7 @@ fn a_memory_type_that_is_not_normal_is_found_in_the_image() {
 fn the_device_range_is_device_memory_and_nothing_else_is() {
     let uart = 0x0900_0000..0x0900_1000;
     let expectation = Expectation {
-        device: &uart,
+        device: core::slice::from_ref(&uart),
         ..open()
     };
     let mut arena = Arena::new(16);
@@ -1179,7 +1179,7 @@ fn the_image_window_the_linear_window_and_the_devices_audit_clean_apart() {
         UPPER_BASE,
         &Expectation {
             window: Some(&DEVICE_WINDOW_RANGE),
-            device: &device_range,
+            device: core::slice::from_ref(&device_range),
             ..open()
         },
     );
@@ -1282,6 +1282,28 @@ fn device_registers_land_in_the_window_with_a_guard_page_after_each() {
     // The pages after each mapping are unmapped.
     assert!(translate(&arena, root, DEVICE_BASE + 2 * PAGE_SIZE).is_none());
     assert!(translate(&arena, root, second + 16 * PAGE_SIZE).is_none());
+}
+
+#[test]
+fn every_device_range_is_device_memory_and_the_pages_between_them_are_not_mapped() {
+    let mut arena = Arena::new(64);
+    let mut mapper = Mapper::new(&mut arena, TYPES).unwrap();
+    let mut window = DeviceWindow::new();
+    window.map(&mut mapper, 0x0900_0000, 0x1000).unwrap();
+    window.map(&mut mapper, 0x0800_0000, 0x10000).unwrap();
+    let root = mapper.root();
+    let ranges = [0x0900_0000..0x0900_1000, 0x0800_0000..0x0801_0000];
+    let expect = |device| Expectation {
+        window: Some(&DEVICE_WINDOW_RANGE),
+        device,
+        ..open()
+    };
+    let both = audit(&arena, root, UPPER_BASE, &expect(&ranges));
+    assert!(both.is_clean(), "{both:?}");
+    assert_eq!(both.device, PAGE_SIZE + 0x10000);
+    // A range the audit does not know of is Device memory where Normal is expected.
+    let only_uart = audit(&arena, root, UPPER_BASE, &expect(&ranges[..1]));
+    assert!(only_uart.wrong_memory_type.is_some());
 }
 
 #[test]

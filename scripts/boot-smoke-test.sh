@@ -119,6 +119,16 @@ readonly EXPECTED_BANNER="booted on aarch64 in EL1"
 readonly DEFAULT_MEMORY_MIB=128
 readonly RAM_BASE="0x40000000"
 readonly UART_REPORT="uart pl011 at 0x9000000"
+# QEMU `virt` with its default GICv2 (ADR 0035): where the device tree puts the
+# distributor and the CPU interface, how big each is, the private peripheral
+# interrupt of the virtual timer (PPI 11, ID 27) and the counter's frequency.
+readonly GIC_DISTRIBUTOR=0x8000000
+readonly GIC_CPU_INTERFACE=0x8010000
+readonly GIC_BLOCK_BYTES=$((0x10000))
+readonly TIMER_INTERRUPT=27
+# `-cpu max` has a counter of 1 GHz, the cortex-a72 of the other boots 62.5 MHz.
+readonly COUNTER_HZ=62500000
+readonly COUNTER_HZ_CPU_MAX=1000000000
 readonly BREAKPOINT_REPORT="exception: breakpoint #0x800 at"
 readonly RESUME_MARKER="resumed after breakpoint"
 readonly PANIC_MARKER="kernel panic"
@@ -157,6 +167,10 @@ cd "$(dirname "$0")/.."
 AUTOBOOT_SECONDS="$(sed -n 's/^pub const AUTOBOOT_SECONDS: u32 = \([0-9][0-9]*\);$/\1/p' bootinfo/src/menu.rs)"
 readonly AUTOBOOT_SECONDS
 [[ -n "$AUTOBOOT_SECONDS" ]] || { echo "boot smoke test: AUTOBOOT_SECONDS not found in bootinfo/src/menu.rs" >&2; exit 1; }
+# The ticks the kernel waits for, read from where it defines them.
+TICKS_TO_WAIT="$(sed -n 's/^pub const TICKS_TO_WAIT: u64 = \([0-9][0-9]*\);$/\1/p' kernel/src/interrupts.rs)"
+readonly TICKS_TO_WAIT
+[[ -n "$TICKS_TO_WAIT" ]] || { echo "boot smoke test: TICKS_TO_WAIT not found in kernel/src/interrupts.rs" >&2; exit 1; }
 # Written by the bootloader after it drew the menu and dropped any key the
 # firmware buffered, so a key typed after this line is read by the menu.
 readonly MENU_READY="autoboot in $AUTOBOOT_SECONDS s, starting Normal"
@@ -377,12 +391,20 @@ check_mmu() {
     if [[ -n "$expected" ]]; then
         [[ $((bytes)) -eq "$expected" ]] || fail "linear map holds $bytes bytes of RAM, expected $expected"
     fi
-    # The device window: the console's page, at the window's start.
-    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: device window at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of registers, console at \(0x[0-9a-f]*\)$/\1 \2 \3/p')"
+    # The device window: the console's page at the window's start, then the
+    # interrupt controller's two blocks, each after one unmapped guard page
+    # (ADR 0033, 0035): the addresses are the device window's, not the physical
+    # ones the device tree gave.
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  mmu: device window at \(0x[0-9a-f]*\): \(0x[0-9a-f]*\) bytes of registers, console at \(0x[0-9a-f]*\), distributor at \(0x[0-9a-f]*\), cpu interface at \(0x[0-9a-f]*\)$/\1 \2 \3 \4 \5/p')"
     [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "device window report not found exactly once"
-    read -r base device_bytes console <<< "$line"
-    [[ $((base)) -eq $((DEVICE_BASE)) && $((device_bytes)) -eq $FRAME_SIZE && $((console)) -eq $((DEVICE_BASE)) ]] \
-        || fail "device window at $base holds $device_bytes bytes with the console at $console, expected one page at $(hex "$DEVICE_BASE")"
+    local distributor cpu_interface
+    read -r base device_bytes console distributor cpu_interface <<< "$line"
+    local want_distributor=$((DEVICE_BASE + 2 * FRAME_SIZE))
+    local want_cpu_interface=$((want_distributor + GIC_BLOCK_BYTES + FRAME_SIZE))
+    [[ $((base)) -eq $((DEVICE_BASE)) && $((device_bytes)) -eq $((FRAME_SIZE + 2 * GIC_BLOCK_BYTES)) && $((console)) -eq $((DEVICE_BASE)) ]] \
+        || fail "device window at $base holds $device_bytes bytes with the console at $console, expected the console's page at $(hex "$DEVICE_BASE") and the controller's two blocks"
+    [[ $((distributor)) -eq "$want_distributor" && $((cpu_interface)) -eq "$want_cpu_interface" ]] \
+        || fail "the controller is at $distributor and $cpu_interface in the device window, expected $(hex "$want_distributor") and $(hex "$want_cpu_interface")"
     # The lower half is empty after the switch (ADR 0033): no leaf under its
     # root, walks through it off, and the hardware refuses every address that
     # was mapped there before: the console's registers, the image, the
@@ -450,6 +472,37 @@ check_reclaim() {
         || fail "the kernel used '$used' of the $released reclaimed frames"
 }
 
+# check_interrupts [monitor]: the kernel started the controller from what the
+# device tree says, took the tick of the virtual timer and counted it (ADR 0035).
+# The ticks must have arrived (the wanted number of them), not faster than the
+# timer fires (a tick every period, plus the one that can land right at the start:
+# a storm of unacknowledged interrupts breaks this), none spurious or unexpected,
+# and an interrupted context must have come back whole. With `monitor` the boot
+# went through EL3 and the monitor handed the controller to the non-secure world.
+check_interrupts() {
+    local monitor="" line frequency ticks elapsed period spurious unexpected counter_hz="$COUNTER_HZ"
+    [[ "$*" != *"-cpu max"* ]] || counter_hz="$COUNTER_HZ_CPU_MAX"
+    [[ "${1:-}" != monitor ]] || monitor=", handed to the non-secure world by the EL3 monitor"
+    expect_once "interrupts: gicv2, distributor $GIC_DISTRIBUTOR, cpu interface $GIC_CPU_INTERFACE, timer interrupt ${TIMER_INTERRUPT}${monitor}" \
+        "interrupt controller report"
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  timer: virtual, \([0-9]*\) Hz, a tick every \([0-9]*\) us$/\1 \2/p')"
+    [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "timer report not found exactly once"
+    read -r frequency period <<< "$line"
+    [[ "$frequency" -eq "$counter_hz" && "$period" -eq $((1000000 * (counter_hz / 100) / counter_hz)) ]] \
+        || fail "the timer runs at $frequency Hz with a tick every $period us, expected $counter_hz Hz and 100 ticks a second"
+    line="$(plain_log | sed -n 's/^  kernel  .\{4\}  ticks: \([0-9]*\) in \([0-9]*\) us, a tick every \([0-9]*\) us, spurious \([0-9]*\), unexpected \([0-9]*\)$/\1 \2 \3 \4 \5/p')"
+    [[ "$(echo "$line" | wc -l)" -eq 1 && -n "$line" ]] || fail "tick report not found exactly once"
+    read -r ticks elapsed line spurious unexpected <<< "$line"
+    [[ "$line" -eq "$period" ]] || fail "the tick report says a tick every $line us, the timer report $period us"
+    [[ "$ticks" -ge "$TICKS_TO_WAIT" ]] || fail "$ticks ticks arrived, expected $TICKS_TO_WAIT"
+    [[ $((ticks * period)) -le $((elapsed + period)) ]] \
+        || fail "$ticks ticks in $elapsed us with a tick every $period us: they came faster than the timer fires (an interrupt storm)"
+    [[ "$spurious" -eq 0 && "$unexpected" -eq 0 ]] \
+        || fail "$spurious spurious and $unexpected unexpected interrupts, expected none"
+    expect_once "interrupts: context intact across a tick: registers, flags, SP, SP_EL0 and the stack below SP" \
+        "interrupted context check"
+}
+
 # check_heap: the kernel heap (ADR 0029) ran its stress test and reported it:
 # many allocations, growth past the first pages, everything freed and merged
 # back into one block, the pages it mapped read back from the live tables as
@@ -504,16 +557,17 @@ check_boot() {
     check_mmu "$(memory_mib_of "$@")"
     check_reclaim direct
     check_heap
+    if [[ "$*" == *secure=on* ]]; then check_interrupts monitor "$@"; else check_interrupts "" "$@"; fi
 
     stop_qemu
     echo "PASS ($boot_name): kernel booted and stayed up"
 }
 
-# check_panic NAME ELF EXPECTED_TEXT: the kernel must end in a kernel panic
-# whose message holds EXPECTED_TEXT.
+# check_panic NAME ELF EXPECTED_TEXT [QEMU_ARGS...]: the kernel must end in a
+# kernel panic whose message holds EXPECTED_TEXT.
 check_panic() {
     local elf="$2" expected="$3"
-    start_qemu "$1" -kernel "$elf"
+    start_qemu "$1" "${@:4}" -kernel "$elf"
 
     # The panic line reaches the log in pieces: wait for the text itself.
     for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
@@ -847,6 +901,7 @@ check_uefi_boot() {
     check_mmu "" "$((ram_bytes - image_span_bytes))"
     check_reclaim
     check_heap
+    check_interrupts "" "${@:6}"
 
     BOOT_TIMEOUT_SECONDS=10
     stop_qemu
@@ -1491,6 +1546,14 @@ expect_plain_once "3  Chain probe" "the entry of the file in the menu"
 check_panic unhandled-class "$class_elf" "SVC (AArch64)"
 check_panic unhandled-vector "$vector_elf" "synchronous, current EL with SP_EL0"
 check_panic compiler-trap "$trap_elf" "BRK (AArch64) (class 0x3c, iss 0x0000001"
+# The interrupt controller and the timer are refused by name where the kernel
+# cannot drive them (ADR 0035): a GICv3 machine, and a counter whose frequency
+# firmware never programmed.
+check_panic gicv3 "$KERNEL_ELF" "interrupt controller: the controller is a GICv3, which the kernel does not drive" -machine gic-version=3
+zero_frequency_elf="$work_dir/zero-frequency.elf"
+build_with_feature selftest-zero-frequency "$zero_frequency_elf"
+cargo build --quiet --target-dir "$TARGET_DIR"
+check_panic zero-frequency "$zero_frequency_elf" "interrupts: the counter frequency register is zero and the device tree gives none"
 # An exception taken by the handler itself, on the exception stack, is reported
 # as nested (ADR 0026) and not handled on the same stack again.
 nested_elf="$work_dir/nested-exception.elf"

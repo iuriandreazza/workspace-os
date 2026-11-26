@@ -17,12 +17,14 @@ global_asm!(
     TCR_UPPER_MASK = const kernelvm::TCR_UPPER_HALF_MASK,
     TCR_UPPER_HALF = const kernelvm::TCR_UPPER_HALF,
     WXN = const kernelvm::SCTLR_WXN,
+    MONITOR_CALL_GIC_FOR_NON_SECURE = const MONITOR_CALL_GIC_FOR_NON_SECURE,
     SELFTEST_DIRTY_TCR2 = const cfg!(feature = "selftest-dirty-tcr2") as u64,
 );
 global_asm!(include_str!("exceptions.s"));
 
 mod exceptions;
 pub mod mmu;
+pub mod timer;
 
 // Addresses the linker script defines; only their addresses mean anything.
 unsafe extern "C" {
@@ -126,9 +128,54 @@ pub use exceptions::raise_nested_exception;
 pub use exceptions::raise_unhandled_class;
 #[cfg(feature = "selftest-unhandled-vector")]
 pub use exceptions::raise_unhandled_vector;
-pub use exceptions::{current_el, run_selftest};
+pub use exceptions::{current_el, run_interrupt_selftest, run_selftest};
+
+/// The call the boot code's monitor answers when the kernel was started at
+/// EL3 (ADR 0035): give the non-secure world the GIC. It is the Arm SMC
+/// Calling Convention's range for vendor-specific EL3 monitors.
+const MONITOR_CALL_GIC_FOR_NON_SECURE: u32 = 0x8700_0000;
+
+/// Asks the monitor of the boot code, which only exists where the kernel was
+/// started at EL3, to make the boot core's SGIs and PPIs Group 1 and open the
+/// priority mask, in the GIC whose distributor and CPU interface are at the
+/// given physical addresses. `Err` carries what the monitor answered if it was
+/// not success.
+pub fn give_interrupt_controller_to_non_secure(
+    distributor: u64,
+    cpu_interface: u64,
+) -> Result<(), i64> {
+    let answer: i64;
+    // SAFETY: the caller only asks where the boot code installed the monitor.
+    // It writes the two registers the call names and returns, clobbering at
+    // most what the SMC Calling Convention lets a callee clobber.
+    unsafe {
+        asm!(
+            "smc #0",
+            inlateout("x0") u64::from(MONITOR_CALL_GIC_FOR_NON_SECURE) => answer,
+            in("x1") distributor,
+            in("x2") cpu_interface,
+            clobber_abi("C"),
+        )
+    };
+    if answer == 0 { Ok(()) } else { Err(answer) }
+}
+
+/// Unmasks IRQs on this core: from here an interrupt is taken whenever the
+/// controller raises one.
+pub fn enable_interrupts() {
+    // SAFETY: the vector table and the exception stack exist from the first
+    // instruction of the kernel's Rust, and the IRQ entry saves and restores
+    // everything it touches. It is a compiler barrier on purpose.
+    unsafe { asm!("msr daifclr, #2", options(nostack, preserves_flags)) };
+}
+
+pub fn disable_interrupts() {
+    // SAFETY: masking IRQs only delays them. It is a compiler barrier on purpose.
+    unsafe { asm!("msr daifset, #2", options(nostack, preserves_flags)) };
+}
 
 pub fn halt() -> ! {
+    disable_interrupts();
     loop {
         // SAFETY: `wfe` only parks the core until the next event.
         unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };

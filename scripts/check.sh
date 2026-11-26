@@ -44,7 +44,7 @@ python3 -I boot-model/test_training.py   # the numpy side: skipped here, run by 
 
 echo "==> lint"
 cargo clippy --all-targets -p kernel -- -D warnings
-cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap,selftest-write-text,selftest-execute-data,selftest-execute-rodata,selftest-stack-overflow,selftest-nested-exception,selftest-dirty-tcr2,selftest-heap-exhaustion -- -D warnings
+cargo clippy --all-targets -p kernel --features selftest-unhandled-class,selftest-unhandled-vector,selftest-compiler-trap,selftest-write-text,selftest-execute-data,selftest-execute-rodata,selftest-stack-overflow,selftest-nested-exception,selftest-dirty-tcr2,selftest-heap-exhaustion,selftest-zero-frequency -- -D warnings
 # The device tree reader, the frame allocator, the handoff structure
 # (`bootinfo`), the kernel's page tables (`kernelvm`) and the heap allocator
 # (`kernelheap`) are plain Rust with

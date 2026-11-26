@@ -37,6 +37,10 @@ selftest-dirty-tcr2 = []
 # must be reported and the heap must work again (ADR 0029).
 selftest-heap-exhaustion = []
 
+# The counter frequency reads as zero, as firmware that never programmed it
+# leaves it: the boot must be refused with a message (ADR 0035).
+selftest-zero-frequency = []
+
 [[bin]]
 name = "kernel"
 path = "src/main.rs"

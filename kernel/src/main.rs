@@ -7,6 +7,7 @@ mod arch;
 mod board;
 mod drivers;
 mod heap;
+mod interrupts;
 mod log;
 mod memory;
 mod memory_image;
@@ -19,11 +20,13 @@ use log::klog;
 /// and the boot info address after the bootloader; `entered_by_bootloader` is
 /// 1 when the boot code saw the entry magic, 0 otherwise. `extra_entry_registers`
 /// is `x2 | x3` as they were at entry, which the bootloader sets to zero.
+/// `entered_at_el3` is 1 when the boot code came down from EL3.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(
     handoff_address: usize,
     entered_by_bootloader: usize,
     extra_entry_registers: usize,
+    entered_at_el3: usize,
 ) -> ! {
     memory_image::assert_initialised();
 
@@ -132,8 +135,14 @@ pub extern "C" fn kernel_main(
     memory::report(&frames, &board, &mut console);
     memory::selftest(&mut frames, &board, &mut console);
 
+    // Read from the device tree before the switch: the controller's registers
+    // are mapped into the device window with the rest.
+    let wiring = match board.interrupt_wiring() {
+        Ok(wiring) => wiring,
+        Err(error) => panic!("interrupt controller: {error}"),
+    };
     let before = board.handoff_digest();
-    if let Err(error) = arch::mmu::init(&mut frames, &board) {
+    if let Err(error) = arch::mmu::init(&mut frames, &board, &wiring) {
         panic!("mmu: {error}");
     }
     // The lower half is gone: the hand-over is read again from its address
@@ -157,7 +166,7 @@ pub extern "C" fn kernel_main(
         after.bytes,
         after.value
     );
-    arch::mmu::verify(&mut console, &board, handoff_address);
+    arch::mmu::verify(&mut console, &board, &wiring, handoff_address);
     memory::linear_map_selftest(&board, frames.window(), &mut console);
 
     let entry = match board.entry {
@@ -215,6 +224,7 @@ pub extern "C" fn kernel_main(
         used.bytes,
         used.value
     );
+    interrupts::selftest(&mut console, &wiring, entered_at_el3 == 1);
     #[cfg(feature = "selftest-heap-exhaustion")]
     heap::exhaust(&mut console);
 

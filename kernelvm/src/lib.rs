@@ -561,9 +561,9 @@ pub struct Expectation<'a> {
     pub window: Option<&'a Window>,
     /// A range of physical addresses nothing under the root may map.
     pub forbidden: &'a Range<u64>,
-    /// The physical range that is Device memory: a leaf that touches it must
+    /// The physical ranges that are Device memory: a leaf that touches one must
     /// have the Device attribute index, every other leaf the Normal one.
-    pub device: &'a Range<u64>,
+    pub device: &'a [Range<u64>],
     /// When present, the only memory the root maps: each leaf must lie inside
     /// one of these physical ranges and have that range's permissions.
     pub known: Option<&'a [(Range<u64>, Permissions)]>,
@@ -621,6 +621,10 @@ fn overlaps(range: &Range<u64>, start: u64, size: u64) -> bool {
     start < range.end && range.start < start.saturating_add(size)
 }
 
+fn overlaps_any(ranges: &[Range<u64>], start: u64, size: u64) -> bool {
+    ranges.iter().any(|range| overlaps(range, start, size))
+}
+
 impl Walk<'_> {
     fn leaf(&mut self, descriptor: u64, level: u8, at: u64) {
         let types = self.expect.types;
@@ -660,7 +664,7 @@ impl Walk<'_> {
         let known_type = found.attribute_index == types.normal_index
             || found.attribute_index == types.device_index;
         let is_device = found.attribute_index == types.device_index;
-        if !known_type || is_device != overlaps(self.expect.device, found.output, size) {
+        if !known_type || is_device != overlaps_any(self.expect.device, found.output, size) {
             self.audit.wrong_memory_type.get_or_insert(at);
         }
         if let Some(known) = self.expect.known {
