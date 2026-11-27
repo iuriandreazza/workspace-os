@@ -356,6 +356,15 @@ the speaker):
   seconds (the timeout of `WhisperClient`), with no cancel but Ctrl-C; a hung
   Piper costs one line per reply after at most 30 seconds, on the thread that
   speaks, so the shell is not held. Both are tested.
+- Ctrl-T is a toggle, not hold-to-talk (a terminal sends no key release): a key
+  held for more than 0.7 s counts as the second press and stops the recording.
+  What is lost at the end of a recording is at most the 20 ms buffer being
+  filled; an asynchronous stop would flush it but its callbacks come after the
+  queue must be disposed (measured by the reviewer with a C program, not by the
+  shell: the capture has not run against a microphone the process may use).
+  With `languages: any` and no voice the recogniser uses the language it was
+  started with: start it with `-l auto` for that case, as the measured runs used
+  `-l pt`.
 - A recording stops growing after 30 seconds but stops only when the person
   presses a key. Leaving the shell while a reply is playing does not stop
   `afplay`.

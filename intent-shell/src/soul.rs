@@ -603,7 +603,8 @@ impl Persona {
     }
 
     /// The language the person is expected to speak: that of the voice they
-    /// named, else the reply language, else none (the recogniser then detects it).
+    /// named, else the reply language, else none (the recogniser then uses the language it
+    /// was started with).
     pub fn listen_language(&self) -> Option<&str> {
         self.voice
             .map(|voice| voice.language)

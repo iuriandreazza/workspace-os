@@ -245,9 +245,10 @@ mod mac {
 
     const LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
     const SIGNED_INTEGER_PACKED: u32 = 0x4 | 0x8;
-    const BUFFERS: usize = 3;
-    /// A tenth of a second of audio per buffer.
-    const BUFFER_BYTES: u32 = (SAMPLE_RATE / 10) * 2;
+    const BUFFERS: usize = 8;
+    /// A fiftieth of a second of audio per buffer: what is lost at the end of a
+    /// recording is at most the buffer being filled when it is stopped.
+    const BUFFER_BYTES: u32 = (SAMPLE_RATE / 50) * 2;
 
     /// What the audio thread writes and the caller reads.
     struct Recording {
@@ -300,11 +301,12 @@ mod mac {
         fn stop(&mut self) -> Option<Arc<Recording>> {
             let running = self.running.take()?;
             // SAFETY: `queue` was created by `AudioQueueNewInput` and is
-            // disposed once. A stop that is not immediate delivers the buffer
-            // being filled (the last words), and returns when it is done;
-            // disposing then means the callback will not run again.
+            // disposed once. An immediate stop returns after the callbacks it
+            // owes, and disposing then means the callback will not run again.
+            // (A stop that is not immediate returns at once and keeps calling
+            // back, which disposing would throw away: measured, not assumed.)
             unsafe {
-                AudioQueueStop(running.queue, 0);
+                AudioQueueStop(running.queue, 1);
                 AudioQueueDispose(running.queue, 1);
             }
             // SAFETY: the pointer came from `Arc::into_raw` in `start` and the
