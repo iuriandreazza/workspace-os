@@ -84,11 +84,36 @@ fn private_directory() -> Result<PathBuf, String> {
 /// Plays through macOS's `afplay`, on a temporary file that is removed after.
 pub struct AfplayPlayback;
 
+/// A reply left behind by a shell that was closed while it spoke: the file
+/// holds the reply as audio, so it does not stay.
+const STALE_AFTER: Duration = Duration::from_secs(300);
+
+fn remove_stale(dir: &std::path::Path) {
+    let own = format!("reply-{}-", std::process::id());
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age > STALE_AFTER);
+        if name.starts_with("reply-") && !name.starts_with(&own) && old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 static FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl AudioPlayback for AfplayPlayback {
     fn play(&self, wav: &[u8]) -> Result<(), String> {
-        let path = private_directory()?.join(format!(
+        let dir = private_directory()?;
+        remove_stale(&dir);
+        let path = dir.join(format!(
             "reply-{}-{}.wav",
             std::process::id(),
             FILE_COUNTER.fetch_add(1, Ordering::Relaxed)

@@ -21,7 +21,7 @@ use intent_shell::ports::{DecisionLog, Synthesizer as _, User};
 use intent_shell::setup::{Setup, SpeechSetup};
 use intent_shell::soul::{self, Persona, Source};
 use intent_shell::soul_files::FileSoulStore;
-use intent_shell::speech::{Ear, Mouth, Speaking};
+use intent_shell::speech::{Ear, Mouth, Speaking, reason};
 use intent_shell::speech_http::{PiperClient, WhisperClient};
 
 const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--soul FILE] [--personality FILE] [--setup-soul] [--listen] [--speak] [--whisper 127.0.0.1:PORT] [--tts 127.0.0.1:PORT]";
@@ -235,14 +235,16 @@ fn speech_setup(
     }
     let mut problems = Vec::new();
     let speaking = Speaking::default();
-    let language = persona.and_then(Persona::reply_language).map(str::to_owned);
+    // The recogniser expects the language of the voice that answers: it is the
+    // language the person and the shell speak to each other in.
+    let language = persona.map(|persona| persona.spoken_voice().language.to_owned());
     let mut ear = None;
     if options.listen {
         let client = WhisperClient::new(options.whisper.as_deref().unwrap_or(WHISPER_ADDRESS))?;
         match audio::platform_capture() {
             Ok(capture) => {
                 if let Err(why) = client.ping() {
-                    problems.push(format!("--listen: {why}; start whisper-server, the microphone key says so until it answers"));
+                    problems.push(format!("--listen: {}; start whisper-server, the microphone key says so until it answers", reason(&why)));
                 }
                 ear = Some(Ear::new(capture, Box::new(client), speaking.clone()));
             }
@@ -261,8 +263,9 @@ fn speech_setup(
             Ok(playback) => {
                 match client.voices() {
                     Err(why) => problems.push(format!(
-                        "--speak: the speech server at {} does not answer: {why}; replies are spoken once it does",
-                        options.tts.as_deref().unwrap_or(TTS_ADDRESS)
+                        "--speak: the speech server at {} does not answer: {}; replies are spoken once it does",
+                        options.tts.as_deref().unwrap_or(TTS_ADDRESS),
+                        reason(&why)
                     )),
                     Ok(installed) if !installed.iter().any(|name| name == chosen.piper) => {
                         problems.push(format!(

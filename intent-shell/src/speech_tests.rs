@@ -284,6 +284,13 @@ fn what_a_server_writes_in_an_error_reaches_the_person_as_one_escaped_capped_lin
 }
 
 #[test]
+fn the_recogniser_is_told_the_language_of_the_voice_that_answers() {
+    // A SOUL that lists en first, a personality that picks a Portuguese voice.
+    let persona = persona_with("format: 2\nvoice: cadu\n");
+    assert_eq!(persona.spoken_voice().language, "pt-BR");
+}
+
+#[test]
 fn nothing_is_said_for_an_empty_reply_and_no_more_than_the_cap_for_a_long_one() {
     assert_eq!(speakable("   "), None);
     let long = "a ".repeat(REPLY_LIMIT);
@@ -387,8 +394,7 @@ fn a_failure_while_speaking_is_reported_and_reopens_the_microphone() {
 
 // ---- the ear ----------------------------------------------------------------
 
-fn ear(heard: &str, capture: &FakeCapture, transcriber: &FakeTranscriber) -> Ear {
-    let _ = heard;
+fn ear(capture: &FakeCapture, transcriber: &FakeTranscriber) -> Ear {
     Ear::new(
         Box::new(capture.clone()),
         Box::new(transcriber.clone()),
@@ -400,7 +406,7 @@ fn ear(heard: &str, capture: &FakeCapture, transcriber: &FakeTranscriber) -> Ear
 fn what_was_heard_is_one_escaped_line_with_the_reply_language_passed_on() {
     let transcriber = FakeTranscriber::hearing(" show the\nlargest files \u{1b}[2J in downloads ");
     let capture = FakeCapture::default();
-    let mut ear = ear("", &capture, &transcriber);
+    let mut ear = ear(&capture, &transcriber);
     ear.start().unwrap();
     let line = ear.finish(Some("pt-BR")).unwrap();
     assert!(!line.contains('\n') && !line.contains('\u{1b}'), "{line:?}");
@@ -420,10 +426,19 @@ fn silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped() {
         transcript_line("open [the] folder").unwrap(),
         "open [the] folder"
     );
+    // Tags around real speech are dropped; the speech is not.
+    assert_eq!(
+        transcript_line("[Music] list the largest files [Music]").unwrap(),
+        "list the largest files"
+    );
+    assert_eq!(
+        transcript_line("[BLANK_AUDIO] list downloads (silêncio)").unwrap(),
+        "list downloads"
+    );
     let long = "word ".repeat(1000);
     assert!(transcript_line(&long).unwrap().chars().count() <= 500);
     let transcriber = FakeTranscriber::hearing("[BLANK_AUDIO]");
-    let mut ear = ear("", &FakeCapture::default(), &transcriber);
+    let mut ear = ear(&FakeCapture::default(), &transcriber);
     ear.start().unwrap();
     assert_eq!(ear.finish(None).unwrap_err(), "nothing was heard");
 }
@@ -435,7 +450,7 @@ fn a_microphone_that_cannot_be_opened_says_why_and_nothing_is_transcribed() {
         ..FakeCapture::default()
     };
     let transcriber = FakeTranscriber::hearing("x");
-    let mut ear = ear("", &capture, &transcriber);
+    let mut ear = ear(&capture, &transcriber);
     assert!(ear.start().unwrap_err().contains("cannot be opened"));
     assert!(transcriber.languages.lock().unwrap().is_empty());
 }
@@ -455,13 +470,21 @@ fn a_request_that_is_the_transcript_as_heard_says_it_came_from_speech() {
         .unwrap();
     log.record(json!({"event": "request", "request": "list downloads"}))
         .unwrap();
+    // Two utterances in one input line: the request is all of it, and was spoken.
+    log.record(SharedLog::transcript("list")).unwrap();
+    log.record(SharedLog::transcript("downloads")).unwrap();
+    log.record(json!({"event": "request", "request": "list downloads"}))
+        .unwrap();
     let events = memory.events();
     let inputs: Vec<_> = events
         .iter()
         .filter(|e| e["event"] == "request")
         .map(|e| e.get("input").cloned())
         .collect();
-    assert_eq!(inputs, [Some(json!("speech")), None, None]);
+    assert_eq!(
+        inputs,
+        [Some(json!("speech")), None, None, Some(json!("speech"))]
+    );
     assert_eq!(events[0]["by"], "model");
     assert_eq!(events[0]["decided"], false);
 }

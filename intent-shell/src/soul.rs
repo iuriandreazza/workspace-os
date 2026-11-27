@@ -582,8 +582,9 @@ pub struct Persona {
     pub nickname: Option<String>,
     levels: [u8; 3],
     pub language: Option<String>,
-    /// The first language the SOUL allows, which the replies of a personality
-    /// with no language of its own are written in. `None` for `any`.
+    /// The first language the SOUL allows: what a personality with no language
+    /// of its own is spoken to in. `None` for `any`. The reply prompt does not
+    /// name it; only the voice and the recogniser use it.
     soul_language: Option<String>,
     /// The voice the personality names. Only the speaker port ever reads it.
     voice: Option<&'static SpokenVoice>,

@@ -15,9 +15,9 @@ use std::thread;
 
 use serde_json::{Value, json};
 
-use crate::action::{capped, printable};
+use crate::action::capped;
 use crate::ports::{AudioCapture, AudioPlayback, DecisionLog, Synthesizer, Transcriber};
-use crate::reply::REPLY_LIMIT;
+use crate::reply::{REPLY_LIMIT, escaped_line};
 
 /// A voice of the closed list (ADR 0031, section 2): what the personality
 /// names, the Piper voice it stands for and the file that was checked.
@@ -141,9 +141,8 @@ impl Speaking {
 
 /// Why something failed, as one escaped line the person can read: what a
 /// server wrote in an error is not trusted, and an HTML page is not a line.
-fn reason(why: &str) -> String {
-    let one_line = why.split_whitespace().collect::<Vec<_>>().join(" ");
-    capped(&printable(&one_line, false), 200)
+pub fn reason(why: &str) -> String {
+    escaped_line(why, 200)
 }
 
 /// Speaks a reply with one voice. A failure is one line and never an error of
@@ -207,13 +206,28 @@ const TRANSCRIPT_LIMIT: usize = 500;
 /// section 5, point 1). `None` when nothing was said: the recogniser writes
 /// a bracketed tag such as `[BLANK_AUDIO]` for silence.
 pub fn transcript_line(raw: &str) -> Option<String> {
-    let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let tag_only = (one_line.starts_with('[') && one_line.ends_with(']'))
-        || (one_line.starts_with('(') && one_line.ends_with(')'));
-    if one_line.is_empty() || tag_only {
-        return None;
+    let mut text = raw.trim();
+    // Tags at either end are the recogniser's, wherever the speech sits between
+    // them: `[Music] list the files [Music]`, `[ Silence ]`.
+    loop {
+        let before = text;
+        for (open, close) in [('[', ']'), ('(', ')')] {
+            if text.starts_with(open)
+                && let Some(end) = text.find(close)
+            {
+                text = text[end + 1..].trim_start();
+            }
+            if text.ends_with(close)
+                && let Some(start) = text.rfind(open)
+            {
+                text = text[..start].trim_end();
+            }
+        }
+        if text == before {
+            break;
+        }
     }
-    Some(capped(&printable(&one_line, false), TRANSCRIPT_LIMIT))
+    (!text.is_empty()).then(|| escaped_line(text, TRANSCRIPT_LIMIT))
 }
 
 /// Records one utterance and turns it into a line. Push-to-talk: `start`, then
@@ -322,7 +336,14 @@ impl DecisionLog for SharedLog {
     fn record(&mut self, mut event: Value) -> Result<(), String> {
         if let Ok(mut heard) = self.heard.lock() {
             match event["event"].as_str() {
-                Some("transcript") => *heard = event["text"].as_str().map(str::to_owned),
+                // Utterances heard one after another land in one input line, joined by a space.
+                Some("transcript") => {
+                    let line = event["text"].as_str().unwrap_or_default();
+                    *heard = Some(match heard.take() {
+                        Some(before) => format!("{before} {line}"),
+                        None => line.to_owned(),
+                    });
+                }
                 // Only a request that is the transcript as heard is marked: an
                 // edited line was typed.
                 Some("request") => {

@@ -342,6 +342,31 @@ the speaker):
 - The recogniser is told the reply language (`pt` for `pt-BR`), which is the
   language the person is expected to speak; a person who speaks another one
   than the replies are written in gets a worse transcript.
+- The servers are found by a fixed loopback port, with no authentication. On a
+  machine with several users, another user who binds `8178` or `5178` first
+  receives the microphone audio or the reply text of a shell that has not
+  checked. The shell only guarantees the audio does not leave the machine.
+  Pick other ports with `--whisper` and `--tts`, and start the servers before
+  the shell.
+- A language the list has no voice for (`es`, `pt-PT`) is spoken with the first
+  voice of the list, a pt-BR one. A named voice is checked against the
+  languages; an absent one is not, because there is nothing to compare.
+- A reply is voiced without the screen's frame ("Reply from the model", the
+  mark): audio has no equivalent, and the text of a reply is escaped, so an odd
+  character is voiced as its escape. ADR 0031 asks for the same escaping and
+  cap as the screen, and that is what is done.
+- Leaving the shell while a reply is playing leaves `afplay` playing to the end
+  of that reply, and its temporary file in the private directory; the next
+  playback by the same user removes files older than five minutes.
+- The capture adapter is hand-written FFI, where ADR 0031 section 4 pictured a
+  crate "that passes the gate". The port is the decision; no crate passes that
+  is not Apache-2.0-only or does not bring a binding generator. The FFI has not
+  been run against a microphone the process may use: the hand test is the
+  proof it still lacks.
+- A truncated answer from the model server now reads "the server's answer was
+  cut short" instead of "server reply is not JSON": the check lives in the HTTP
+  code both share, and is the one behaviour of today's output that changes (for
+  a reply cut in the middle).
 - No voice is cloned and no voice is downloaded by the shell.
 
 ## Appendix: the commands that were run
