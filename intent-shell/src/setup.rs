@@ -10,6 +10,7 @@ use crate::ports::Planner;
 use crate::screen::{self, Header};
 use crate::session::{Entry, SessionState};
 use crate::soul::Persona;
+use crate::speech::{Ear, Mouth, Speaking};
 
 static NO_MODEL: NoModel = NoModel;
 
@@ -28,6 +29,21 @@ pub struct Setup {
     pub notice: Option<String>,
     /// The decision log's file name, for the header (its directory is in the details).
     pub log_name: String,
+    /// Speech, when `--listen` or `--speak` asked for it (ADR 0031). `None`
+    /// runs no speech code and contacts no speech process.
+    pub speech: Option<SpeechSetup>,
+}
+
+/// The ports of speech, built once at the start of the session.
+pub struct SpeechSetup {
+    /// Push-to-talk, for `--listen`.
+    pub ear: Option<Ear>,
+    /// The language the recogniser is told to expect: the replies' language.
+    pub listen_language: Option<String>,
+    /// The voice of the replies, for `--speak`.
+    pub mouth: Option<Mouth>,
+    /// Shared by the ear and the mouth: the ear is shut while this is above zero.
+    pub speaking: Speaking,
 }
 
 impl Setup {
@@ -104,6 +120,7 @@ mod tests {
             reply: Some(Persona::of(crate::soul::Profile::DirectTechnical)),
             notice: None,
             log_name: "d.jsonl".to_owned(),
+            speech: None,
         }
     }
 

@@ -38,13 +38,17 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
                 "▸ {}",
                 tail(&state.input, width.saturating_sub(3))
             )));
-            lines.push(dim("Enter send · PgUp/Dn scroll · ^D quit".to_owned()));
+            lines.push(dim(state.input_hint().to_owned()));
         }
         Mode::Busy { label, since_ms } => {
             let frame = SPINNER[(state.clock_ms / 100) as usize % SPINNER.len()];
             let seconds = state.clock_ms.saturating_sub(*since_ms) / 1000;
             lines.push(Line::from(format!("{frame} {label}… {seconds}s")));
-            lines.push(dim("PgUp/Dn scroll · ^C quit".to_owned()));
+            lines.push(dim(if *label == "listening" {
+                "Enter or ^T stop · Esc cancel · ^C quit".to_owned()
+            } else {
+                "PgUp/Dn scroll · ^C quit".to_owned()
+            }));
         }
         Mode::Plan { .. } => lines.extend(
             wrap(PLAN_KEYS, width)

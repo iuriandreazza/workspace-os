@@ -72,6 +72,12 @@ pub enum Event {
     Said(Option<String>),
     /// The header with the directory the session is in now.
     Header(String),
+    /// Something the person should know that is not a result: a speech
+    /// problem. It changes no mode and answers nothing.
+    Note(String),
+    /// What the recogniser heard, or why nothing was. Only a wait for it takes
+    /// it: in any other mode it is dropped, so speech can never answer a question.
+    Heard(Result<String, String>),
 }
 
 /// What the person answered, for the worker's `Confirm`.
@@ -82,11 +88,21 @@ pub enum Reply {
     Choice(Option<usize>),
 }
 
+/// What the interface asks the microphone to do (push-to-talk).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listen {
+    Start,
+    /// Stop recording and transcribe.
+    Stop,
+    Cancel,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Nothing,
     Submit(String),
     Reply(Reply),
+    Listen(Listen),
     Quit,
 }
 
@@ -135,6 +151,8 @@ pub struct State {
     submit_label: &'static str,
     /// What the transcript writes before a line: the line adapter's prompt.
     prompt: &'static str,
+    /// Whether `--listen` was given: only then is there a microphone key.
+    listening: bool,
 }
 
 /// A key press meant as an answer: a fresh press (not a repeat or a release)
@@ -170,6 +188,23 @@ impl State {
             quit_warned_ms: 0,
             submit_label: "asking the model",
             prompt: "intent> ",
+            listening: false,
+        }
+    }
+
+    /// Turn on push-to-talk (`--listen`): Ctrl-T records, Ctrl-T or Enter
+    /// stops, and what was heard waits in the input line for Enter.
+    pub fn with_listening(mut self) -> Self {
+        self.listening = true;
+        self
+    }
+
+    /// The hint under the input line, with the microphone key only when there is one.
+    pub fn input_hint(&self) -> &'static str {
+        if self.listening {
+            "Enter send · ^T talk · PgUp/Dn scroll · ^D quit"
+        } else {
+            "Enter send · PgUp/Dn scroll · ^D quit"
         }
     }
 
@@ -231,12 +266,17 @@ impl State {
     /// something, so the caller can discard keys typed before it was drawn.
     pub fn on_event(&mut self, event: Event) -> bool {
         // A reply that arrives while the person reads back through the history
-        // must not throw them to the bottom.
-        if !matches!(event, Event::Said(_)) {
+        // must not throw them to the bottom. A speech note or a transcript is not the shell's progress: it must
+        // not throw the reader to the bottom, restart the quiet gap of a
+        // question or cancel the warning of a running step.
+        let aside = matches!(event, Event::Note(_) | Event::Heard(_));
+        if !matches!(event, Event::Said(_)) && !aside {
             self.scroll = 0;
         }
-        self.asked_ms = self.clock_ms;
-        if !matches!(event, Event::Busy(_)) {
+        if !aside {
+            self.asked_ms = self.clock_ms;
+        }
+        if !matches!(event, Event::Busy(_)) && !aside {
             self.forced_quit = false;
         }
         match event {
@@ -254,6 +294,8 @@ impl State {
                 self.mode = Mode::Choose { lines, selected: 0 };
             }
             Event::Header(text) => self.header = text,
+            Event::Note(text) => self.blocks.push(Block::Note(text)),
+            Event::Heard(heard) => self.heard(heard),
             Event::Outcome(text) => {
                 self.blocks.push(Block::Outcome(text));
                 self.mode = Mode::Input;
@@ -325,12 +367,78 @@ impl State {
             KeyCode::End if control => return self.scroll_by(usize::MAX, false),
             _ => {}
         }
+        if let Some(effect) = self.listen_key(&key) {
+            return effect;
+        }
         match self.mode.clone() {
             Mode::Input => self.input_key(key),
             Mode::Busy { .. } => Effect::Nothing,
             Mode::Plan { details } => self.plan_key(key, &details),
             Mode::Root { .. } => self.root_key(key),
             Mode::Choose { lines, selected } => self.choose_key(key, &lines, selected),
+        }
+    }
+
+    /// The microphone keys. `None` leaves the key to the mode it is pressed in.
+    fn listen_key(&mut self, key: &KeyEvent) -> Option<Effect> {
+        if !self.listening || key.kind != KeyEventKind::Press {
+            return None;
+        }
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        let talk = key.code == KeyCode::Char('t') && control;
+        match self.mode {
+            Mode::Input if talk => {
+                self.busy("listening");
+                Some(Effect::Listen(Listen::Start))
+            }
+            Mode::Busy {
+                label: "listening",
+                since_ms,
+            } => {
+                if key.code == KeyCode::Esc {
+                    self.mode = Mode::Input;
+                    return Some(Effect::Listen(Listen::Cancel));
+                }
+                if !(talk || key.code == KeyCode::Enter) {
+                    return None;
+                }
+                // A held key repeats: stopping needs a gap after the start.
+                if self.clock_ms.saturating_sub(since_ms) < DWELL_MS {
+                    return Some(Effect::Nothing);
+                }
+                self.busy("transcribing");
+                Some(Effect::Listen(Listen::Stop))
+            }
+            _ => None,
+        }
+    }
+
+    /// What the recogniser said goes into the input line, to be read, edited
+    /// and sent with Enter; it is never sent by itself.
+    fn heard(&mut self, heard: Result<String, String>) {
+        let waiting = matches!(
+            self.mode,
+            Mode::Busy {
+                label: "listening" | "transcribing",
+                ..
+            }
+        );
+        if !waiting {
+            return;
+        }
+        self.mode = Mode::Input;
+        self.scroll = 0;
+        match heard {
+            Ok(text) => {
+                if !self.input.is_empty() {
+                    self.input.push(' ');
+                }
+                self.input.push_str(&text);
+                self.blocks.push(Block::Note(
+                    "▸ heard: read it, edit it if it is wrong, then press Enter to send".to_owned(),
+                ));
+            }
+            Err(why) => self.blocks.push(Block::Note(format!("▸ {why}"))),
         }
     }
 
@@ -1263,5 +1371,179 @@ mod tests {
                 assert!(line.chars().count() <= width, "{line:?} at {width}");
             }
         }
+    }
+
+    // ---- push-to-talk (ADR 0031) ------------------------------------------
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn listening_state() -> State {
+        State::new("header".to_owned()).with_listening()
+    }
+
+    /// Ctrl-T pressed, and Enter after the gap that tells a deliberate stop from a held key.
+    fn talking(state: &mut State) {
+        assert_eq!(state.on_key(ctrl('t')), Effect::Listen(Listen::Start));
+        state.clock_ms += DWELL_MS;
+    }
+
+    #[test]
+    fn without_listen_there_is_no_microphone_key_and_the_hint_is_unchanged() {
+        let mut state = State::new("header".to_owned());
+        assert_eq!(state.on_key(ctrl('t')), Effect::Nothing);
+        assert_eq!(state.mode, Mode::Input);
+        assert_eq!(state.input_hint(), "Enter send · PgUp/Dn scroll · ^D quit");
+        assert!(listening_state().input_hint().contains("^T talk"));
+        // A transcript that arrives anyway is dropped.
+        state.on_event(Event::Heard(Ok("x".to_owned())));
+        assert!(state.input.is_empty());
+    }
+
+    #[test]
+    fn what_was_heard_waits_in_the_input_line_and_is_sent_only_by_enter() {
+        let mut state = listening_state();
+        talking(&mut state);
+        assert!(matches!(
+            state.mode,
+            Mode::Busy {
+                label: "listening",
+                ..
+            }
+        ));
+        assert_eq!(
+            state.on_key(press(KeyCode::Enter)),
+            Effect::Listen(Listen::Stop)
+        );
+        assert!(matches!(
+            state.mode,
+            Mode::Busy {
+                label: "transcribing",
+                ..
+            }
+        ));
+        state.on_event(Event::Heard(Ok("list downloads".to_owned())));
+        assert_eq!(state.mode, Mode::Input);
+        assert_eq!(state.input, "list downloads");
+        // Nothing was submitted by hearing it: the person reads, may edit, and presses Enter.
+        assert!(state.blocks.iter().all(|b| !matches!(b, Block::Request(_))));
+        type_text(&mut state, "!");
+        assert_eq!(
+            state.on_key(press(KeyCode::Enter)),
+            Effect::Submit("list downloads!".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_transcript_is_added_to_what_was_typed_not_in_place_of_it() {
+        let mut state = listening_state();
+        type_text(&mut state, "show");
+        talking(&mut state);
+        state.on_key(press(KeyCode::Enter));
+        state.on_event(Event::Heard(Ok("the largest files".to_owned())));
+        assert_eq!(state.input, "show the largest files");
+    }
+
+    #[test]
+    fn a_transcript_never_answers_a_question_and_never_enters_any_other_mode() {
+        for mut state in [asking_plan(), asking_root("rm /x"), asking_choice(2)] {
+            let (mode, blocks) = (state.mode.clone(), state.blocks.len());
+            for heard in [
+                Ok("y".to_owned()),
+                Ok("yes confirm".to_owned()),
+                Err("x".to_owned()),
+            ] {
+                state.on_event(Event::Heard(heard));
+                assert_eq!(state.mode, mode);
+                assert_eq!(state.blocks.len(), blocks);
+                assert!(state.input.is_empty());
+            }
+            // The microphone key does nothing at a question either.
+            assert_eq!(state.on_key(ctrl('t')), Effect::Nothing);
+            assert_eq!(state.mode, mode);
+        }
+        for label in ["working", "asking the model", "saying"] {
+            let mut busy = listening_state();
+            busy.on_event(Event::Busy(label));
+            let mode = busy.mode.clone();
+            busy.on_event(Event::Heard(Ok("hello".to_owned())));
+            assert_eq!((busy.mode.clone(), busy.input.as_str()), (mode, ""));
+            assert_eq!(busy.on_key(ctrl('t')), Effect::Nothing);
+        }
+        let mut idle = listening_state();
+        idle.on_event(Event::Heard(Ok("hello".to_owned())));
+        assert!(idle.input.is_empty());
+    }
+
+    #[test]
+    fn a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it() {
+        let mut state = listening_state();
+        assert_eq!(state.on_key(ctrl('t')), Effect::Listen(Listen::Start));
+        // The auto-repeat of the same press, before the gap.
+        assert_eq!(state.on_key(ctrl('t')), Effect::Nothing);
+        assert_eq!(state.on_key(press(KeyCode::Enter)), Effect::Nothing);
+        assert!(matches!(
+            state.mode,
+            Mode::Busy {
+                label: "listening",
+                ..
+            }
+        ));
+        assert_eq!(
+            state.on_key(press(KeyCode::Esc)),
+            Effect::Listen(Listen::Cancel)
+        );
+        assert_eq!(state.mode, Mode::Input);
+        // A transcript of the cancelled recording that still arrives is dropped.
+        state.on_event(Event::Heard(Ok("late".to_owned())));
+        assert!(state.input.is_empty());
+    }
+
+    #[test]
+    fn nothing_typed_reaches_the_input_while_listening_and_a_failure_says_why() {
+        let mut state = listening_state();
+        talking(&mut state);
+        assert_eq!(state.on_key(press(KeyCode::Char('x'))), Effect::Nothing);
+        assert!(state.input.is_empty());
+        state.on_event(Event::Heard(Err("nothing was heard".to_owned())));
+        assert_eq!(state.mode, Mode::Input);
+        assert!(state.input.is_empty());
+        assert_eq!(
+            state.blocks.last(),
+            Some(&Block::Note("▸ nothing was heard".to_owned()))
+        );
+        // A note changes no mode.
+        let mut busy = listening_state();
+        busy.on_event(Event::Busy("working"));
+        busy.on_event(Event::Note("▸ speech is off for this reply: x".to_owned()));
+        assert!(matches!(
+            busy.mode,
+            Mode::Busy {
+                label: "working",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_speech_note_neither_scrolls_nor_restarts_a_question_nor_cancels_a_warning() {
+        let mut state = asking_plan();
+        state.scroll = 7;
+        state.asked_ms = 5;
+        state.clock_ms = 1_000;
+        state.forced_quit = true;
+        state.on_event(Event::Note("▸ speech is off for this reply: x".to_owned()));
+        state.on_event(Event::Heard(Ok("late".to_owned())));
+        assert_eq!(
+            (state.scroll, state.asked_ms, state.forced_quit),
+            (7, 5, true)
+        );
+        // The result of the shell's own work still does.
+        state.on_event(Event::Header("h".to_owned()));
+        assert_eq!(
+            (state.scroll, state.asked_ms, state.forced_quit),
+            (0, 1_000, false)
+        );
     }
 }

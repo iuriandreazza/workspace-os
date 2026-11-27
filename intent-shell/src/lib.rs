@@ -6,6 +6,7 @@
 //! adapter behind the traits in `ports`.
 
 pub mod action;
+pub mod audio;
 pub mod broker;
 pub mod command;
 pub mod host;
@@ -25,6 +26,8 @@ pub mod setup;
 pub mod soul;
 pub mod soul_change;
 pub mod soul_files;
+pub mod speech;
+pub mod speech_http;
 
 #[cfg(feature = "tui")]
 pub mod tui;
@@ -55,3 +58,6 @@ mod soul_change_tests;
 
 #[cfg(test)]
 mod directories_tests;
+
+#[cfg(test)]
+mod speech_tests;

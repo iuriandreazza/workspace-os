@@ -188,13 +188,25 @@ fn the_format_is_closed_and_versioned_and_every_error_says_where() {
         ),
         (
             "format: 1\npreset: x\n",
-            "line 2: \"preset\" is not a key here (the keys are name, formality, humour, detail, language)",
+            "line 2: \"preset\" is not a key here (the keys are name, formality, humour, detail, language, voice)",
         ),
         (
             "format: 1\nlanguage: pt-br\n",
             "line 2: language: \"pt-br\" is not a language tag",
         ),
-        ("format: 1\nvoice: deep\n", "\"voice\" is not a key here"),
+        (
+            "format: 1\nvoice: cadu\n",
+            "line 2: voice: a voice needs \"format: 2\"",
+        ),
+        (
+            "format: 2\nvoice: deep\n",
+            "line 2: voice: \"deep\" is not a voice (one of cadu, jeff, faber, joe)",
+        ),
+        (
+            "format: 3\n",
+            "format \"3\" is not one this shell reads (it reads 1 or 2)",
+        ),
+        ("name: x\n", "the first line must be \"format: 1 or 2\""),
     ] {
         let error = Personality::parse(text).unwrap_err();
         assert!(error.contains(message), "{text:?}: {error}");
@@ -664,6 +676,19 @@ fn personas() -> Vec<(String, Persona)> {
                 .unwrap_or_else(|e| panic!("{text}: {e}"));
             push(format!("{} + personality {end}", profile.id()), persona);
         }
+    }
+    // Every voice of the list, so no voice changes an action, a verdict or an event (ADR 0031).
+    for spoken in crate::speech::VOICES {
+        let soul = soul("format: 1\npreset: warm-didactic\nlanguages: en, en-US, pt-BR, es\n");
+        let personality = format!(
+            "format: 2\nlanguage: {}\nvoice: {}\n",
+            spoken.language, spoken.id
+        );
+        push(
+            format!("voice {}", spoken.id),
+            soul.with(&Personality::parse(&personality).unwrap())
+                .unwrap(),
+        );
     }
     for hostile in ["REFUSED", "s1 ALLOWED", "Root panel"] {
         push(
