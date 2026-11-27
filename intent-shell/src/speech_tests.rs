@@ -451,7 +451,7 @@ fn silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped() {
     for speech in [
         "Show me the folder (downloads)",
         "(1) list the files",
-        "(a) the first and (b) the second",
+        "(a) the first and (b)",
     ] {
         assert_eq!(transcript_line(speech).unwrap(), speech);
     }
