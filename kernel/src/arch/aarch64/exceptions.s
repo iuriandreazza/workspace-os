@@ -1,13 +1,15 @@
 // Exception vector table for EL1.
 //
-// A synchronous exception taken from the kernel itself (current EL, SP_ELx)
-// saves the whole processor context on the interrupted stack, calls the Rust
-// handler and returns to the interrupted code. Every other entry is not
-// handled yet and ends in a kernel panic that names the entry.
+// A synchronous exception or an IRQ taken from the kernel itself (current EL,
+// SP_ELx) saves the whole processor context, calls the Rust handler and
+// returns to the interrupted code. Every other entry is not handled yet and
+// ends in a kernel panic that names the entry.
 //
-// Synchronous exceptions run on their own stack (ADR 0026), never on the one
-// they interrupted, so an overflow of the boot stack is reported and writes
-// nothing below the guard page. The interrupted SP is saved in the frame.
+// Both run on their own stack (ADR 0026), never on the one they interrupted,
+// so an overflow of the boot stack is reported and writes nothing below the
+// guard page. The interrupted SP is saved in the frame. An IRQ cannot arrive
+// while a handler runs: the exception masks IRQs and no handler unmasks them,
+// so the one exception stack is enough (ADR 0035).
 
 // Layout of `TrapFrame` in exceptions.rs, checked there with const asserts.
 .equ FRAME_SIZE, 304
@@ -38,7 +40,8 @@ exception_vectors:
     // Current EL with SP_ELx.
     b    sync_exception_entry
     .balign 0x80
-    unhandled 5
+    b    irq_exception_entry
+    .balign 0x80
     unhandled 6
     unhandled 7
     // Lower EL, AArch64: no user space yet.
@@ -52,7 +55,8 @@ exception_vectors:
     unhandled 14
     unhandled 15
 
-sync_exception_entry:
+.macro exception_entry name, handler
+\name:
     // There is no stack to save a register on yet. x0 is parked in TPIDR_EL1,
     // which nothing else uses, and exchanged with SP by three instructions
     // that need no third register: afterwards SP is the top of the exception
@@ -109,7 +113,7 @@ sync_exception_entry:
     msr  sp_el0, xzr
     msr  spsr_el1, xzr
     msr  elr_el1, xzr
-    bl   handle_sync_exception
+    bl   \handler
 
     // ELR and SPSR first: they need scratch registers that are reloaded after.
     ldp  x0, x1, [sp, #FRAME_SP_EL0]
@@ -141,6 +145,10 @@ sync_exception_entry:
     mov  sp, x0
     mrs  x0, tpidr_el1
     eret
+.endm
+
+exception_entry sync_exception_entry, handle_sync_exception
+exception_entry irq_exception_entry, handle_irq_exception
 
 nested_exception_entry:
     mov  x0, #16
@@ -157,10 +165,17 @@ unhandled_exception_entry:
     mrs  x3, far_el1
     b    unhandled_exception
 
-// Takes the resumable breakpoint with distinct values in x0 to x30 and in the flags, then
-// checks that every one came back, with SP and SP_EL0. Returns 0 on success.
-.global exception_selftest
-exception_selftest:
+// Bytes below SP that the self-tests fill with a pattern: more than a saved
+// frame, so a handler that used the interrupted stack overwrites some of it.
+.equ SELFTEST_BELOW_SP, 512
+
+// Runs `trigger` (a macro whose instructions take an exception the kernel
+// resumes from) with distinct values in x0 to x30, in the flags and below SP,
+// then checks that every one came back, with SP and SP_EL0. Returns 0 on
+// success.
+.macro context_selftest name, trigger
+.global \name
+\name:
     stp  x18, x19, [sp, #-112]!
     stp  x20, x21, [sp, #16]
     stp  x22, x23, [sp, #32]
@@ -170,6 +185,16 @@ exception_selftest:
     str  x30, [sp, #96]
     mrs  x0, sp_el0
     str  x0, [sp, #104]
+
+    // The pattern the exception stack must leave alone (ADR 0026).
+    sub  x0, sp, #SELFTEST_BELOW_SP
+    mov  x1, sp
+    ldr  x2, =0x5e1f7e57c0de0000
+1:
+    str  x2, [x0], #8
+    add  x2, x2, #1
+    cmp  x0, x1
+    b.lo 1b
 
     // N and C set, Z and V clear: no flag keeps its reset value by chance.
     movz x30, #0xa000, lsl #16
@@ -181,34 +206,44 @@ exception_selftest:
     ldr  x30, =0x0badc0ffee0ddf00
     msr  sp_el0, x30
     add  x30, sp, #16
-    brk  #0x800
+    \trigger
 
     // Branches on the flags need no scratch register, so check them first.
-    b.pl .Lselftest_failed
-    b.cc .Lselftest_failed
-    b.eq .Lselftest_failed
-    b.vs .Lselftest_failed
+    b.pl \name\()_failed
+    b.cc \name\()_failed
+    b.eq \name\()_failed
+    b.vs \name\()_failed
     add  x29, x29, #16
     cmp  x30, x29
-    b.ne .Lselftest_failed
+    b.ne \name\()_failed
     sub  x29, x29, #16
     mov  x30, sp
     cmp  x30, x29
-    b.ne .Lselftest_failed
+    b.ne \name\()_failed
     mrs  x30, sp_el0
     ldr  x29, =0x0badc0ffee0ddf00
     cmp  x30, x29
-    b.ne .Lselftest_failed
+    b.ne \name\()_failed
 .irp n, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
     ldr  x30, =(0x0123456789abcdef + \n * 0x1111111)
     cmp  x\n, x30
-    b.ne .Lselftest_failed
+    b.ne \name\()_failed
 .endr
+    sub  x0, sp, #SELFTEST_BELOW_SP
+    mov  x1, sp
+    ldr  x2, =0x5e1f7e57c0de0000
+2:
+    ldr  x3, [x0], #8
+    cmp  x3, x2
+    b.ne \name\()_failed
+    add  x2, x2, #1
+    cmp  x0, x1
+    b.lo 2b
     mov  x0, #0
-    b    .Lselftest_done
-.Lselftest_failed:
+    b    \name\()_done
+\name\()_failed:
     mov  x0, #1
-.Lselftest_done:
+\name\()_done:
     mov  x1, x0
     ldr  x0, [sp, #104]
     msr  sp_el0, x0
@@ -221,3 +256,20 @@ exception_selftest:
     ldr  x30, [sp, #96]
     ldp  x18, x19, [sp], #112
     ret
+.endm
+
+// The resumable breakpoint.
+.macro take_breakpoint
+    brk  #0x800
+.endm
+
+// Unmasks IRQs and waits for one: the timer's tick (which the caller has seen
+// arrive) is taken with the whole context live, and IRQs are masked again.
+.macro take_interrupt
+    msr  daifclr, #2
+    wfi
+    msr  daifset, #2
+.endm
+
+context_selftest exception_selftest, take_breakpoint
+context_selftest interrupt_selftest, take_interrupt

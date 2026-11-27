@@ -26,7 +26,12 @@ and the memory the bootloader owned goes to the frame allocator (ADR 0033). It h
 (`Box`, `Vec`) that grows on demand in a window of its own (ADR 0029,
 `kernelheap/`).
 
-Next milestone: interrupts. The full plan is in [docs/roadmap.md](docs/roadmap.md).
+The kernel drives a GICv2 or a GICv3 (found in the device tree, mapped in the device window; VirtualBox's is a GICv3)
+and the generic timer's virtual timer: every boot of the gate counts timer ticks and
+takes an interrupt with its whole context live (ADR 0035). Started at EL3, the boot
+code stands in for the firmware's GIC setup.
+
+Next milestone: kernel threads and a scheduler. The full plan is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Requirements
 
@@ -94,6 +99,7 @@ passing.
 - [ADR 0017: MPL-2.0 dependencies in a GPL-2.0-only system](docs/adr/0017-mpl2-dependencies.md)
 - [ADR 0029: Kernel heap: a first-fit free list in its own window](docs/adr/0029-kernel-heap-allocator.md)
 - [ADR 0033: A linear map, virtual pointers, no lower half, a 48-bit regime and reclaimed boot memory](docs/adr/0033-linear-map-and-virtual-pointers.md)
+- [ADR 0035: Interrupts: GICv2 and GICv3 read from the device tree, the virtual timer's tick, and an EL3 stand-in for firmware](docs/adr/0035-interrupt-controller-and-timer-tick.md)
 
 ## Licence
 

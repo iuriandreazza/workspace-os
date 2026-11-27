@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 bootinfo = { path = "../bootinfo" }
 devicetree = { path = "../devicetree" }
+giclayout = { path = "../giclayout" }
 kernelheap = { path = "../kernelheap" }
 kernelvm = { path = "../kernelvm" }
 physmem = { path = "../physmem" }
@@ -36,6 +37,10 @@ selftest-dirty-tcr2 = []
 # Takes memory from the heap until it refuses, then frees it all: the refusal
 # must be reported and the heap must work again (ADR 0029).
 selftest-heap-exhaustion = []
+
+# The counter frequency reads as zero, as firmware that never programmed it
+# leaves it: the boot must be refused with a message (ADR 0035).
+selftest-zero-frequency = []
 
 [[bin]]
 name = "kernel"

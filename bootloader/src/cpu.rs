@@ -214,6 +214,18 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
         asm!("mrs {}, S3_0_C0_C7_1", out(reg) mmfr1, options(nomem, nostack, preserves_flags));
         asm!("mrs {}, S3_0_C0_C7_3", out(reg) mmfr3, options(nomem, nostack, preserves_flags));
     }
+    // A GICv3's system registers are off for EL1 until EL2 allows them
+    // (ICC_SRE_EL2: SRE, DFB, DIB and Enable), and the register does not exist
+    // on a core without the interface (ID_AA64PFR0_EL1.GIC); the kernel turns
+    // the interface on itself when the device tree says it drives a GICv3
+    // (ADR 0035). A GICv2 machine whose cores have the interface in a legacy
+    // mode would lose its memory-mapped CPU interface here.
+    let pfr0: u64;
+    // SAFETY: reading an ID register has no side effects.
+    unsafe {
+        asm!("mrs {}, id_aa64pfr0_el1", out(reg) pfr0, options(nomem, nostack, preserves_flags))
+    };
+    let has_gic_system_registers = u64::from((pfr0 >> 24) & 0xf != 0);
     let has_tcr2 = u64::from(mmfr3 & 0xf != 0);
     let has_sctlr2 = u64::from((mmfr3 >> 4) & 0xf != 0);
     let hcrx = (has_tcr2 << 14) | (has_sctlr2 << 15);
@@ -257,6 +269,11 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
             "msr vpidr_el2, x9",
             "mrs x9, mpidr_el1",
             "msr vmpidr_el2, x9",
+            "cbz x14, 5f",
+            "mov x9, #0xf",
+            "msr S3_4_C12_C9_5, x9",
+            "isb",
+            "5:",
             "mov x9, #3",
             "msr cnthctl_el2, x9",
             "msr cntvoff_el2, xzr",
@@ -278,6 +295,7 @@ unsafe fn enter_kernel_from_el2(entry: u64, boot_info: u64, root: u64, entry_mag
             in("x11") hcrx,
             in("x12") has_tcr2,
             in("x13") has_sctlr2,
+            in("x14") has_gic_system_registers,
             options(noreturn)
         )
     }

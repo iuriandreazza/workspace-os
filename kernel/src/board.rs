@@ -40,6 +40,127 @@ pub fn console_base() -> usize {
     CONSOLE_BASE.load(Ordering::Relaxed)
 }
 
+/// Where the interrupt controller's registers are read and written, as for the
+/// console: the distributor, and the CPU interface of a GICv2 or the
+/// redistributors of a GICv3, in the device window once the kernel's tables map
+/// them (ADR 0035). Zero until then.
+static DISTRIBUTOR_BASE: AtomicUsize = AtomicUsize::new(0);
+static SECOND_BLOCK_BASE: AtomicUsize = AtomicUsize::new(0);
+
+/// Points the interrupt controller at its two register blocks. The caller makes
+/// sure both are mapped.
+pub fn use_interrupt_controller_at(distributor: usize, second_block: usize) {
+    DISTRIBUTOR_BASE.store(distributor, Ordering::Relaxed);
+    SECOND_BLOCK_BASE.store(second_block, Ordering::Relaxed);
+}
+
+/// Where the distributor and the second block (the CPU interface of a GICv2,
+/// the redistributors of a GICv3) are read and written now.
+pub fn interrupt_controller_bases() -> (usize, usize) {
+    (
+        DISTRIBUTOR_BASE.load(Ordering::Relaxed),
+        SECOND_BLOCK_BASE.load(Ordering::Relaxed),
+    )
+}
+
+/// Compatible strings of the GICv2 the kernel drives: the one QEMU `virt`
+/// publishes and the one most boards with a GIC-400 publish.
+const GICV2_COMPATIBLE: [&str; 2] = ["arm,cortex-a15-gic", "arm,gic-400"];
+/// What the device tree calls a GICv3 and a GICv4 alike.
+const GICV3_COMPATIBLE: &str = "arm,gic-v3";
+const TIMER_COMPATIBLE: &str = "arm,armv8-timer";
+/// The order of the timer node's interrupts: secure physical, non-secure
+/// physical, virtual, hypervisor.
+const VIRTUAL_TIMER_INTERRUPT: usize = 2;
+/// The `kind` of a private peripheral interrupt, whose ID is its number plus 16.
+const PRIVATE_PERIPHERAL_INTERRUPT: u32 = 1;
+const PRIVATE_PERIPHERAL_BASE_ID: u32 = 16;
+const PRIVATE_PERIPHERAL_COUNT: u32 = 16;
+/// What the kernel reads from each block of a controller: a GICv2's two blocks
+/// one page each, a GICv3's distributor 64 KiB (its ID registers are at
+/// 0xffe8) and its redistributors at least one frame of 128 KiB.
+const GICV2_BLOCK_BYTES: u64 = 0x1000;
+const GICV3_DISTRIBUTOR_BYTES: u64 = 0x10000;
+const GICV3_REDISTRIBUTOR_BYTES: u64 = 0x20000;
+
+/// The interrupt controller the device tree names and where its registers are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Controller {
+    V2 {
+        distributor: Region,
+        cpu_interface: Region,
+    },
+    V3 {
+        distributor: Region,
+        /// The one region that holds every core's redistributor frames.
+        redistributors: Region,
+    },
+}
+
+impl Controller {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::V2 { .. } => "gicv2",
+            Self::V3 { .. } => "gicv3",
+        }
+    }
+
+    /// The distributor and the second block, in the order they are mapped.
+    pub fn blocks(&self) -> [Region; 2] {
+        match *self {
+            Self::V2 {
+                distributor,
+                cpu_interface,
+            } => [distributor, cpu_interface],
+            Self::V3 {
+                distributor,
+                redistributors,
+            } => [distributor, redistributors],
+        }
+    }
+}
+
+/// What the device tree says about interrupts: the controller and the virtual
+/// timer's interrupt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InterruptWiring {
+    pub controller: Controller,
+    /// The interrupt ID of the virtual timer.
+    pub timer_interrupt: u32,
+    /// `clock-frequency` of the timer node, for a `CNTFRQ_EL0` firmware left
+    /// at zero.
+    pub timer_frequency: Option<u32>,
+}
+
+/// Why there is no interrupt wiring the kernel can use.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WiringError {
+    NoDeviceTree,
+    NoController,
+    /// Neither a GICv2 nor a GICv3 the kernel knows by its `compatible`.
+    UnknownController,
+    /// A GICv3 whose redistributors are in several regions or not laid out one
+    /// after the other: the walk of the kernel does not follow either.
+    RedistributorLayout,
+    BadController(Error),
+    NoTimer,
+    BadTimer(Error),
+}
+
+impl fmt::Display for WiringError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoDeviceTree => f.write_str("there is no device tree to find the interrupt controller in"),
+            Self::NoController => f.write_str("the device tree has no interrupt controller"),
+            Self::UnknownController => f.write_str("the controller is neither a GICv2 nor a GICv3 the kernel knows (ADR 0035)"),
+            Self::RedistributorLayout => f.write_str("the GICv3's redistributors are in several regions or have a stride, which the kernel does not follow (ADR 0035)"),
+            Self::BadController(error) => write!(f, "the controller's registers: {error}"),
+            Self::NoTimer => f.write_str("the device tree has no armv8 timer"),
+            Self::BadTimer(error) => write!(f, "the timer's interrupts: {error}"),
+        }
+    }
+}
+
 /// How the kernel was entered, for the log and for tests to read.
 #[derive(Clone, Copy)]
 pub enum Entry {
@@ -70,6 +191,69 @@ pub struct Board {
 }
 
 impl Board {
+    /// The interrupt controller and the virtual timer, read from the device
+    /// tree on both paths: the bootloader copies it and the kernel does not
+    /// look anywhere else. A controller that is neither a GICv2 nor a GICv3 is
+    /// refused by name.
+    pub fn interrupt_wiring(&self) -> Result<InterruptWiring, WiringError> {
+        let fdt = self.fdt.as_ref().ok_or(WiringError::NoDeviceTree)?;
+        let controller = fdt
+            .find_device(|device| device.is_interrupt_controller())
+            .map_err(|_| WiringError::NoController)?;
+        let registers = |index, at_least| {
+            controller
+                .region(index)
+                .map_err(WiringError::BadController)
+                .and_then(|region| {
+                    usize::try_from(region.base)
+                        .ok()
+                        .filter(|_| region.size >= at_least)
+                        .map(|_| region)
+                        .ok_or(WiringError::BadController(Error::MalformedReg))
+                })
+        };
+        let controller = if controller.is_compatible(GICV3_COMPATIBLE) {
+            let regions = controller
+                .redistributor_regions()
+                .map_err(WiringError::BadController)?;
+            if regions != 1 || controller.has_redistributor_stride() {
+                return Err(WiringError::RedistributorLayout);
+            }
+            Controller::V3 {
+                distributor: registers(0, GICV3_DISTRIBUTOR_BYTES)?,
+                redistributors: registers(1, GICV3_REDISTRIBUTOR_BYTES)?,
+            }
+        } else if GICV2_COMPATIBLE
+            .iter()
+            .any(|compatible| controller.is_compatible(compatible))
+        {
+            Controller::V2 {
+                distributor: registers(0, GICV2_BLOCK_BYTES)?,
+                cpu_interface: registers(1, GICV2_BLOCK_BYTES)?,
+            }
+        } else {
+            return Err(WiringError::UnknownController);
+        };
+        let timer = fdt
+            .find_device(|device| device.is_compatible(TIMER_COMPATIBLE))
+            .map_err(|_| WiringError::NoTimer)?;
+        let interrupt = timer
+            .interrupt(VIRTUAL_TIMER_INTERRUPT)
+            .map_err(WiringError::BadTimer)?;
+        if interrupt.kind != PRIVATE_PERIPHERAL_INTERRUPT
+            || interrupt.number >= PRIVATE_PERIPHERAL_COUNT
+        {
+            return Err(WiringError::BadTimer(Error::MalformedReg));
+        }
+        Ok(InterruptWiring {
+            controller,
+            timer_interrupt: PRIVATE_PERIPHERAL_BASE_ID + interrupt.number,
+            // Only read when the counter frequency register is zero: a property that
+            // is not one cell is no reason to refuse a machine that does not need it.
+            timer_frequency: timer.clock_frequency().ok().flatten(),
+        })
+    }
+
     /// The bootloader's memory map, entry by entry, for the log. A direct load
     /// has none.
     pub fn map_entries(&self) -> Option<impl Iterator<Item = bootinfo::MemoryEntry>> {

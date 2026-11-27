@@ -19,6 +19,9 @@ _start:
     mov  x19, x0
     // x2 and x3 must be zero on the bootloader path; kernel_main reports them.
     orr  x22, x2, x3
+    // x20 is 1 when the boot code went through EL3, where it stands in for the
+    // firmware that is missing (the monitor at the end of this file).
+    mov  x20, #0
 
     // Interrupts stay masked until the kernel installs an exception table.
     msr  daifset, #0xf
@@ -49,6 +52,26 @@ _start:
     b    .Lel1
 
 .Lfrom_el3:
+    adr  x0, el3_vectors
+    msr  vbar_el3, x0
+    // The monitor reads and writes device registers with the MMU off: the
+    // byte order and alignment checks of SCTLR_EL3 are unknown at reset, so it
+    // is set to its reserved-as-one bits and nothing else (little endian).
+    movz x0, #0x30c5, lsl #16
+    movk x0, #0x0830
+    msr  sctlr_el3, x0
+    isb
+    mov  x20, #1
+    // A GICv3's system registers are off for the lower levels until EL3 allows
+    // them (ICC_SRE_EL3: SRE, DFB, DIB and Enable), and the register does not
+    // exist on a core without the interface (ID_AA64PFR0_EL1.GIC).
+    mrs  x0, id_aa64pfr0_el1
+    ubfx x0, x0, #24, #4
+    cbz  x0, 60f
+    mov  x0, #0xf
+    msr  S3_6_C12_C12_5, x0
+    isb
+60:
     // RW: lower levels are AArch64. HCE: hvc is enabled. Bits 5:4 are RES1.
     // NS: the kernel runs
     // in the non-secure world.
@@ -136,6 +159,16 @@ _start:
     mov  x0, #3                     // EL1 may read the counter and the timer
     msr  cnthctl_el2, x0
     msr  cntvoff_el2, xzr
+    // The same for EL2 (ICC_SRE_EL2), so that EL1 can turn the interface on.
+    // A GICv2 machine whose cores have the interface in a legacy mode would
+    // lose its memory-mapped CPU interface here (ADR 0035).
+    mrs  x0, id_aa64pfr0_el1
+    ubfx x0, x0, #24, #4
+    cbz  x0, 61f
+    mov  x0, #0xf
+    msr  S3_4_C12_C9_5, x0
+    isb
+61:
     mov  x0, #0x3c5                 // EL1h, DAIF masked
     msr  spsr_el2, x0
     adr  x0, .Lel1
@@ -455,10 +488,67 @@ _start:
     mov  x0, x19
     mov  x1, x21
     mov  x2, x22
+    mov  x3, x20
     bl   kernel_main
 .Lpark:
     wfe
     b    .Lpark
+
+// The part of firmware a kernel started at EL3 needs and nothing else supplies
+// (ADR 0035): with the GIC's security extensions, the interrupts of a
+// non-secure kernel must be Group 1 and the priority mask must let non-secure
+// priorities through, and only the secure side can do either. It answers one
+// call from EL1 or EL2, `smc` with `x0` = the function, `x1` = the physical
+// address of the GIC distributor and, for a GICv2, `x2` that of the CPU
+// interface, which the kernel read from the device tree. For a GICv3 the
+// secure side only has to put the distributor in a single security state (DS),
+// after which the non-secure kernel configures groups and redistributors
+// itself. It runs with the MMU off, uses no stack and trusts its caller
+// completely: nothing else runs in the secure world.
+.balign 0x800
+el3_vectors:
+    // Current EL with SP_EL0 and with SP_ELx: the monitor takes no exception itself.
+.rept 8
+    b    .
+    .balign 0x80
+.endr
+    // Lower EL, AArch64, synchronous: the monitor call.
+    b    el3_monitor_call
+    .balign 0x80
+.rept 7
+    b    .
+    .balign 0x80
+.endr
+
+el3_monitor_call:
+    mrs  x16, esr_el3
+    ubfx x16, x16, #26, #6          // EC: the bits above ISS are not all zero everywhere
+    cmp  x16, #0x17                 // SMC from AArch64
+    b.ne .
+    ldr  w16, ={MONITOR_CALL_GICV3_FOR_NON_SECURE}
+    cmp  w0, w16
+    b.eq 2f
+    ldr  w16, ={MONITOR_CALL_GICV2_FOR_NON_SECURE}
+    cmp  w0, w16
+    b.ne 1f
+    mov  w16, #-1
+    str  w16, [x1, #0x80]           // GICD_IGROUPR0: every SGI and PPI of this core
+    // GICC_PMR: with a secure mask below 0x80 the non-secure side's writes to
+    // its own are ignored and nothing is signalled to it.
+    mov  w16, #0x80
+    str  w16, [x2, #0x04]
+    dsb  sy
+    mov  x0, #0
+    eret
+2:
+    mov  w16, #(1 << 6)             // GICD_CTLR.DS: one security state
+    str  w16, [x1]
+    dsb  sy
+    mov  x0, #0
+    eret
+1:
+    mov  x0, #-1                    // SMCCC NOT_SUPPORTED
+    eret
 
 // Tables of the boot map, in .bss (zeroed above): page aligned, one page each.
 .section .bss.boot_tables, "aw", @nobits

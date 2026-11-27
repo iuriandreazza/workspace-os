@@ -7,7 +7,9 @@
 //!
 //! Only what the kernel asks for is supported: the first `reg` entry of the
 //! first usable node with a given `compatible` string, among the direct
-//! children of the root node; every `reg` entry of every usable memory node;
+//! children of the root node; any `reg` entry, `interrupts` triple or
+//! `clock-frequency` of the first usable direct child of the root that a
+//! caller's test accepts (`find_device`); every `reg` entry of every usable memory node;
 //! and the regions the tree reserves (`/memreserve/` and the children of
 //! `reserved-memory`). `reg` values are taken as CPU physical addresses, which
 //! holds when the parent bus has no address translation; nodes below another
@@ -264,6 +266,20 @@ impl<'a> Fdt<'a> {
         self.first_root_child_region(|node| node.is_compatible(compatible))
     }
 
+    /// The first usable direct child of the root that `wanted` accepts.
+    pub fn find_device(&self, wanted: impl Fn(&Device<'a>) -> bool) -> Result<Device<'a>, Error> {
+        let mut found = None;
+        self.find_root_child(|node| {
+            let device = Device(*node);
+            if !wanted(&device) {
+                return Ok(false);
+            }
+            found = Some(device);
+            Ok(true)
+        })?;
+        found.ok_or(Error::NotFound)
+    }
+
     fn root_cells(&self) -> Result<Cells, Error> {
         let mut cells = Cells {
             address: DEFAULT_ADDRESS_CELLS,
@@ -338,6 +354,11 @@ struct Node<'a> {
     compatible: Option<&'a [u8]>,
     status: Option<&'a [u8]>,
     reg: Option<&'a [u8]>,
+    interrupts: Option<&'a [u8]>,
+    clock_frequency: Option<&'a [u8]>,
+    interrupt_controller: bool,
+    redistributor_regions: Option<&'a [u8]>,
+    redistributor_stride: bool,
 }
 
 impl<'a> Node<'a> {
@@ -348,6 +369,11 @@ impl<'a> Node<'a> {
             compatible: None,
             status: None,
             reg: None,
+            interrupts: None,
+            clock_frequency: None,
+            interrupt_controller: false,
+            redistributor_regions: None,
+            redistributor_stride: false,
         }
     }
 
@@ -357,6 +383,11 @@ impl<'a> Node<'a> {
             b"compatible" => self.compatible = Some(value),
             b"status" => self.status = Some(value),
             b"reg" => self.reg = Some(value),
+            b"interrupts" => self.interrupts = Some(value),
+            b"clock-frequency" => self.clock_frequency = Some(value),
+            b"interrupt-controller" => self.interrupt_controller = true,
+            b"#redistributor-regions" => self.redistributor_regions = Some(value),
+            b"redistributor-stride" => self.redistributor_stride = true,
             _ => {}
         }
     }
@@ -406,16 +437,91 @@ impl<'a> Node<'a> {
     }
 
     fn region(&self) -> Result<Region, Error> {
+        self.region_at(0)
+    }
+
+    /// Entry `index` of `reg`, which must be whole, non-empty and not wrap.
+    fn region_at(&self, index: usize) -> Result<Region, Error> {
         let (reg, address_bytes, entry_bytes) = self.reg_layout()?;
-        if reg.len() < entry_bytes {
-            return Err(Error::MalformedReg);
-        }
-        let base = read_cells(&reg[..address_bytes]);
-        let size = read_cells(&reg[address_bytes..entry_bytes]);
+        let start = index.checked_mul(entry_bytes).ok_or(Error::MalformedReg)?;
+        let end = start.checked_add(entry_bytes).ok_or(Error::MalformedReg)?;
+        let entry = reg.get(start..end).ok_or(Error::MalformedReg)?;
+        let base = read_cells(&entry[..address_bytes]);
+        let size = read_cells(&entry[address_bytes..]);
         if size == 0 || base.checked_add(size).is_none() {
             return Err(Error::MalformedReg);
         }
         Ok(Region { base, size })
+    }
+}
+
+/// An interrupt specifier in the three-cell form of the Arm GIC binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interrupt {
+    /// 0 for a shared peripheral interrupt (SPI), 1 for a private one (PPI).
+    pub kind: u32,
+    /// The number within that kind: the interrupt ID is this plus 32 for an
+    /// SPI and plus 16 for a PPI.
+    pub number: u32,
+    pub flags: u32,
+}
+
+/// A usable direct child of the root, offered to the test `Fdt::find_device`
+/// takes and returned by it.
+#[derive(Clone, Copy)]
+pub struct Device<'a>(Node<'a>);
+
+impl Device<'_> {
+    pub fn is_compatible(&self, wanted: &str) -> bool {
+        self.0.is_compatible(wanted)
+    }
+
+    /// Whether the node carries the empty `interrupt-controller` property.
+    pub fn is_interrupt_controller(&self) -> bool {
+        self.0.interrupt_controller
+    }
+
+    /// Entry `index` of `reg`.
+    pub fn region(&self, index: usize) -> Result<Region, Error> {
+        self.0.region_at(index)
+    }
+
+    /// Triple `index` of `interrupts`, read with the three cells the GIC
+    /// binding gives a specifier. A node whose property is not a whole number
+    /// of triples is malformed.
+    pub fn interrupt(&self, index: usize) -> Result<Interrupt, Error> {
+        const TRIPLE_BYTES: usize = 12;
+        let interrupts = self.0.interrupts.ok_or(Error::NotFound)?;
+        if !interrupts.len().is_multiple_of(TRIPLE_BYTES) {
+            return Err(Error::MalformedReg);
+        }
+        let start = index.checked_mul(TRIPLE_BYTES).ok_or(Error::NotFound)?;
+        let end = start.checked_add(TRIPLE_BYTES).ok_or(Error::NotFound)?;
+        let triple = interrupts.get(start..end).ok_or(Error::NotFound)?;
+        let cell = |at| read_u32(triple, at);
+        Ok(Interrupt {
+            kind: cell(0)?,
+            number: cell(4)?,
+            flags: cell(8)?,
+        })
+    }
+
+    /// `#redistributor-regions` of a GICv3: how many of the `reg` entries after
+    /// the distributor are redistributor regions. One when the node says
+    /// nothing, as the binding has it.
+    pub fn redistributor_regions(&self) -> Result<u32, Error> {
+        self.0.redistributor_regions.map_or(Ok(1), single_cell)
+    }
+
+    /// Whether the node has `redistributor-stride`: the redistributors are not
+    /// laid out one after the other.
+    pub fn has_redistributor_stride(&self) -> bool {
+        self.0.redistributor_stride
+    }
+
+    /// `clock-frequency` in hertz, if the node has one.
+    pub fn clock_frequency(&self) -> Result<Option<u32>, Error> {
+        self.0.clock_frequency.map(single_cell).transpose()
     }
 }
 
@@ -1221,6 +1327,192 @@ mod tests {
                     let _ = fdt.for_each_memory_region(|_| {});
                     let _ = fdt.for_each_reserved_region(|_| {});
                 }
+            }
+        }
+    }
+
+    /// The interrupt controller and timer of QEMU `virt` (GICv2), after its
+    /// UART and with a child below the controller that must not be mistaken
+    /// for a direct child of the root.
+    fn machine_with_gic(gic_status: Option<&str>, timer_cells: &[u32]) -> Vec<u8> {
+        let mut b = Builder::new();
+        b.begin("");
+        b.cells("#address-cells", &[2]).cells("#size-cells", &[2]);
+        b.begin("intc@8000000");
+        b.prop("compatible", b"arm,cortex-a15-gic\0")
+            .cells(
+                "reg",
+                &[0, 0x0800_0000, 0, 0x10000, 0, 0x0801_0000, 0, 0x10000],
+            )
+            .prop("interrupt-controller", b"");
+        if let Some(status) = gic_status {
+            b.prop("status", format!("{status}\0").as_bytes());
+        }
+        b.begin("v2m@8020000");
+        b.prop("compatible", b"arm,gic-v2m-frame\0")
+            .prop("interrupt-controller", b"")
+            .cells("reg", &[0, 0x0802_0000, 0, 0x1000]);
+        b.end();
+        b.end();
+        b.begin("timer");
+        b.prop("compatible", b"arm,armv8-timer\0arm,armv7-timer\0")
+            .cells("interrupts", timer_cells)
+            .cells("clock-frequency", &[62_500_000]);
+        b.end();
+        b.end();
+        b.finish()
+    }
+
+    #[test]
+    fn a_gicv3_names_its_redistributor_region_and_count() {
+        let mut b = Builder::new();
+        b.begin("");
+        b.cells("#address-cells", &[2]).cells("#size-cells", &[2]);
+        b.begin("intc@8000000");
+        b.prop("compatible", b"arm,gic-v3\0")
+            .cells(
+                "reg",
+                &[0, 0x0800_0000, 0, 0x10000, 0, 0x080a_0000, 0, 0xf6_0000],
+            )
+            .cells("#redistributor-regions", &[1])
+            .prop("interrupt-controller", b"");
+        b.end();
+        b.begin("other");
+        b.prop("interrupt-controller", b"")
+            .cells("redistributor-stride", &[0, 0x40000])
+            .cells("#redistributor-regions", &[3]);
+        b.end();
+        b.end();
+        let blob = b.finish();
+        let fdt = Fdt::parse(&blob).unwrap();
+        let gic = fdt.find_device(|d| d.is_compatible("arm,gic-v3")).unwrap();
+        assert_eq!(gic.region(1), Ok(region(0x080a_0000, 0xf6_0000)));
+        assert_eq!(gic.redistributor_regions(), Ok(1));
+        assert!(!gic.has_redistributor_stride());
+        let other = fdt
+            .find_device(|d| d.is_interrupt_controller() && !d.is_compatible("arm,gic-v3"))
+            .unwrap();
+        assert_eq!(other.redistributor_regions(), Ok(3));
+        assert!(other.has_redistributor_stride());
+    }
+
+    #[test]
+    fn a_redistributor_count_defaults_to_one() {
+        let blob = machine_with_gic(None, &QEMU_TIMER);
+        let fdt = Fdt::parse(&blob).unwrap();
+        let gic = fdt.find_device(|d| d.is_interrupt_controller()).unwrap();
+        assert_eq!(gic.redistributor_regions(), Ok(1));
+    }
+
+    const QEMU_TIMER: [u32; 12] = [1, 13, 0xf04, 1, 14, 0xf04, 1, 11, 0xf04, 1, 10, 0xf04];
+
+    #[test]
+    fn the_interrupt_controller_gives_both_register_blocks() {
+        let blob = machine_with_gic(None, &QEMU_TIMER);
+        let fdt = Fdt::parse(&blob).unwrap();
+        let gic = fdt.find_device(|d| d.is_interrupt_controller()).unwrap();
+        assert!(gic.is_compatible("arm,cortex-a15-gic"));
+        assert_eq!(gic.region(0), Ok(region(0x0800_0000, 0x10000)));
+        assert_eq!(gic.region(1), Ok(region(0x0801_0000, 0x10000)));
+        assert_eq!(gic.region(2), Err(Error::MalformedReg));
+    }
+
+    #[test]
+    fn a_child_below_the_controller_is_not_a_device() {
+        let blob = machine_with_gic(None, &QEMU_TIMER);
+        let fdt = Fdt::parse(&blob).unwrap();
+        let found = fdt.find_device(|d| d.is_compatible("arm,gic-v2m-frame"));
+        assert_eq!(found.err(), Some(Error::NotFound));
+    }
+
+    #[test]
+    fn a_disabled_controller_is_not_found() {
+        let blob = machine_with_gic(Some("disabled"), &QEMU_TIMER);
+        let fdt = Fdt::parse(&blob).unwrap();
+        assert_eq!(
+            fdt.find_device(|d| d.is_interrupt_controller()).err(),
+            Some(Error::NotFound)
+        );
+    }
+
+    #[test]
+    fn the_timer_interrupts_are_read_in_order() {
+        let blob = machine_with_gic(None, &QEMU_TIMER);
+        let fdt = Fdt::parse(&blob).unwrap();
+        let timer = fdt
+            .find_device(|d| d.is_compatible("arm,armv8-timer"))
+            .unwrap();
+        let virtual_timer = Interrupt {
+            kind: 1,
+            number: 11,
+            flags: 0xf04,
+        };
+        assert_eq!(timer.interrupt(2), Ok(virtual_timer));
+        assert_eq!(timer.interrupt(3).unwrap().number, 10);
+        assert_eq!(timer.interrupt(4), Err(Error::NotFound));
+        assert_eq!(timer.clock_frequency(), Ok(Some(62_500_000)));
+    }
+
+    #[test]
+    fn a_property_that_is_not_whole_triples_is_malformed() {
+        let blob = machine_with_gic(None, &QEMU_TIMER[..10]);
+        let fdt = Fdt::parse(&blob).unwrap();
+        let timer = fdt
+            .find_device(|d| d.is_compatible("arm,armv8-timer"))
+            .unwrap();
+        assert_eq!(timer.interrupt(0), Err(Error::MalformedReg));
+    }
+
+    #[test]
+    fn a_node_without_interrupts_or_frequency_says_so() {
+        let blob = qemu_like(0x1000_0000, None);
+        let fdt = Fdt::parse(&blob).unwrap();
+        let uart = fdt.find_device(|d| d.is_compatible("arm,pl011")).unwrap();
+        assert_eq!(uart.interrupt(0), Err(Error::NotFound));
+        assert_eq!(uart.clock_frequency(), Ok(None));
+    }
+
+    #[test]
+    fn a_frequency_that_is_not_one_cell_is_refused() {
+        let mut b = Builder::new();
+        b.begin("");
+        b.begin("timer");
+        b.prop("compatible", b"arm,armv8-timer\0")
+            .prop("clock-frequency", &[0, 0, 0, 0, 1, 2, 3, 4]);
+        b.end();
+        b.end();
+        let blob = b.finish();
+        let fdt = Fdt::parse(&blob).unwrap();
+        let timer = fdt
+            .find_device(|d| d.is_compatible("arm,armv8-timer"))
+            .unwrap();
+        assert_eq!(timer.clock_frequency(), Err(Error::UnsupportedCells));
+    }
+
+    #[test]
+    fn device_lookups_never_panic_on_corrupted_blobs() {
+        let good = machine_with_gic(None, &QEMU_TIMER);
+        let probe = |blob: &[u8]| {
+            if let Ok(fdt) = Fdt::parse(blob) {
+                let _ = fdt.find_device(|d| {
+                    let _ = (
+                        d.region(0),
+                        d.region(1),
+                        d.interrupt(2),
+                        d.clock_frequency(),
+                    );
+                    false
+                });
+            }
+        };
+        for length in 0..good.len() {
+            probe(&good[..length]);
+        }
+        for index in 0..good.len() {
+            for flip in [0x01, 0x80, 0xff] {
+                let mut blob = good.clone();
+                blob[index] ^= flip;
+                probe(&blob);
             }
         }
     }

@@ -16,6 +16,8 @@ use core::arch::asm;
 use core::fmt::{self, Write};
 use core::ops::Range;
 
+use devicetree::Region;
+
 use kernelvm::{
     DeviceWindow, Expectation, ImageLayout, LayoutError, MapError, Mapper, MemoryTypes,
     Permissions, Table, TableMemory, TableRead, Window,
@@ -23,7 +25,7 @@ use kernelvm::{
 use physmem::FrameAllocator;
 
 use super::{physical, pointer_to};
-use crate::board::Board;
+use crate::board::{Board, InterruptWiring};
 use crate::log::klog;
 
 unsafe extern "C" {
@@ -254,7 +256,7 @@ fn check_boot_tables(layout: &ImageLayout, types: MemoryTypes) -> Result<(), Err
             types,
             window: Some(&window),
             forbidden: &(0..0),
-            device: &(0..0),
+            device: &[],
             known: Some(&known),
         },
     );
@@ -283,12 +285,19 @@ fn check_boot_tables(layout: &ImageLayout, types: MemoryTypes) -> Result<(), Err
     Ok(())
 }
 
-/// The pages the console's registers occupy: the only Device memory the lower
-/// window holds.
-fn device_pages(board: &Board) -> Range<u64> {
-    let start = board.uart.base & !(kernelvm::PAGE_SIZE - 1);
-    let end = (board.uart.base + board.uart.size).next_multiple_of(kernelvm::PAGE_SIZE);
+/// The pages that hold `region`.
+fn pages(region: Region) -> Range<u64> {
+    let start = region.base & !(kernelvm::PAGE_SIZE - 1);
+    let end = (region.base + region.size).next_multiple_of(kernelvm::PAGE_SIZE);
     start..end
+}
+
+/// The pages the console's registers and the interrupt controller's two blocks
+/// occupy: the only Device memory the device window holds, in the order they
+/// are mapped.
+fn device_pages(board: &Board, wiring: &InterruptWiring) -> [Range<u64>; 3] {
+    let [first, second] = wiring.controller.blocks();
+    [pages(board.uart), pages(first), pages(second)]
 }
 
 /// Reads `ID_AA64MMFR3_EL1`, which is zero where it does not exist.
@@ -359,12 +368,16 @@ impl fmt::Display for Register {
 ///
 /// The upper half maps the image as the boot tables do, by section, so that
 /// switching `TTBR1_EL1` changes no translation of the code running; the rest
-/// of RAM, minus the image, in the linear map; and the console's registers in
-/// the device window. Then every physical address is read through the linear
+/// of RAM, minus the image, in the linear map; and the console's registers and
+/// the interrupt controller's in the device window. Then every physical address is read through the linear
 /// map, the console is pointed at the device window, and the lower half is
 /// dropped (ADR 0033). A pointer the kernel still holds to a physical address
 /// faults from here on.
-pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
+pub fn init(
+    frames: &mut FrameAllocator,
+    board: &Board,
+    wiring: &InterruptWiring,
+) -> Result<(), Error> {
     let types = memory_types()?;
     let layout = layout()?;
     check_boot_tables(&layout, types)?;
@@ -375,7 +388,7 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
         count: 0,
     };
     let hole = layout.span();
-    let (upper, console) = {
+    let (upper, console, controller) = {
         let mut mapper = Mapper::new(&mut tables, types)?;
         layout.map(&mut mapper, kernelvm::KERNEL_OFFSET)?;
         let mut result = Ok(());
@@ -392,8 +405,12 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
         // A region the device tree could not give is not an error here: the
         // allocator has failed on the same tree before this runs.
         let _ = regions;
-        let console = DeviceWindow::new().map(&mut mapper, board.uart.base, board.uart.size)?;
-        (mapper.root(), console)
+        let mut devices = DeviceWindow::new();
+        let console = devices.map(&mut mapper, board.uart.base, board.uart.size)?;
+        let [first, second] = wiring.controller.blocks();
+        let distributor = devices.map(&mut mapper, first.base, first.size)?;
+        let second_block = devices.map(&mut mapper, second.base, second.size)?;
+        (mapper.root(), console, (distributor, second_block))
     };
     // The root the lower half is pointed at when it is dropped: all zeros.
     let empty = tables.allocate().ok_or(MapError::OutOfFrames)?;
@@ -404,6 +421,7 @@ pub fn init(frames: &mut FrameAllocator, board: &Board) -> Result<(), Error> {
     switch_upper_half(upper);
     super::read_physical_through_the_linear_map();
     crate::board::use_console_at(console as usize);
+    crate::board::use_interrupt_controller_at(controller.0 as usize, controller.1 as usize);
     drop_lower_half(empty);
     Ok(())
 }
@@ -426,7 +444,7 @@ fn check_new_root(root: u64, layout: &ImageLayout, types: MemoryTypes) -> Result
             types,
             window: Some(&window),
             forbidden: &(0..0),
-            device: &(0..0),
+            device: &[],
             known: Some(&parts),
         },
     );
@@ -505,13 +523,19 @@ const MAX_PROBES: usize = 64;
 /// for EL0, the image mapped by section with the sizes the linker gave them, a
 /// guard page that translates to nothing, the linear map holding RAM read and
 /// write with no alias of the image, the device window holding only the
-/// console's registers, nothing outside those three windows, a lower half with
+/// console's and the interrupt controller's registers, nothing outside those
+/// three windows, a lower half with
 /// no entry and walks through it disabled, and `SCTLR_EL1.WXN` set. The walk
 /// reads the live registers and the live tables, not what `init` meant to
 /// build. The lower half is also asked, by hardware, about addresses that were
 /// mapped before the drop: `handoff_address` is the physical address the
 /// bootloader (or loader) gave in `x0`.
-pub fn verify(mut out: impl Write, board: &Board, handoff_address: usize) {
+pub fn verify(
+    mut out: impl Write,
+    board: &Board,
+    wiring: &InterruptWiring,
+    handoff_address: usize,
+) {
     let types = memory_types().unwrap_or_else(|e| panic!("mmu: {e}"));
     let layout = layout().unwrap_or_else(|e| panic!("mmu: {e}"));
     let (upper_root, lower_root) = (read_ttbr1(), read_ttbr0());
@@ -529,9 +553,11 @@ pub fn verify(mut out: impl Write, board: &Board, handoff_address: usize) {
         virt: kernelvm::DEVICE_BASE..kernelvm::DEVICE_BASE + kernelvm::DEVICE_WINDOW,
         offset: None,
     };
-    let device_range = device_pages(board);
-    let device_known = [(device_range.clone(), Permissions::Device)];
-    let walk = |window: &Window, forbidden: &Range<u64>, device: &Range<u64>, known| {
+    let device_ranges = device_pages(board, wiring);
+    let device_known = device_ranges
+        .clone()
+        .map(|range| (range, Permissions::Device));
+    let walk = |window: &Window, forbidden: &Range<u64>, device: &[Range<u64>], known| {
         kernelvm::audit(
             &PhysicalTables,
             upper_root,
@@ -545,9 +571,9 @@ pub fn verify(mut out: impl Write, board: &Board, handoff_address: usize) {
             },
         )
     };
-    let upper = walk(&image_window, &(0..0), &(0..0), Some(&parts));
-    let linear = walk(&linear_window, &span, &(0..0), None);
-    let devices = walk(&device_window, &(0..0), &device_range, Some(&device_known));
+    let upper = walk(&image_window, &(0..0), &[], Some(&parts));
+    let linear = walk(&linear_window, &span, &[], None);
+    let devices = walk(&device_window, &(0..0), &device_ranges, Some(&device_known));
     let strays = kernelvm::strays(
         &PhysicalTables,
         upper_root,
@@ -577,10 +603,12 @@ pub fn verify(mut out: impl Write, board: &Board, handoff_address: usize) {
     klog!(
         Info,
         out,
-        "mmu: device window at {:#x}: {:#x} bytes of registers, console at {:#x}",
+        "mmu: device window at {:#x}: {:#x} bytes of registers, console at {:#x}, distributor at {:#x}, second block at {:#x}",
         kernelvm::DEVICE_BASE,
         devices.device,
-        crate::board::console_base()
+        crate::board::console_base(),
+        crate::board::interrupt_controller_bases().0,
+        crate::board::interrupt_controller_bases().1
     );
     assert!(upper.is_clean(), "mmu: upper half is not clean: {upper:?}");
     assert!(
@@ -613,8 +641,8 @@ pub fn verify(mut out: impl Write, board: &Board, handoff_address: usize) {
         devices.text == 0
             && devices.read_only == 0
             && devices.read_write == 0
-            && devices.device == size(&device_range),
-        "mmu: the device window holds more than the console's registers: {devices:?}"
+            && devices.device == device_ranges.iter().map(size).sum::<u64>(),
+        "mmu: the device window holds more than the console's and the interrupt controller's registers: {devices:?}"
     );
     let guard = kernelvm::virtual_of(layout.data.end);
     assert!(
