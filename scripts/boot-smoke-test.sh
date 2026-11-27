@@ -692,7 +692,6 @@ check_fault() {
     for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
         # The report is complete once the line after it is: the thread line.
         grep -qF "panicked in thread" "$serial_log" && break
-        grep -qF "selftest: " "$serial_log" && grep -qF "$PANIC_MARKER" "$serial_log" && break
         qemu_is_running || fail "QEMU exited without the expected fault"
         sleep 0.1
     done
@@ -1690,7 +1689,7 @@ build_with_feature selftest-thread-panic "$thread_panic_elf"
 build_with_feature selftest-thread-overflow "$thread_overflow_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
 # The report's two lines reach the log one after the other: wait for the last.
-check_panic thread-panic "$thread_panic_elf" "panicked in thread 1"
+check_panic thread-panic "$thread_panic_elf" "panicked in thread 1."
 expect_once "selftest: a thread panicked" "message of the thread that panicked"
 overflow_slot=$((THREAD_STACK_BASE + 2 * THREAD_SLOT_SIZE))
 overflow_stack_bottom=$((overflow_slot + THREAD_SLOT_SIZE / 2))
@@ -1699,9 +1698,9 @@ FAULT_ABSENT="nested exception"
 thread_text_range="$(symbol_of "$thread_overflow_elf" __image_start)..$(symbol_of "$thread_overflow_elf" __text_end)"
 thread_fault=(data\ abort 0x25 '0x[0-9a-f]{5}47' "$thread_text_range" "$(hex $((overflow_stack_bottom - 4096)))..$(hex "$overflow_stack_bottom")")
 check_fault thread-overflow "${thread_fault[@]}" -kernel "$thread_overflow_elf"
-expect_once "panicked in thread 2" "report of the thread that overflowed its stack"
+expect_once "panicked in thread 2." "report of the thread that overflowed its stack"
 check_fault thread-overflow-el2 "${thread_fault[@]}" -machine virtualization=on -kernel "$thread_overflow_elf"
-expect_once "panicked in thread 2" "report of the thread that overflowed its stack at EL2"
+expect_once "panicked in thread 2." "report of the thread that overflowed its stack at EL2"
 FAULT_ALSO=""
 FAULT_ABSENT=""
 

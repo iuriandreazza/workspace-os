@@ -212,8 +212,8 @@ in it.
   gap is larger than the one page that inline probes need because it costs only
   virtual space and also covers code the compiler does not probe.
 - The window holds `MAX_THREADS` slots (64, including the idle thread). Slots
-  are **recycled, never unmapped**: a thread's exit returns its slot to a free
-  list, still mapped. No page is ever removed, so no break-before-make and no
+  are **recycled, never unmapped**: a thread's exit frees its table entry, which
+  is its slot (the next spawn takes the lowest free one), still mapped. No page is ever removed, so no break-before-make and no
   TLB invalidation are needed (the property `grow_heap` already relies on); the
   cost is that the stacks of the most threads ever alive stay allocated. The
   contents are not cleared; a later ADR (K8) decides that for anything a user
@@ -252,7 +252,7 @@ in it.
   becomes `Running`; its frame is filled the first time it is switched away
   from. `kernel_main` stays `-> !`.
 - **Idle** is a thread created at start, outside the ready set, that loops
-  `wfi` with IRQs unmasked. When the ready set is empty the kernel runs it
+  `wfi`, with IRQs unmasked while the tick runs and masked while it is stopped. When the ready set is empty the kernel runs it
   without asking the policy (the policy is never asked with an empty set). While the tick runs it keeps the clock alive (the boot test stops the tick at
   its end, as ADR 0035 left it, so after it nothing is preempted or woken). With no blocking primitive in K7
   (that comes with IPC, K9) it only runs once every other thread has ended,
@@ -317,8 +317,9 @@ The boot test runs the scheduler with a slice of one tick, so that a test needs
 few ticks (production default: `ROUND_ROBIN_SLICE_TICKS`, 2). A seventh check
 asks, with IRQs unmasked, that they are masked while the heap's lock, a log
 line and the scheduler's state are held and that a guard does not unmask what
-was masked before it. Every thread asserts at its start that only IRQs are
-unmasked, and the boot test asserts that no tick arrived during the phases that
+was masked before it. The threads of the order phases assert at their start that
+only IRQs are unmasked, the idle thread that IRQs are masked when the tick is
+stopped, and the boot test asserts that no tick arrived during the phases that
 run with the tick stopped.
 
 Each check is confirmed by mutation before the pull request: break the

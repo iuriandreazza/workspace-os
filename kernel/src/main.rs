@@ -262,7 +262,7 @@ fn panic(info: &PanicInfo) -> ! {
     klog!(
         Error,
         console,
-        "panicked in thread {}",
+        "panicked in thread {}.",
         threads::current_index()
     );
     #[cfg(feature = "selftest-thread-overflow")]
