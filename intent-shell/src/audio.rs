@@ -113,22 +113,39 @@ impl AudioPlayback for AfplayPlayback {
     fn play(&self, wav: &[u8]) -> Result<(), String> {
         let dir = private_directory()?;
         remove_stale(&dir);
+        let path = write_reply(&dir, wav)?;
+        let played = run_player(&path);
+        let _ = fs::remove_file(&path);
+        played
+    }
+}
+
+/// The audio in a new file of the directory. A name taken by a file a closed
+/// shell left (its process number may come back) is skipped, never an error.
+fn write_reply(dir: &std::path::Path, wav: &[u8]) -> Result<PathBuf, String> {
+    for _ in 0..100 {
         let path = dir.join(format!(
             "reply-{}-{}.wav",
             std::process::id(),
             FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        OpenOptions::new()
+        match OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&path)
-            .and_then(|mut file| file.write_all(wav))
-            .map_err(|e| format!("cannot write the audio: {e}"))?;
-        let played = run_player(&path);
-        let _ = fs::remove_file(&path);
-        played
+        {
+            Ok(mut file) => {
+                return file
+                    .write_all(wav)
+                    .map(|()| path)
+                    .map_err(|e| format!("cannot write the audio: {e}"));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("cannot write the audio: {e}")),
+        }
     }
+    Err("cannot write the audio: no free file name".to_owned())
 }
 
 fn run_player(path: &std::path::Path) -> Result<(), String> {
@@ -415,6 +432,28 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole() {
+        let dir = std::env::temp_dir().join(format!("ws-audio-taken-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // Files a closed shell with this very process number left behind.
+        let next = FILE_COUNTER.load(Ordering::Relaxed);
+        for n in next..next + 3 {
+            fs::write(
+                dir.join(format!("reply-{}-{n}.wav", std::process::id())),
+                b"old",
+            )
+            .unwrap();
+        }
+        let path = write_reply(&dir, b"new audio").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new audio");
+        assert_eq!(
+            fs::read(dir.join(format!("reply-{}-{next}.wav", std::process::id()))).unwrap(),
+            b"old"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not() {
