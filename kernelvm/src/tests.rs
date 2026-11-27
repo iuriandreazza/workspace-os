@@ -1394,3 +1394,23 @@ fn a_device_beyond_48_physical_bits_is_refused() {
     );
     assert_eq!(window.next(), DEVICE_BASE);
 }
+
+#[test]
+fn the_thread_stack_window_sits_between_the_device_and_heap_windows() {
+    const { assert!(DEVICE_BASE + DEVICE_WINDOW < THREAD_STACK_BASE) };
+    const { assert!(THREAD_STACK_BASE + THREAD_STACK_WINDOW < HEAP_BASE) };
+    assert!(THREAD_STACK_BASE.is_multiple_of(GIGABYTE));
+}
+
+#[test]
+fn a_thread_slot_maps_its_upper_half_and_leaves_the_lower_one_as_guard() {
+    let first = thread_stack(0);
+    assert_eq!(first.end - first.start, THREAD_STACK_SIZE);
+    assert!(first.end.is_multiple_of(16));
+    assert_eq!(first.start, THREAD_STACK_BASE + THREAD_STACK_SIZE);
+    // The slot below ends where this slot's unmapped half begins.
+    let second = thread_stack(1);
+    assert_eq!(second.start - first.end, THREAD_STACK_SIZE);
+    // Sixty-four slots fit the window with room to spare.
+    assert!(thread_stack(63).end <= THREAD_STACK_BASE + THREAD_STACK_WINDOW);
+}

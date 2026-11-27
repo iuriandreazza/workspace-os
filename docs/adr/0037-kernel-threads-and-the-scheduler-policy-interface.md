@@ -1,7 +1,7 @@
 ---
 title: "ADR 0037: Kernel threads, one saved-state format for every switch, and a narrow interface for the scheduling policy"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-27
 updated: 2026-11-27
 tags: [kernel, scheduler, threads, policy, interrupts, safety]
@@ -64,9 +64,9 @@ crate with no `unsafe` and no architecture code (`sched`, like `physmem` and
 pub trait Policy {
     /// `ready` is never empty. `previous` is the thread that ran until now (it
     /// is in `ready` unless it exited). `now` is `interrupts::ticks()`.
-    fn pick(&mut self, ready: &ReadySet, previous: Option<ThreadId>, now: u64) -> Choice;
+    fn pick(&mut self, ready: &ReadySet, previous: Option<ThreadIndex>, now: u64) -> Choice;
 }
-pub struct Choice { pub thread: ThreadId, pub slice_ticks: u32 }
+pub struct Choice { pub thread: ThreadIndex, pub slice_ticks: u32 }
 ```
 
 What the interface does and does not allow, so that "the model proposes,
@@ -95,7 +95,10 @@ deterministic code decides" holds:
   start. Replacing it at run time is not built here (P3 needs it, and decides
   how); nothing in the mechanism depends on which policy is installed.
 
-`RoundRobin` is the first policy and has no state: the next ready id after
+A policy sees threads by their position in the table (`ThreadIndex`); the
+generation-carrying `ThreadId` is the handle the rest of the kernel keeps.
+
+`RoundRobin` is the first policy and has no state besides its slice: the next ready id after
 `previous` in cyclic id order, or the lowest id; slice 2 ticks (20 ms).
 
 ### The tick, and who can change its period
@@ -230,7 +233,8 @@ in it.
 ### Threads, the table and the end of a thread
 
 - **The table is static**, `MAX_THREADS` entries, each holding its state
-  (`Free`, `Ready`, `Running`, `Exited`), a generation, the saved frame and the
+  (`Free`, `Reserved` while a thread is being prepared, `Ready`, `Running`; a
+  thread that ended is `Free` with a new generation), a generation, the saved frame and the
   remaining slice. It is not on the heap because handlers must not allocate or
   free (the heap's lock is held by the code a tick may have interrupted).
   `ThreadId` carries the generation, so an id kept after the thread exited and
@@ -244,7 +248,9 @@ in it.
   `wfi` with IRQs unmasked. When the ready set is empty the kernel runs it
   without asking the policy (the policy is never asked with an empty set). It
   keeps the tick, and so the clock, alive. With no blocking primitive in K7
-  (that comes with IPC, K9) it only runs once every other thread has ended.
+  (that comes with IPC, K9) it only runs once every other thread has ended,
+  the boot thread included: at the end of `kernel_main` the boot thread ends
+  (it replaces `halt`) and the boot test sees the idle thread run.
 - **A thread returns**: its entry returns into the trampoline, which executes
   the exit `svc`. The handler marks it `Exited`, releases its slot, and picks
   the next thread; the outgoing frame is not saved.
@@ -299,6 +305,14 @@ depends on time:
 6. **Boots that end in a fault**: a thread that overflows its stack (report
    names the thread, the neighbour's canary intact), a thread that panics
    (report names it).
+
+The boot test runs the scheduler with a slice of one tick, so that a test needs
+few ticks (production default: `ROUND_ROBIN_SLICE_TICKS`, 2). A seventh check
+asks, with IRQs unmasked, that they are masked while the heap's lock, a log
+line and the scheduler's state are held and that a guard does not unmask what
+was masked before it. The `Console::write_str` mask is the one part with no
+check of its own: nothing observes a single UART write; a line is covered by
+`log::line`'s.
 
 Each check is confirmed by mutation before the pull request: break the
 behaviour (skip the frame restore of one register, switch on the wrong

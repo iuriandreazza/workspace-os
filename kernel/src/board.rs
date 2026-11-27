@@ -600,9 +600,14 @@ impl fmt::Write for Console {
         if base == 0 {
             return Ok(());
         }
+        // IRQs stay masked for this write, and `log::line` masks around a whole
+        // line: a tick cannot switch to another thread that drives the UART
+        // (ADR 0037).
+        let _irqs_masked = crate::arch::IrqGuard::new();
         // SAFETY: `base` is the PL011 the device tree describes. The kernel is
-        // its only user: the boot code parks every core but the boot core and
-        // masks interrupts, so nothing else can drive the UART concurrently.
+        // its only user: the boot code parks every core but the boot core, and
+        // on this core IRQs are masked, so no handler and no other thread can
+        // drive the UART concurrently.
         unsafe { Pl011::new(base) }.write_str(text)
     }
 }

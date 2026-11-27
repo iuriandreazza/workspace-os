@@ -7,7 +7,9 @@ use core::mem::{offset_of, size_of};
 use crate::board;
 
 /// Processor context saved on entry to a handled exception. The layout is
-/// shared with `exceptions.s`.
+/// shared with `exceptions.s`. It is also a thread's saved state: every switch
+/// returns from an exception into another thread's frame (ADR 0037).
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct TrapFrame {
     x: [u64; 31],
@@ -20,6 +22,56 @@ pub struct TrapFrame {
     /// exception stack (ADR 0026).
     sp: u64,
     _reserved: u64,
+}
+
+/// `SPSR_EL1` of a thread that starts: EL1 with `SP_ELx`, every DAIF bit and
+/// the flags clear.
+const SPSR_EL1H: u64 = 0b0101;
+/// The bits of `SPSR_EL1` a new thread takes from a running one: all but the
+/// flags (31:28), DAIF (9:6) and the mode (4:0).
+const SPSR_INHERITED: u64 = !((0xf << 28) | (0xf << 6) | 0x1f);
+
+impl TrapFrame {
+    pub const ZERO: Self = Self {
+        x: [0; 31],
+        sp_el0: 0,
+        elr: 0,
+        spsr: 0,
+        esr: 0,
+        far: 0,
+        sp: 0,
+        _reserved: 0,
+    };
+
+    /// The frame of a thread that has not run yet: it starts at `entry` with
+    /// `argument` in `x0`, on `stack_top`, with IRQs unmasked, and returning
+    /// from `entry` goes to `returns_to`. `running_pstate` is the `SPSR` of
+    /// kernel code that is running (`SVC_SAMPLE_PSTATE`): whatever the cores
+    /// of `-cpu max` put in PSTATE besides the flags, DAIF and mode is kept.
+    pub fn new_thread(
+        entry: usize,
+        argument: usize,
+        stack_top: u64,
+        running_pstate: u64,
+        returns_to: usize,
+    ) -> Self {
+        assert!(
+            stack_top.is_multiple_of(16),
+            "a thread's stack pointer must be 16-byte aligned"
+        );
+        let mut frame = Self::ZERO;
+        frame.x[0] = argument as u64;
+        frame.x[30] = returns_to as u64;
+        frame.elr = entry as u64;
+        frame.sp = stack_top;
+        frame.spsr = (running_pstate & SPSR_INHERITED) | SPSR_EL1H;
+        frame
+    }
+
+    /// The saved `SPSR_EL1`.
+    pub fn spsr(&self) -> u64 {
+        self.spsr
+    }
 }
 
 const _: () = {
@@ -50,6 +102,13 @@ const EC_WATCHPOINT_LOWER: u64 = 0x34;
 const EC_WATCHPOINT: u64 = 0x35;
 
 const INSTRUCTION_BYTES: u64 = 4;
+
+/// The `svc` immediates the kernel gives its threads (ADR 0037). `svc #0` stays
+/// unhandled. An SVC from EL0 arrives on another vector.
+pub const SVC_YIELD: u64 = 0x100;
+pub const SVC_EXIT: u64 = 0x101;
+/// Hands the caller's saved `SPSR` to the scheduler, once, at start.
+pub const SVC_SAMPLE_PSTATE: u64 = 0x102;
 
 /// The breakpoint whose handler takes another exception, on the exception stack.
 #[cfg(feature = "selftest-nested-exception")]
@@ -154,6 +213,10 @@ extern "C" fn handle_sync_exception(frame: &mut TrapFrame) {
         frame.elr += INSTRUCTION_BYTES;
         return;
     }
+    if syndrome.class == EC_SVC_A64 && crate::threads::handle_svc(syndrome.iss & 0xffff, frame) {
+        // ELR already points past the SVC.
+        return;
+    }
     #[cfg(feature = "selftest-nested-exception")]
     if syndrome.class == EC_BRK_A64 && syndrome.iss & 0xffff == NESTING_BREAKPOINT {
         // SAFETY: the exception ends in a kernel panic, which is what the test checks.
@@ -216,13 +279,73 @@ extern "C" fn unhandled_exception(vector: u64, esr: u64, elr: u64, far: u64) -> 
 /// Entered from `irq_exception_entry` with the context of the interrupted code
 /// saved on the exception stack. Returning resumes it where it was.
 #[unsafe(no_mangle)]
-extern "C" fn handle_irq_exception() {
-    crate::interrupts::handle_irq();
+extern "C" fn handle_irq_exception(frame: &mut TrapFrame) {
+    // The tick is fully ended before the scheduler looks at it (ADR 0037).
+    if crate::interrupts::handle_irq() {
+        crate::threads::on_tick(frame);
+    }
+}
+
+/// The running thread gives up the rest of its slice. Everything it had live
+/// comes back when it is resumed.
+pub fn yield_now() {
+    // SAFETY: the synchronous handler switches to another thread and returns
+    // here with every register restored. Memory may change meanwhile, so the
+    // asm is not `nomem`.
+    unsafe { asm!("svc #{imm}", imm = const SVC_YIELD, options(nostack)) };
+}
+
+/// Where a thread's entry returns to: ends the thread.
+pub extern "C" fn exit_current_thread() -> ! {
+    loop {
+        // SAFETY: the handler frees the thread and never returns to it.
+        unsafe { asm!("svc #{imm}", imm = const SVC_EXIT, options(nostack)) };
+    }
 }
 
 unsafe extern "C" {
     fn exception_selftest() -> u64;
     fn interrupt_selftest() -> u64;
+    fn yield_selftest() -> u64;
+    fn yield_selftest_other() -> u64;
+    fn tick_switch_selftest() -> u64;
+    fn tick_switch_selftest_other() -> u64;
+}
+
+/// How the context test hands the processor to another thread.
+#[derive(Clone, Copy)]
+pub enum Handover {
+    /// The thread yields.
+    Yield,
+    /// The thread waits, IRQs unmasked, for a tick that ends its slice.
+    Tick,
+}
+
+/// Which of the two pattern sets of the context test to run: the boot thread
+/// and the thread it switches to use different values.
+#[derive(Clone, Copy)]
+pub enum Side {
+    Own,
+    Other,
+}
+
+/// Runs the context test of `exceptions.s` across a switch to another thread:
+/// registers, flags, `SP`, `SP_EL0` and the stack below `SP` loaded with the
+/// values of `side`, the handover, then a check that they are all back. True if
+/// anything was not. A tick handover returns after a `wfi` that may have woken
+/// without a switch; the caller counts switches.
+pub fn switch_selftest(handover: Handover, side: Side) -> bool {
+    // SAFETY: each of these saves and restores every register it changes, and
+    // the handover is an SVC or an interrupt that the kernel handles.
+    let failed = unsafe {
+        match (handover, side) {
+            (Handover::Yield, Side::Own) => yield_selftest(),
+            (Handover::Yield, Side::Other) => yield_selftest_other(),
+            (Handover::Tick, Side::Own) => tick_switch_selftest(),
+            (Handover::Tick, Side::Other) => tick_switch_selftest_other(),
+        }
+    };
+    failed != 0
 }
 
 /// Takes a breakpoint and checks that the interrupted code resumes with its

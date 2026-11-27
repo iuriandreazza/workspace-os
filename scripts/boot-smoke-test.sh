@@ -561,6 +561,54 @@ check_heap() {
     expect_once "heap: double free refused" "heap double free refusal"
 }
 
+# check_threads: the scheduler's boot test (ADR 0037) ran and reported it. The
+# order of the lines is the check, and none of it depends on the host's speed:
+# with the tick stopped three threads that yield run A B C A B C A B C, two that
+# pass a baton and never yield run A B A B A B and every pass was a switch by the
+# tick, and the context came back whole across a switch to a thread that loads
+# other values, by a yield and by the tick. The stacks are in their window with
+# the half below each unmapped, the policy was never refused, and once the boot
+# thread ended the idle thread ran.
+check_threads() {
+    local lines order line preemptions refused window checked
+    wait_for_line "threads: idle thread running, nothing else ready"
+    lines="$(plain_log | sed -n 's/^  kernel  .\{4\}  //p')"
+    expect_once "threads: scheduler started, round robin with a slice of 1 tick, idle thread ready" "scheduler start"
+    # The lines of each phase, whole, in the order the kernel printed them.
+    order="$(grep -E '^threads: cooperative [ABC] round [123]$' <<< "$lines" | sed 's/^threads: cooperative \(.\) round \(.\)$/\1\2/' | tr -d '\n')"
+    [[ "$order" == "A1B1C1A2B2C2A3B3C3" ]] || fail "the cooperative threads ran '$order', expected A1B1C1A2B2C2A3B3C3"
+    order="$(grep -E '^threads: baton [AB] round [123]$' <<< "$lines" | sed 's/^threads: baton \(.\) round \(.\)$/\1\2/' | tr -d '\n')"
+    [[ "$order" == "A1B1A2B2A3B3" ]] || fail "the baton threads ran '$order', expected A1B1A2B2A3B3"
+    # The phases come in this order: round robin, its context test, the baton,
+    # its context test, the stacks. Each marker is a whole line, seen once.
+    local previous=0 marker number
+    local context="on both sides: registers, flags, SP, SP_EL0 and the stack below SP"
+    for marker in \
+        "threads: cooperative order ABCABCABC with the tick stopped, [0-9]* yields" \
+        "threads: context intact across a switch to another thread, by a yield $context" \
+        "threads: IRQs are masked while the heap, a log line and the scheduler's state are held, and unmasked after" \
+        "threads: baton order ABABAB without a yield, [0-9]* switches by the tick" \
+        "threads: context intact across a switch to another thread, by the tick $context" \
+        "threads: [0-9]* stacks of 32 KiB read and write and never executed, the 32 KiB below each unmapped, window at 0x[0-9a-f]*"; do
+        [[ "$(grep -c "^$marker$" <<< "$lines" || true)" -eq 1 ]] || fail "'$marker' not seen exactly once as a whole line"
+        number="$(grep -n "^$marker$" <<< "$lines" | cut -d: -f1)"
+        [[ "$number" -gt "$previous" ]] || fail "'$marker' came out of order"
+        previous="$number"
+    done
+    line="$(sed -n 's/^threads: baton order ABABAB without a yield, \([0-9]*\) switches by the tick$/\1/p' <<< "$lines")"
+    [[ "$(wc -l <<< "$line")" -eq 1 && -n "$line" ]] || fail "baton report not found exactly once"
+    preemptions="$line"
+    [[ "$preemptions" -ge 4 ]] || fail "$preemptions switches by the tick for a baton passed six times, expected at least 4"
+    line="$(sed -n 's/^threads: \([0-9]*\) stacks of 32 KiB read and write and never executed, the 32 KiB below each unmapped, window at \(0x[0-9a-f]*\)$/\1 \2/p' <<< "$lines")"
+    [[ "$(wc -l <<< "$line")" -eq 1 && -n "$line" ]] || fail "stack report not found exactly once"
+    read -r checked window <<< "$line"
+    [[ "$checked" -eq 4 && "$((window))" -eq "$THREAD_STACK_BASE" ]] \
+        || fail "$checked stacks checked at $window, expected 4 at $(hex "$THREAD_STACK_BASE")"
+    refused="$(sed -n 's/^threads: policy refused \([0-9]*\) times, [0-9]* threads ended$/\1/p' <<< "$lines")"
+    [[ "$refused" == 0 ]] || fail "the policy was refused '$refused' times, expected 0"
+    expect_once "threads: idle thread running, nothing else ready" "idle thread"
+}
+
 # check_boot NAME QEMU_IMAGE_ARGS...
 check_boot() {
     set_gic_version "$@"
@@ -587,6 +635,7 @@ check_boot() {
     check_reclaim direct
     check_heap
     if [[ "$*" == *secure=on* ]]; then check_interrupts monitor "$@"; else check_interrupts "" "$@"; fi
+    check_threads
 
     stop_qemu
     echo "PASS ($boot_name): kernel booted and stayed up"
@@ -932,6 +981,7 @@ check_uefi_boot() {
     check_reclaim
     check_heap
     check_interrupts "" "${@:6}"
+    check_threads
 
     BOOT_TIMEOUT_SECONDS=10
     stop_qemu
@@ -1011,6 +1061,15 @@ device_gigabytes="$(sed -n 's/^pub const DEVICE_BASE: u64 = KERNEL_OFFSET + (\([
 [[ -n "$device_gigabytes" ]] || fail "DEVICE_BASE not found in kernelvm/src/lib.rs"
 DEVICE_BASE=$((KERNEL_OFFSET + (device_gigabytes << 30)))
 readonly DEVICE_BASE
+# The window of the kernel threads' stacks (ADR 0037), and how a slot is cut.
+thread_stack_gigabytes="$(sed -n 's/^pub const THREAD_STACK_BASE: u64 = KERNEL_OFFSET + (\([0-9]*\) << 30);$/\1/p' kernelvm/src/lib.rs)"
+[[ -n "$thread_stack_gigabytes" ]] || fail "THREAD_STACK_BASE not found in kernelvm/src/lib.rs"
+THREAD_STACK_BASE=$((KERNEL_OFFSET + (thread_stack_gigabytes << 30)))
+readonly THREAD_STACK_BASE
+THREAD_SLOT_SIZE="$(sed -n 's/^pub const THREAD_SLOT_SIZE: u64 = \([0-9]*\) << 10;$/\1/p' kernelvm/src/lib.rs)"
+[[ -n "$THREAD_SLOT_SIZE" ]] || fail "THREAD_SLOT_SIZE not found in kernelvm/src/lib.rs"
+THREAD_SLOT_SIZE=$((THREAD_SLOT_SIZE << 10))
+readonly THREAD_SLOT_SIZE
 
 # physical_symbol NAME: the physical address of a symbol, as a number.
 physical_symbol() {
@@ -1613,6 +1672,32 @@ nested_elf="$work_dir/nested-exception.elf"
 build_with_feature selftest-nested-exception "$nested_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
 check_panic nested-exception "$nested_elf" "nested exception on the exception stack: BRK (AArch64) (class 0x3c, iss 0x0000802"
+
+# A kernel thread that panics, and one that overflows its stack (ADR 0037): both
+# end in a report that names the thread. The overflow is a store just below the
+# stack of the thread in slot 2, in the half of the slot that is never mapped (a
+# level 3 translation fault on a store, DFSC 0b000111, WnR set: the syndrome ends
+# in 0x47), reported on the exception stack, so the canary the test left in the
+# stack of the thread in slot 1 is whole and no nested exception was reported.
+thread_panic_elf="$work_dir/thread-panic.elf"
+thread_overflow_elf="$work_dir/thread-overflow.elf"
+build_with_feature selftest-thread-panic "$thread_panic_elf"
+build_with_feature selftest-thread-overflow "$thread_overflow_elf"
+cargo build --quiet --target-dir "$TARGET_DIR"
+check_panic thread-panic "$thread_panic_elf" "selftest: a thread panicked"
+expect_once "panicked in thread 1" "report of the thread that panicked"
+overflow_slot=$((THREAD_STACK_BASE + 2 * THREAD_SLOT_SIZE))
+overflow_stack_bottom=$((overflow_slot + THREAD_SLOT_SIZE / 2))
+FAULT_ALSO="selftest: neighbouring thread stack intact"
+FAULT_ABSENT="nested exception"
+thread_text_range="$(symbol_of "$thread_overflow_elf" __image_start)..$(symbol_of "$thread_overflow_elf" __text_end)"
+thread_fault=(data\ abort 0x25 '0x[0-9a-f]{5}47' "$thread_text_range" "$(hex $((overflow_stack_bottom - 4096)))..$(hex "$overflow_stack_bottom")")
+check_fault thread-overflow "${thread_fault[@]}" -kernel "$thread_overflow_elf"
+expect_once "panicked in thread 2" "report of the thread that overflowed its stack"
+check_fault thread-overflow-el2 "${thread_fault[@]}" -machine virtualization=on -kernel "$thread_overflow_elf"
+expect_once "panicked in thread 2" "report of the thread that overflowed its stack at EL2"
+FAULT_ALSO=""
+FAULT_ABSENT=""
 
 # Write-xor-execute (ADR 0019): a write to the kernel's code, a jump into
 # constants and a jump into data each end in a reported fault, in every way the
