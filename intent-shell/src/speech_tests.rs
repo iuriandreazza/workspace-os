@@ -284,10 +284,22 @@ fn what_a_server_writes_in_an_error_reaches_the_person_as_one_escaped_capped_lin
 }
 
 #[test]
-fn the_recogniser_is_told_the_language_of_the_voice_that_answers() {
+fn the_recogniser_is_told_the_language_of_a_named_voice_else_the_reply_language_else_none() {
     // A SOUL that lists en first, a personality that picks a Portuguese voice.
-    let persona = persona_with("format: 2\nvoice: cadu\n");
-    assert_eq!(persona.spoken_voice().language, "pt-BR");
+    assert_eq!(
+        persona_with("format: 2\nvoice: cadu\n").listen_language(),
+        Some("pt-BR")
+    );
+    assert_eq!(
+        persona_with("format: 1\nname: Dex\n").listen_language(),
+        Some("en")
+    );
+    assert_eq!(
+        persona_with("format: 1\nlanguage: pt-BR\n").listen_language(),
+        Some("pt-BR")
+    );
+    let anything = Soul::parse("format: 1\npreset: warm-didactic\nlanguages: any\n").unwrap();
+    assert_eq!(anything.persona().listen_language(), None);
 }
 
 #[test]
@@ -692,6 +704,7 @@ fn silent() -> (String, std::thread::JoinHandle<()>) {
 fn a_server_that_never_answers_ends_each_call_at_its_timeout_and_the_microphone_reopens() {
     let (address, held) = silent();
     let short = Duration::from_millis(300);
+    let started = std::time::Instant::now();
     let whisper = WhisperClient::new(&address).unwrap().with_timeout(short);
     assert!(
         whisper
@@ -707,6 +720,12 @@ fn a_server_that_never_answers_ends_each_call_at_its_timeout_and_the_microphone_
             .synthesize("pt_BR-cadu-medium", "x")
             .unwrap_err()
             .contains("too long")
+    );
+    // Four calls at 300 ms each, not at the five seconds of a quick call.
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
     );
     // Through the mouth and its thread: one line, and the microphone is open again.
     let (reported_tx, reported) = channel();

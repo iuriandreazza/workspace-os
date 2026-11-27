@@ -602,6 +602,14 @@ impl Persona {
         self.language.as_deref().or(self.soul_language.as_deref())
     }
 
+    /// The language the person is expected to speak: that of the voice they
+    /// named, else the reply language, else none (the recogniser then detects it).
+    pub fn listen_language(&self) -> Option<&str> {
+        self.voice
+            .map(|voice| voice.language)
+            .or_else(|| self.reply_language())
+    }
+
     /// The voice the replies are spoken with: the one the personality names,
     /// else the first of the list for the reply language, chosen by code.
     pub fn spoken_voice(&self) -> &'static SpokenVoice {

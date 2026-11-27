@@ -153,6 +153,10 @@ pub struct State {
     prompt: &'static str,
     /// Whether `--listen` was given: only then is there a microphone key.
     listening: bool,
+    /// Until when Enter and the microphone key are ignored: a key still held
+    /// from stopping the recording must not send what was just heard, or start
+    /// the next recording.
+    quiet_until_ms: u64,
 }
 
 /// A key press meant as an answer: a fresh press (not a repeat or a release)
@@ -189,6 +193,7 @@ impl State {
             submit_label: "asking the model",
             prompt: "intent> ",
             listening: false,
+            quiet_until_ms: 0,
         }
     }
 
@@ -388,6 +393,9 @@ impl State {
         let talk = key.code == KeyCode::Char('t') && control;
         match self.mode {
             Mode::Input if talk => {
+                if self.clock_ms < self.quiet_until_ms {
+                    return Some(Effect::Nothing);
+                }
                 self.busy("listening");
                 Some(Effect::Listen(Listen::Start))
             }
@@ -428,6 +436,7 @@ impl State {
         }
         self.mode = Mode::Input;
         self.scroll = 0;
+        self.quiet_until_ms = self.clock_ms + DWELL_MS;
         match heard {
             Ok(text) => {
                 if !self.input.is_empty() {
@@ -451,6 +460,9 @@ impl State {
                 self.input.pop();
             }
             KeyCode::Enter => {
+                if self.clock_ms < self.quiet_until_ms {
+                    return Effect::Nothing;
+                }
                 let request = std::mem::take(&mut self.input).trim().to_owned();
                 if request.is_empty() {
                     return Effect::Nothing;
@@ -1428,6 +1440,8 @@ mod tests {
         assert_eq!(state.input, "list downloads");
         // Nothing was submitted by hearing it: the person reads, may edit, and presses Enter.
         assert!(state.blocks.iter().all(|b| !matches!(b, Block::Request(_))));
+        // A person reads it for longer than the gap that ignores a held key.
+        state.clock_ms += DWELL_MS;
         type_text(&mut state, "!");
         assert_eq!(
             state.on_key(press(KeyCode::Enter)),
@@ -1545,5 +1559,28 @@ mod tests {
             (state.scroll, state.asked_ms, state.forced_quit),
             (0, 1_000, false)
         );
+    }
+
+    #[test]
+    fn a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it() {
+        for stop in [press(KeyCode::Enter), ctrl('t')] {
+            let mut state = listening_state();
+            talking(&mut state);
+            state.on_key(stop);
+            // The transcript lands while the key is still down.
+            state.on_event(Event::Heard(Ok("list downloads".to_owned())));
+            assert_eq!(state.on_key(press(KeyCode::Enter)), Effect::Nothing);
+            assert_eq!(state.on_key(ctrl('t')), Effect::Nothing);
+            assert_eq!(
+                (state.mode.clone(), state.input.as_str()),
+                (Mode::Input, "list downloads")
+            );
+            // After a quiet gap Enter sends it, and the key works again.
+            state.clock_ms += DWELL_MS;
+            assert_eq!(
+                state.on_key(press(KeyCode::Enter)),
+                Effect::Submit("list downloads".to_owned())
+            );
+        }
     }
 }

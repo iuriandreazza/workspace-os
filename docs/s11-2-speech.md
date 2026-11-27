@@ -217,33 +217,53 @@ with `--plain`.
 ## Mutations
 
 Every new test was confirmed by breaking the behaviour it holds and running the
-unit tests (the same ones the gate runs): all 27 breaks below made them fail.
+unit tests (the same ones the gate runs): each break below made the named test
+fail, and the code was put back. The list is the second pass, after review round 1
+(the first pass, 27 breaks, only recorded that something failed).
 
-| Break | Holds |
+| Break | Failing test |
 |---|---|
-| personality-language rule never fires | contradiction with the personality's language |
-| SOUL-language rule never fires | contradiction with the SOUL's languages |
-| the voice id is added to the prompt | the voice never reaches a prompt |
-| the voice is added to the persona the log records | the voice never reaches the log |
-| default voice ignores the language | the voice for the reply language |
-| no check that the voice is installed | no silent fallback to Piper's default voice |
-| the ear ignores that the system is speaking | the system does not hear itself |
-| a queued reply does not shut the microphone | same |
-| a played reply never reopens it | same |
-| the transcript is not escaped | the transcript is untrusted text |
-| silence tags are text | nothing heard is not a request |
-| every request is marked as spoken / none is | the mark in the log |
-| any address is accepted / a name is resolved | no network |
-| a transcript is taken outside the wait for it | speech never answers a question |
-| a transcript is also pushed as a request | it waits for Enter |
-| Stop is accepted at once after Start | a held key does not stop the recording |
-| Ctrl-T works in every mode | the microphone key does nothing at a question |
-| `--speak --no-reply` / `--listen --no-model` accepted | flags that do nothing are refused |
-| a cut HTTP answer is accepted | a truncated WAV is not played |
-| the request is spoken in place of the reply | only the reply is spoken |
-| the failure of the voice is not printed (plain) | a failure of speech is a line |
-| the SOUL reads format 2 / format 1 accepts `voice` | the formats |
-| the all-zero recording is accepted | the microphone permission message |
+| personality-language rule never fires | `speech_tests::a_voice_that_does_not_match_the_personalitys_own_language_contradicts_it` |
+| SOUL-language rule never fires | `speech_tests::a_voice_in_a_language_the_soul_does_not_allow_contradicts_it` |
+| the voice is added to the prompt | `speech_tests::the_voice_never_reaches_a_prompt_the_facts_or_the_persona_the_log_records` |
+| the voice is added to the persona the log records | `speech_tests::the_default_persona_describes_itself_as_it_did_before_voices_existed`; `speech_tests::the_voice_never_reaches_a_prompt_the_facts_or_the_persona_the_log_records` |
+| the default voice ignores the language | `speech_tests::a_personality_with_no_voice_is_spoken_in_the_first_voice_of_the_reply_language` |
+| no check that the voice is installed | `plain::tests::a_reply_is_spoken_only_with_a_mouth_and_a_failure_is_one_printed_line`; `speech_tests::a_voice_missing_on_the_real_adapter_is_refused_before_anything_is_synthesised` |
+| the ear ignores that the system is speaking | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
+| a queued reply does not shut the microphone | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played`; `tui::tests::a_root_panel_a_table_and_a_verdict_are_never_spoken_in_place_of_text` |
+| a played reply never reopens the microphone | `speech_tests::a_failure_while_speaking_is_reported_and_reopens_the_microphone`; `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
+| transcript not escaped | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped`; `speech_tests::what_was_heard_is_one_escaped_line_with_the_reply_language_passed_on` |
+| tags before the speech are kept | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
+| tags after the speech are kept | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
+| every request is marked as spoken | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
+| no request is marked as spoken | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech`; `tui::tests::a_spoken_request_becomes_a_validated_plan_and_the_answer_is_spoken_back` |
+| any address is accepted | `speech_tests::only_an_address_on_this_machine_is_accepted_and_names_are_refused` |
+| a name is resolved | `speech_tests::only_an_address_on_this_machine_is_accepted_and_names_are_refused` |
+| a transcript is taken outside the wait for it | `tui::state::tests::a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it`; `tui::state::tests::a_speech_note_neither_scrolls_nor_restarts_a_question_nor_cancels_a_warning` |
+| a transcript is also pushed as a request | `tui::state::tests::what_was_heard_waits_in_the_input_line_and_is_sent_only_by_enter` |
+| stop accepted at once after start | `tui::state::tests::a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it` |
+| Ctrl-T works in every mode | `tui::state::tests::a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it`; `tui::state::tests::a_transcript_never_answers_a_question_and_never_enters_any_other_mode` |
+| `--speak --no-reply` accepted | `tests::speech_flags_that_could_do_nothing_are_refused_not_ignored` |
+| `--listen` with `--no-model` accepted | `tests::speech_flags_that_could_do_nothing_are_refused_not_ignored` |
+| a cut HTTP answer is accepted | `model::tests::an_answer_shorter_than_its_length_is_cut_short`; `speech_tests::what_piper_answers_must_be_audio_and_whole` |
+| the request is spoken in place of the reply | `tui::tests::a_root_panel_a_table_and_a_verdict_are_never_spoken_in_place_of_text`; `tui::tests::a_spoken_request_becomes_a_validated_plan_and_the_answer_is_spoken_back` |
+| the failure of the voice is not printed (plain) | `model::tests::nothing_listening_is_an_error_at_once`; `plain::tests::a_reply_is_spoken_only_with_a_mouth_and_a_failure_is_one_printed_line` |
+| the SOUL reads format 2 | `soul_tests::the_format_is_closed_and_versioned_and_every_error_says_where`; `soul_tests::a_soul_that_cannot_be_used_gives_the_default_and_a_message_that_says_why` |
+| format 1 accepts `voice` | `soul_tests::the_format_is_closed_and_versioned_and_every_error_says_where`; `speech_tests::a_voice_needs_format_two_and_a_name_from_the_list` |
+| the all-zero recording is accepted | `audio::tests::silence_and_a_blip_are_refused_with_a_reason_and_speech_is_wrapped` |
+| error text is not escaped | `speech_tests::what_a_server_writes_in_an_error_reaches_the_person_as_one_escaped_capped_line` |
+| `pt-BR` sent to the recogniser as is | `speech_tests::a_request_for_the_recogniser_is_one_multipart_file_and_its_text_comes_back` |
+| anything is audio | `speech_tests::what_piper_answers_must_be_audio_and_whole` |
+| a transcript replaces what was typed | `tui::state::tests::a_transcript_is_added_to_what_was_typed_not_in_place_of_it` |
+| the hint hides nothing/shows no microphone key | `tui::state::tests::without_listen_there_is_no_microphone_key_and_the_hint_is_unchanged` |
+| escaped_line does not escape | `reply_tests::a_hostile_reply_changes_no_decision_runs_nothing_and_cannot_pass_for_the_screen`; `reply_tests::the_text_is_one_line_capped_in_characters_and_escaped` |
+| speech notes and late transcripts reset scroll, quiet gap and warning | `tui::state::tests::a_speech_note_neither_scrolls_nor_restarts_a_question_nor_cancels_a_warning` |
+| utterances are not joined in the mark | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
+| the hung-server timeouts are ignored | `speech_tests::a_server_that_never_answers_ends_each_call_at_its_timeout_and_the_microphone_reopens` |
+| stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
+| a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
+| a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
+| the recogniser language ignores the named voice | `speech_tests::the_recogniser_is_told_the_language_of_a_named_voice_else_the_reply_language_else_none` |
 
 ## Run it
 
@@ -342,6 +362,10 @@ the speaker):
 - The recogniser is told the reply language (`pt` for `pt-BR`), which is the
   language the person is expected to speak; a person who speaks another one
   than the replies are written in gets a worse transcript.
+- The mark `input: speech` on a request compares the whole line with what was
+  heard: a line that mixes typed and spoken words, or one where a heard part was
+  deleted and another heard, is not marked (the `transcript` events are in the
+  log either way), and a line typed to equal what was heard is.
 - The servers are found by a fixed loopback port, with no authentication. On a
   machine with several users, another user who binds `8178` or `5178` first
   receives the microphone audio or the reply text of a shell that has not

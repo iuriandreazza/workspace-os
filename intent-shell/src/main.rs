@@ -235,9 +235,9 @@ fn speech_setup(
     }
     let mut problems = Vec::new();
     let speaking = Speaking::default();
-    // The recogniser expects the language of the voice that answers: it is the
-    // language the person and the shell speak to each other in.
-    let language = persona.map(|persona| persona.spoken_voice().language.to_owned());
+    let language = persona
+        .and_then(Persona::listen_language)
+        .map(str::to_owned);
     let mut ear = None;
     if options.listen {
         let client = WhisperClient::new(options.whisper.as_deref().unwrap_or(WHISPER_ADDRESS))?;

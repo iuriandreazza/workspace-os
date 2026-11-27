@@ -1069,6 +1069,8 @@ mod tests {
         listen_tx.send(Listen::Stop).unwrap();
         let shown = events.recv_timeout(Duration::from_secs(10)).unwrap();
         state.on_event(shown);
+        // A person reads what was heard before pressing Enter.
+        state.clock_ms += state::DWELL_MS;
         // Heard: it waits in the input line until the person presses Enter.
         let Effect::Submit(request) = state.on_key(enter) else {
             panic!("Enter did not send what was heard");

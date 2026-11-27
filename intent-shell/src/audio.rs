@@ -300,10 +300,11 @@ mod mac {
         fn stop(&mut self) -> Option<Arc<Recording>> {
             let running = self.running.take()?;
             // SAFETY: `queue` was created by `AudioQueueNewInput` and is
-            // disposed once. Stopping and disposing immediately means the
-            // callback has returned and will not run again.
+            // disposed once. A stop that is not immediate delivers the buffer
+            // being filled (the last words), and returns when it is done;
+            // disposing then means the callback will not run again.
             unsafe {
-                AudioQueueStop(running.queue, 1);
+                AudioQueueStop(running.queue, 0);
                 AudioQueueDispose(running.queue, 1);
             }
             // SAFETY: the pointer came from `Arc::into_raw` in `start` and the
@@ -412,6 +413,31 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("ws-audio-stale-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let old = std::time::SystemTime::now() - STALE_AFTER * 2;
+        let make = |name: String, age: Option<std::time::SystemTime>| {
+            let file = fs::File::create(dir.join(&name)).unwrap();
+            if let Some(time) = age {
+                file.set_modified(time).unwrap();
+            }
+            name
+        };
+        let own = format!("reply-{}-0.wav", std::process::id());
+        let stale = make("reply-1-0.wav".to_owned(), Some(old));
+        let recent = make("reply-2-0.wav".to_owned(), None);
+        let mine_old = make(own, Some(old));
+        let other = make("notes.txt".to_owned(), Some(old));
+        remove_stale(&dir);
+        assert!(!dir.join(&stale).exists());
+        for kept in [&recent, &mine_old, &other] {
+            assert!(dir.join(kept).exists(), "{kept}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn the_wav_header_describes_the_samples_it_carries() {
