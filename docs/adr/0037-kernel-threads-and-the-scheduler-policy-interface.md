@@ -135,11 +135,14 @@ different frame":
 - **A new thread** is a synthesised frame: `ELR` = its entry, `x0` = its
   argument, `SP` = the top of its stack (16-byte aligned, asserted), `x30` = a return
   trampoline that executes the exit `svc`, `x29` = 0, `SP_EL0` = 0, and `SPSR`
-  taken from the boot thread's own `SPSR` (sampled once, by an SVC, at start)
-  with the flags cleared, `M` forced to `EL1h`, **only IRQs unmasked** (debug,
-  SError and FIQ stay masked: no handler for them exists), so that every `-cpu max` bit of PSTATE
-  (PAN, SSBS, BTYPE ...) is the one the running kernel already has. Creating
-  a thread asserts the kernel runs at EL1. The first run is an `eret` into it.
+  = `EL1h` with **only IRQs unmasked** (debug, SError and FIQ stay masked: no
+  handler for them exists) and every other PSTATE bit clear (PAN, SSBS, DIT,
+  BTYPE ...): the kernel depends on none of them, and the first exception taken
+  in the thread sets what `SCTLR_EL1` says. A first version sampled the boot
+  thread's `SPSR` with an SVC to inherit those bits; on every machine of the gate
+  the sample was the same fixed value, so nothing could show the mechanism
+  worked, and it was dropped. The scheduler starts only at EL1 (`init` asserts
+  it). The first run is an `eret` into it.
 
 Why one format: ADR 0026's entry was built so that no handler writes on the
 interrupted stack (an overflowing stack is reported intact); a design that
@@ -278,8 +281,10 @@ it re-initialises the controller, calls the EL3 monitor and reruns the spurious
 check. A new `interrupts::resume` only sets the next deadline, starts the timer
 and unmasks IRQs, the inverse of `stop`. The interrupt test still ends in
 `stop()`; the scheduler's boot test calls `resume` for the preemptive phase and
-`stop` at its end, so the boots that follow (the ones that end in a fault or in
-`halt`) are unchanged.
+`stop` at its end, so the boots that follow run with the tick stopped as before.
+A boot that reaches its end now ends the boot thread (it replaces `halt`) and
+the idle thread parks the core with IRQs masked; a boot that ends in a fault
+still ends in the panic handler, which now names the thread.
 
 ### The gate
 
@@ -296,8 +301,9 @@ depends on time:
    it is its own again. It never yields, so every handover is a tick-driven
    preemption. The order `A B A B A B` is fixed by the baton, not by the host's
    speed; a bound counted in the timer's counter turns a hang into a report. The
-   gate also checks that the kernel counted at least as many tick-driven
-   switches as handovers.
+   gate also checks that the kernel counted at least four tick-driven
+   switches: A, B, A and B each wait for the baton, which only a tick can end
+   (the structural minimum; a slow host sees more).
 3. **Context across a switch.** The `context_selftest` macro gets two triggers
    that switch to a thread which loads different values in every register,
    the flags and `SP_EL0`, and back: one cooperative, one by the tick. The

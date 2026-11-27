@@ -13,12 +13,12 @@ mod selftest;
 
 use alloc::boxed::Box;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use kernelvm::{PAGE_SIZE, THREAD_STACK_SIZE, thread_stack};
 use sched::{Core, MAX_THREADS, Policy, Switch, ThreadId, ThreadIndex};
 
-use crate::arch::{self, IrqGuard, SVC_EXIT, SVC_SAMPLE_PSTATE, SVC_YIELD, TrapFrame, mmu};
+use crate::arch::{self, IrqGuard, SVC_EXIT, SVC_YIELD, TrapFrame, mmu};
 use crate::heap;
 
 pub use sched::{Counters, IDLE};
@@ -110,9 +110,6 @@ static SCHEDULER: Exclusive = Exclusive {
 /// The index of the running thread, for the panic report, which cannot take the
 /// scheduler.
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
-/// What a running kernel thread's `SPSR` looks like, taken once at `init`.
-static RUNNING_PSTATE: AtomicU64 = AtomicU64::new(0);
-static PSTATE_SAMPLED: AtomicBool = AtomicBool::new(false);
 
 /// The running thread's index.
 pub fn current_index() -> ThreadIndex {
@@ -135,10 +132,6 @@ pub fn init(policy: Box<dyn Policy>) {
         arch::current_el() == 1,
         "threads: the kernel runs at EL1 once the boot code has dropped there"
     );
-    // The boot thread's own PSTATE is what a new thread starts from, flags,
-    // DAIF and mode aside.
-    // SAFETY: the sample SVC is handled by `handle_svc`.
-    unsafe { core::arch::asm!("svc #{imm}", imm = const SVC_SAMPLE_PSTATE, options(nostack)) };
     SCHEDULER.with(|scheduler| {
         assert!(scheduler.policy.is_none(), "the scheduler started twice");
         scheduler.policy = Some(policy);
@@ -149,15 +142,14 @@ pub fn init(policy: Box<dyn Policy>) {
 
 /// What the idle thread does when nothing is ready.
 extern "C" fn idle_main(_: usize) {
-    // With the tick stopped nothing wakes this thread on purpose: IRQs stay masked
-    // as `halt` left them, so an interrupt firmware left enabled cannot spin it.
+    // With the tick stopped nothing wakes this thread on purpose: IRQs are masked,
+    // as `halt` masks them, so an interrupt firmware left enabled cannot spin it.
     if !arch::timer::is_running() {
         arch::disable_interrupts();
     }
     selftest::idle_reached();
     loop {
-        // SAFETY: `wfi` only waits for an interrupt.
-        unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
+        arch::wait_for_interrupt();
     }
 }
 
@@ -184,7 +176,6 @@ fn prepare_frame(
         entry as usize,
         argument,
         stack.end,
-        RUNNING_PSTATE.load(Ordering::Relaxed),
         arch::exit_current_thread as *const () as usize,
     ))
 }
@@ -246,13 +237,6 @@ pub fn on_tick(frame: &mut TrapFrame) {
 /// else is not handled here.
 pub fn handle_svc(immediate: u64, frame: &mut TrapFrame) -> bool {
     match immediate {
-        SVC_SAMPLE_PSTATE => {
-            // Once, at `init`: another sample would change every later thread's PSTATE.
-            if PSTATE_SAMPLED.swap(true, Ordering::Relaxed) {
-                return false;
-            }
-            RUNNING_PSTATE.store(frame.spsr(), Ordering::Relaxed);
-        }
         SVC_YIELD => SCHEDULER.with(|scheduler| {
             let Scheduler { core, policy, .. } = &mut *scheduler;
             let policy = policy
@@ -278,8 +262,5 @@ pub fn handle_svc(immediate: u64, frame: &mut TrapFrame) -> bool {
 /// The end of the boot thread's work: it ends, and the idle thread keeps the
 /// core. Nothing returns here.
 pub fn retire_boot_thread() -> ! {
-    loop {
-        // SAFETY: the handler frees the boot thread's entry and never returns to it.
-        unsafe { core::arch::asm!("svc #{imm}", imm = const SVC_EXIT, options(nostack)) };
-    }
+    arch::exit_current_thread()
 }

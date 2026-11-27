@@ -28,9 +28,6 @@ pub struct TrapFrame {
 /// clear, and debug, SError and FIQ masked: no handler for those exists, and
 /// firmware or the boot code left them masked.
 const SPSR_EL1H: u64 = 0b0101 | (0b1101 << 6);
-/// The bits of `SPSR_EL1` a new thread takes from a running one: all but the
-/// flags (31:28), DAIF (9:6) and the mode (4:0).
-const SPSR_INHERITED: u64 = !((0xf << 28) | (0xf << 6) | 0x1f);
 
 impl TrapFrame {
     pub const ZERO: Self = Self {
@@ -45,17 +42,11 @@ impl TrapFrame {
     };
 
     /// The frame of a thread that has not run yet: it starts at `entry` with
-    /// `argument` in `x0`, on `stack_top`, with IRQs unmasked, and returning
-    /// from `entry` goes to `returns_to`. `running_pstate` is the `SPSR` of
-    /// kernel code that is running (`SVC_SAMPLE_PSTATE`): whatever the cores
-    /// of `-cpu max` put in PSTATE besides the flags, DAIF and mode is kept.
-    pub fn new_thread(
-        entry: usize,
-        argument: usize,
-        stack_top: u64,
-        running_pstate: u64,
-        returns_to: usize,
-    ) -> Self {
+    /// `argument` in `x0`, on `stack_top`, with only IRQs unmasked, and returning
+    /// from `entry` goes to `returns_to`. Every other PSTATE bit (PAN, SSBS, DIT,
+    /// BTYPE ...) starts clear: the kernel depends on none of them, and the
+    /// first exception taken in the thread sets what `SCTLR_EL1` says.
+    pub fn new_thread(entry: usize, argument: usize, stack_top: u64, returns_to: usize) -> Self {
         assert!(
             stack_top.is_multiple_of(16),
             "a thread's stack pointer must be 16-byte aligned"
@@ -65,13 +56,8 @@ impl TrapFrame {
         frame.x[30] = returns_to as u64;
         frame.elr = entry as u64;
         frame.sp = stack_top;
-        frame.spsr = (running_pstate & SPSR_INHERITED) | SPSR_EL1H;
+        frame.spsr = SPSR_EL1H;
         frame
-    }
-
-    /// The saved `SPSR_EL1`.
-    pub fn spsr(&self) -> u64 {
-        self.spsr
     }
 }
 
@@ -108,8 +94,6 @@ const INSTRUCTION_BYTES: u64 = 4;
 /// unhandled. An SVC from EL0 arrives on another vector.
 pub const SVC_YIELD: u64 = 0x100;
 pub const SVC_EXIT: u64 = 0x101;
-/// Hands the caller's saved `SPSR` to the scheduler, once, at start.
-pub const SVC_SAMPLE_PSTATE: u64 = 0x102;
 
 /// The breakpoint whose handler takes another exception, on the exception stack.
 #[cfg(feature = "selftest-nested-exception")]

@@ -131,8 +131,8 @@ pub use exceptions::raise_unhandled_class;
 #[cfg(feature = "selftest-unhandled-vector")]
 pub use exceptions::raise_unhandled_vector;
 pub use exceptions::{
-    Handover, SVC_EXIT, SVC_SAMPLE_PSTATE, SVC_YIELD, Side, TrapFrame, current_el,
-    exit_current_thread, run_interrupt_selftest, run_selftest, switch_selftest, yield_now,
+    Handover, SVC_EXIT, SVC_YIELD, Side, TrapFrame, current_el, exit_current_thread,
+    run_interrupt_selftest, run_selftest, switch_selftest, yield_now,
 };
 
 /// The calls the boot code's monitor answers when the kernel was started at
@@ -236,6 +236,12 @@ impl Drop for IrqGuard {
             enable_interrupts();
         }
     }
+}
+
+/// Waits for an interrupt (or an event); returns when one arrives, masked or not.
+pub fn wait_for_interrupt() {
+    // SAFETY: `wfi` only waits for an interrupt.
+    unsafe { asm!("wfi", options(nomem, nostack, preserves_flags)) };
 }
 
 pub fn halt() -> ! {

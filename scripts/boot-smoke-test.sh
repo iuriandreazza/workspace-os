@@ -611,6 +611,9 @@ check_threads() {
         || fail "$checked stacks checked at $window, expected 4 at $(hex "$THREAD_STACK_BASE")"
     refused="$(sed -n 's/^threads: policy refused \([0-9]*\) times, [0-9]* threads ended$/\1/p' <<< "$lines")"
     [[ "$refused" == 0 ]] || fail "the policy was refused '$refused' times, expected 0"
+    # The idle thread keeps the core: the kernel did not panic after its first line.
+    qemu_is_running || fail "QEMU exited while the idle thread ran"
+    ! grep -qF "$PANIC_MARKER" "$serial_log" || fail "the kernel panicked while the idle thread ran"
 }
 
 # check_boot NAME QEMU_IMAGE_ARGS...
