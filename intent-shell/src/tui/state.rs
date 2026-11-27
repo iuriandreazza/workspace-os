@@ -329,7 +329,8 @@ impl State {
                 }
             }
         }
-        self.is_asking()
+        // What is aside draws no question, so it never discards the keys typed for one.
+        !aside && self.is_asking()
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Effect {
@@ -1582,5 +1583,16 @@ mod tests {
                 Effect::Submit("list downloads".to_owned())
             );
         }
+    }
+
+    #[test]
+    fn a_speech_note_at_a_question_does_not_ask_the_loop_to_discard_pending_keys() {
+        let mut state = asking_plan();
+        assert!(!state.on_event(Event::Note("▸ speech is off".to_owned())));
+        assert!(!state.on_event(Event::Heard(Ok("late".to_owned()))));
+        // A question drawn by the shell does.
+        assert!(state.on_event(Event::AskRoot {
+            panel: "p".to_owned()
+        }));
     }
 }

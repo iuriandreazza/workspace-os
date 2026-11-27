@@ -14,6 +14,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -214,6 +215,7 @@ fn worker(
         (Box::new(log), None)
     };
     let mut talker = None;
+    let mut closing = None;
     if let (Some(speech), Some(shared)) = (speech, shared) {
         if let Some(mouth) = speech.mouth {
             let notes = events.clone();
@@ -222,8 +224,10 @@ fn worker(
             }));
         }
         if let Some(ear) = speech.ear {
-            let (heard, language) = (events.clone(), speech.listen_language);
-            thread::spawn(move || listen(ear, language.as_deref(), &listens, &heard, shared));
+            let sink = Arc::new(Mutex::new(Some(events.clone())));
+            closing = Some(Closing(Arc::clone(&sink)));
+            let language = speech.listen_language;
+            thread::spawn(move || listen(ear, language.as_deref(), &listens, &sink, shared));
         }
     }
     let wires = Wires {
@@ -243,6 +247,22 @@ fn worker(
             .as_ref()
             .map(|(speaker, persona)| Voice { speaker, persona }),
     );
+    drop(closing);
+}
+
+/// Where the microphone's thread sends what it heard. The worker closes it when
+/// it ends, by returning or by a panic, so that the interface sees the end of
+/// the worker as it always did: the thread keeps no sender of the event channel alive.
+type Sink = Arc<Mutex<Option<Sender<Event>>>>;
+
+struct Closing(Sink);
+
+impl Drop for Closing {
+    fn drop(&mut self) {
+        if let Ok(mut sink) = self.0.lock() {
+            *sink = None;
+        }
+    }
 }
 
 /// The microphone's thread: records on the key, and puts what the recogniser
@@ -251,7 +271,7 @@ fn listen(
     mut ear: Ear,
     language: Option<&str>,
     commands: &Receiver<Listen>,
-    events: &Sender<Event>,
+    sink: &Sink,
     mut log: SharedLog,
 ) {
     for command in commands {
@@ -270,7 +290,11 @@ fn listen(
                 Ok(line)
             }),
         };
-        if events.send(Event::Heard(heard)).is_err() {
+        let sent = sink
+            .lock()
+            .ok()
+            .and_then(|open| open.as_ref().map(|events| events.send(Event::Heard(heard))));
+        if !matches!(sent, Some(Ok(()))) {
             return;
         }
     }
@@ -1056,8 +1080,9 @@ mod tests {
             speaking.clone(),
         );
         let listener = {
-            let (events, shared) = (events_tx.clone(), shared.clone());
-            thread::spawn(move || listen(ear, Some("pt-BR"), &listens, &events, shared))
+            let sink: Sink = Arc::new(Mutex::new(Some(events_tx.clone())));
+            let shared = shared.clone();
+            thread::spawn(move || listen(ear, Some("pt-BR"), &listens, &sink, shared))
         };
         let mut state = State::new("header".to_owned()).with_listening();
         state.clock_ms = 0;
@@ -1128,6 +1153,31 @@ mod tests {
             events: events.try_iter().collect(),
             speaking,
         }
+    }
+
+    #[test]
+    fn the_microphones_thread_keeps_no_event_sender_alive_once_the_worker_has_ended() {
+        let (events_tx, events) = channel();
+        let (_listen_tx, listens) = channel();
+        let sink: Sink = Arc::new(Mutex::new(Some(events_tx)));
+        let closing = Closing(Arc::clone(&sink));
+        let ear = Ear::new(
+            Box::new(FakeCapture::default()),
+            Box::new(FakeTranscriber::hearing("x")),
+            Speaking::default(),
+        );
+        let shared = SharedLog::new(Box::new(SharedMemory::default()));
+        // The thread is alive and waiting for the key, as with `--listen`.
+        thread::spawn(move || listen(ear, None, &listens, &sink, shared));
+        assert!(matches!(
+            events.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(closing);
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(5)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
     }
 
     fn ctrl_t() -> KeyEvent {
