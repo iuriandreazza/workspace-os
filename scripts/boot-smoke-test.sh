@@ -584,19 +584,22 @@ check_threads() {
     local previous=0 marker number
     local context="on both sides: registers, flags, SP, SP_EL0 and the stack below SP"
     for marker in \
-        "threads: cooperative order ABCABCABC with the tick stopped, [0-9]* yields" \
+        "threads: cooperative order ABCABCABC with the tick stopped, [0-9][0-9]* yields" \
         "threads: context intact across a switch to another thread, by a yield $context" \
         "threads: IRQs are masked while the heap, a log line and the scheduler's state are held, and unmasked after" \
         "threads: baton order ABABAB without a yield, [0-9]* switches by the tick" \
         "threads: context intact across a switch to another thread, by the tick $context" \
         "threads: [0-9]* stacks of 32 KiB read and write and never executed, the 32 KiB below each unmapped, window at 0x[0-9a-f]*" \
-        "threads: policy refused 0 times, [0-9]* threads ended" \
+        "threads: policy refused 0 times, 7 threads ended" \
         "threads: idle thread running, nothing else ready"; do
         [[ "$(grep -c "^$marker$" <<< "$lines" || true)" -eq 1 ]] || fail "'$marker' not seen exactly once as a whole line"
         number="$(grep -n "^$marker$" <<< "$lines" | cut -d: -f1)"
         [[ "$number" -gt "$previous" ]] || fail "'$marker' came out of order"
         previous="$number"
     done
+    # Three threads and the boot thread yield three rounds each: at least nine.
+    line="$(sed -n 's/^threads: cooperative order ABCABCABC with the tick stopped, \([0-9]*\) yields$/\1/p' <<< "$lines")"
+    [[ "$line" =~ ^[0-9]+$ && "$line" -ge 9 ]] || fail "the cooperative phase counted '$line' yields, expected at least 9"
     line="$(sed -n 's/^threads: baton order ABABAB without a yield, \([0-9]*\) switches by the tick$/\1/p' <<< "$lines")"
     [[ "$(wc -l <<< "$line")" -eq 1 && -n "$line" ]] || fail "baton report not found exactly once"
     preemptions="$line"
@@ -687,7 +690,8 @@ check_fault() {
     shift 6
     start_qemu "$name" "$@"
     for _ in $(seq 1 $((BOOT_TIMEOUT_SECONDS * 10))); do
-        grep -qF "fault address" "$serial_log" && break
+        # The report is complete once the line after it is: the thread line.
+        grep -qF "panicked in thread" "$serial_log" && break
         grep -qF "selftest: " "$serial_log" && grep -qF "$PANIC_MARKER" "$serial_log" && break
         qemu_is_running || fail "QEMU exited without the expected fault"
         sleep 0.1

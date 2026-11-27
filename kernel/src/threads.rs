@@ -149,6 +149,11 @@ pub fn init(policy: Box<dyn Policy>) {
 
 /// What the idle thread does when nothing is ready.
 extern "C" fn idle_main(_: usize) {
+    // With the tick stopped nothing wakes this thread on purpose: IRQs stay masked
+    // as `halt` left them, so an interrupt firmware left enabled cannot spin it.
+    if !arch::timer::is_running() {
+        arch::disable_interrupts();
+    }
     selftest::idle_reached();
     loop {
         // SAFETY: `wfi` only waits for an interrupt.

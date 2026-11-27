@@ -142,6 +142,10 @@ extern "C" fn context_other(handover: usize) {
 }
 
 pub fn idle_reached() {
+    assert!(
+        arch::timer::is_running() || arch::irqs_masked(),
+        "threads: the idle thread runs with IRQs unmasked and no tick"
+    );
     if !IDLE_REACHED.swap(true, Ordering::Relaxed) {
         let mut console = board::console();
         klog!(

@@ -257,7 +257,8 @@ fn check_spurious_is_counted() -> Result<(), Error> {
 
 /// Entered by the IRQ vector with the interrupted context saved, IRQs masked
 /// and the exception stack in use. It prints nothing and unmasks nothing: the
-/// console's SAFETY argument and the single exception stack both rest on that.
+/// single exception stack rests on the second, and a short handler keeps ticks
+/// from being missed.
 /// True when a tick was taken: what the tick means is for the caller (ADR 0037),
 /// after the interrupt has been ended.
 pub fn handle_irq() -> bool {

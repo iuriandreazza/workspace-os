@@ -2,7 +2,8 @@
 //
 // A synchronous exception or an IRQ taken from the kernel itself (current EL,
 // SP_ELx) saves the whole processor context, calls the Rust handler and
-// returns to the interrupted code. Every other entry is not handled yet and
+// returns to the code whose context is in the frame then: the interrupted
+// thread, or another one the scheduler put there (ADR 0037). Every other entry is not handled yet and
 // ends in a kernel panic that names the entry.
 //
 // Both run on their own stack (ADR 0026), never on the one they interrupted,

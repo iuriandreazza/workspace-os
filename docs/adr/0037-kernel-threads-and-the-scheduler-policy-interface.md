@@ -61,9 +61,9 @@ crate with no `unsafe` and no architecture code (`sched`, like `physmem` and
 `kernelheap`):
 
 ```rust
-pub trait Policy {
+pub trait Policy: Send {
     /// `ready` is never empty. `previous` is the thread that ran until now (it
-    /// is in `ready` unless it exited). `now` is `interrupts::ticks()`.
+    /// is in `ready` unless it exited or was the idle thread). `now` is `interrupts::ticks()`.
     fn pick(&mut self, ready: &ReadySet, previous: Option<ThreadIndex>, now: u64) -> Choice;
 }
 pub struct Choice { pub thread: ThreadIndex, pub slice_ticks: u32 }
@@ -109,7 +109,9 @@ ticks, `interrupts::ticks()` is the clock the policy sees. **The period is fixed
 at 10 ms by the kernel** (ADR 0035's `TICK_HZ`); a policy chooses a slice in
 ticks within the kernel's limits and cannot change the period. Changing it
 (tickless idle, a finer tick) is a kernel change that needs its own ADR. The
-tick runs while any thread runs, the idle thread included.
+tick runs under any thread while it is started; the boot test stops it at its
+end (see "Sequencing the tick"), and with it stopped the idle thread masks IRQs
+and parks, as `halt` did.
 
 ### A thread's saved state is always a `TrapFrame`
 
@@ -226,7 +228,8 @@ in it.
   abort, not one of the SVCs, so it ends in the existing report ("unhandled
   synchronous exception ... fault address"), now naming the thread. The report
   runs on the exception stack, so the neighbouring slot is untouched; a boot
-  checks a canary written at the top of the lower neighbour from the panic path,
+  checks a canary written in the lower neighbour's stack (a page below its top
+  page) from the panic path,
   as `stack_probe_intact` does for `.bss`. The boot thread keeps its own stack
   and guard (ADR 0026).
 - Limit: a frame the compiler does not probe and that is larger than 32 KiB
@@ -237,13 +240,14 @@ in it.
 
 - **The table is static**, `MAX_THREADS` entries, each holding its state
   (`Free`, `Reserved` while a thread is being prepared, `Ready`, `Running`; a
-  thread that ended is `Free` with a new generation), a generation, the saved frame and the
-  remaining slice. It is not on the heap because handlers must not allocate or
+  thread that ended is `Free` with a new generation) and a generation; the saved
+  frames sit beside the table in the kernel and the remaining slice in the core. It is not on the heap because handlers must not allocate or
   free (the heap's lock is held by the code a tick may have interrupted).
   `ThreadId` carries the generation, so an id kept after the thread exited and
   the entry was reused is reported as finished and never names the new thread.
-  `spawn` returns `None` when the table or the slot pool is full: it reports,
-  it does not wait.
+  `spawn` returns an error (`TableFull`, `NoStack`) when the table is full or a
+  stack cannot be mapped: it reports, it does not wait. A slot is the lowest free
+  table index (no separate free list).
 - **The boot thread** is adopted as thread 0: it keeps the boot stack and
   becomes `Running`; its frame is filled the first time it is switched away
   from. `kernel_main` stays `-> !`.
@@ -337,7 +341,8 @@ see the gate fail.
 - `TPIDR_EL1` cannot hold a per-core pointer until the entry code stops using it
   as scratch.
 - No blocking, sleeping or wakeup yet: the scheduler's states are `Ready`,
-  `Running`, `Exited`. Blocking comes with IPC (K9), and with it the policy may
+  `Running`, with `Reserved` while a thread is prepared and an ended thread back
+  to `Free`. Blocking comes with IPC (K9), and with it the policy may
   need to know why a thread is not ready.
 - A policy cannot be swapped while running until P3 designs it, and a policy
   cannot see per-thread facts (priority, time run) until P1 does.

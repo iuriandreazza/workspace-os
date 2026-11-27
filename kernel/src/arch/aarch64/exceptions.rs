@@ -278,7 +278,8 @@ extern "C" fn unhandled_exception(vector: u64, esr: u64, elr: u64, far: u64) -> 
 }
 
 /// Entered from `irq_exception_entry` with the context of the interrupted code
-/// saved on the exception stack. Returning resumes it where it was.
+/// saved on the exception stack. Returning resumes the thread whose frame
+/// the scheduler left in `frame`: the interrupted one, or another (ADR 0037).
 #[unsafe(no_mangle)]
 extern "C" fn handle_irq_exception(frame: &mut TrapFrame) {
     // The tick is fully ended before the scheduler looks at it (ADR 0037).
@@ -336,8 +337,9 @@ pub enum Side {
 /// anything was not. A tick handover returns after a `wfi` that may have woken
 /// without a switch; the caller counts switches.
 pub fn switch_selftest(handover: Handover, side: Side) -> bool {
-    // SAFETY: each of these saves and restores every register it changes, and
-    // the handover is an SVC or an interrupt that the kernel handles.
+    // SAFETY: each of these saves and restores every register it changes (the
+    // tick variants return with IRQs masked), and the handover is an SVC or an
+    // interrupt that the kernel handles.
     let failed = unsafe {
         match (handover, side) {
             (Handover::Yield, Side::Own) => yield_selftest(),
