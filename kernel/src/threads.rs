@@ -132,12 +132,14 @@ pub fn init(policy: Box<dyn Policy>) {
         arch::current_el() == 1,
         "threads: the kernel runs at EL1 once the boot code has dropped there"
     );
+    // The idle thread's frame first: once the policy is installed a tick may
+    // switch to it.
+    let idle = prepare_frame(IDLE, idle_main, 0).expect("a stack for the idle thread");
     SCHEDULER.with(|scheduler| {
         assert!(scheduler.policy.is_none(), "the scheduler started twice");
+        scheduler.frames[IDLE] = idle;
         scheduler.policy = Some(policy);
     });
-    let idle = prepare_frame(IDLE, idle_main, 0).expect("a stack for the idle thread");
-    SCHEDULER.with(|scheduler| scheduler.frames[IDLE] = idle);
 }
 
 /// What the idle thread does when nothing is ready.
