@@ -24,9 +24,10 @@ pub struct TrapFrame {
     _reserved: u64,
 }
 
-/// `SPSR_EL1` of a thread that starts: EL1 with `SP_ELx`, every DAIF bit and
-/// the flags clear.
-const SPSR_EL1H: u64 = 0b0101;
+/// `SPSR_EL1` of a thread that starts: EL1 with `SP_ELx`, IRQs unmasked, the flags
+/// clear, and debug, SError and FIQ masked: no handler for those exists, and
+/// firmware or the boot code left them masked.
+const SPSR_EL1H: u64 = 0b0101 | (0b1101 << 6);
 /// The bits of `SPSR_EL1` a new thread takes from a running one: all but the
 /// flags (31:28), DAIF (9:6) and the mode (4:0).
 const SPSR_INHERITED: u64 = !((0xf << 28) | (0xf << 6) | 0x1f);

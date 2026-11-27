@@ -54,9 +54,11 @@ struct Scheduler {
     frames: [TrapFrame; MAX_THREADS],
     /// `None` until `init`: a tick before then is not the scheduler's.
     policy: Option<Box<dyn Policy>>,
-    /// Which slots have their stack pages mapped. They are never unmapped: a
-    /// slot is reused by the next thread that gets its index.
-    stacks_mapped: u64,
+    /// How many pages of each slot's stack are mapped, counted from the bottom.
+    /// They are never unmapped: a slot is reused by the next thread that gets its
+    /// index, and a slot that was only partly mapped when frames ran out is
+    /// finished by the next spawn.
+    stack_pages: [u8; MAX_THREADS],
 }
 
 /// The scheduler's state, reached with IRQs masked.
@@ -94,7 +96,7 @@ static SCHEDULER: Exclusive = Exclusive {
         core: Core::new(),
         frames: [TrapFrame::ZERO; MAX_THREADS],
         policy: None,
-        stacks_mapped: 0,
+        stack_pages: [0; MAX_THREADS],
     }),
 };
 
@@ -103,6 +105,7 @@ static SCHEDULER: Exclusive = Exclusive {
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 /// What a running kernel thread's `SPSR` looks like, taken once at `init`.
 static RUNNING_PSTATE: AtomicU64 = AtomicU64::new(0);
+static PSTATE_SAMPLED: AtomicBool = AtomicBool::new(false);
 
 /// The running thread's index.
 pub fn current_index() -> ThreadIndex {
@@ -154,13 +157,16 @@ fn prepare_frame(
     argument: usize,
 ) -> Result<TrapFrame, SpawnError> {
     let stack = thread_stack(index);
-    let mapped = SCHEDULER.with(|scheduler| scheduler.stacks_mapped & (1 << index) != 0);
-    if !mapped {
-        let pages = heap::with_frames(|frames| mmu::map_pages(frames, stack.start, STACK_PAGES));
-        if pages != STACK_PAGES {
+    let have = SCHEDULER.with(|scheduler| usize::from(scheduler.stack_pages[index]));
+    if have < STACK_PAGES {
+        let next = stack.start + have as u64 * PAGE_SIZE;
+        let added = heap::with_frames(|frames| mmu::map_pages(frames, next, STACK_PAGES - have));
+        // Whatever was mapped stays mapped and is counted, so a later spawn
+        // continues from there and does not run into its own pages.
+        SCHEDULER.with(|scheduler| scheduler.stack_pages[index] = (have + added) as u8);
+        if have + added < STACK_PAGES {
             return Err(SpawnError::NoStack);
         }
-        SCHEDULER.with(|scheduler| scheduler.stacks_mapped |= 1 << index);
     }
     Ok(TrapFrame::new_thread(
         entry as usize,
@@ -228,7 +234,13 @@ pub fn on_tick(frame: &mut TrapFrame) {
 /// else is not handled here.
 pub fn handle_svc(immediate: u64, frame: &mut TrapFrame) -> bool {
     match immediate {
-        SVC_SAMPLE_PSTATE => RUNNING_PSTATE.store(frame.spsr(), Ordering::Relaxed),
+        SVC_SAMPLE_PSTATE => {
+            // Once, at `init`: another sample would change every later thread's PSTATE.
+            if PSTATE_SAMPLED.swap(true, Ordering::Relaxed) {
+                return false;
+            }
+            RUNNING_PSTATE.store(frame.spsr(), Ordering::Relaxed);
+        }
         SVC_YIELD => SCHEDULER.with(|scheduler| {
             let Scheduler { core, policy, .. } = &mut *scheduler;
             let policy = policy

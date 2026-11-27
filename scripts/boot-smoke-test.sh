@@ -589,7 +589,9 @@ check_threads() {
         "threads: IRQs are masked while the heap, a log line and the scheduler's state are held, and unmasked after" \
         "threads: baton order ABABAB without a yield, [0-9]* switches by the tick" \
         "threads: context intact across a switch to another thread, by the tick $context" \
-        "threads: [0-9]* stacks of 32 KiB read and write and never executed, the 32 KiB below each unmapped, window at 0x[0-9a-f]*"; do
+        "threads: [0-9]* stacks of 32 KiB read and write and never executed, the 32 KiB below each unmapped, window at 0x[0-9a-f]*" \
+        "threads: policy refused 0 times, [0-9]* threads ended" \
+        "threads: idle thread running, nothing else ready"; do
         [[ "$(grep -c "^$marker$" <<< "$lines" || true)" -eq 1 ]] || fail "'$marker' not seen exactly once as a whole line"
         number="$(grep -n "^$marker$" <<< "$lines" | cut -d: -f1)"
         [[ "$number" -gt "$previous" ]] || fail "'$marker' came out of order"
@@ -606,7 +608,6 @@ check_threads() {
         || fail "$checked stacks checked at $window, expected 4 at $(hex "$THREAD_STACK_BASE")"
     refused="$(sed -n 's/^threads: policy refused \([0-9]*\) times, [0-9]* threads ended$/\1/p' <<< "$lines")"
     [[ "$refused" == 0 ]] || fail "the policy was refused '$refused' times, expected 0"
-    expect_once "threads: idle thread running, nothing else ready" "idle thread"
 }
 
 # check_boot NAME QEMU_IMAGE_ARGS...

@@ -130,10 +130,11 @@ different frame":
   `selftest-unhandled-class` depends on it. An SVC from EL0 (K8) arrives on
   another vector, so there is no clash.
 - **A new thread** is a synthesised frame: `ELR` = its entry, `x0` = its
-  argument, `SP` = the top of its stack (16-byte aligned), `x30` = a return
+  argument, `SP` = the top of its stack (16-byte aligned, asserted), `x30` = a return
   trampoline that executes the exit `svc`, `x29` = 0, `SP_EL0` = 0, and `SPSR`
-  taken from the creating thread's own `SPSR` read at EL1 with the DAIF bits
-  cleared and `M` forced to `EL1h`, so that every `-cpu max` bit of PSTATE
+  taken from the boot thread's own `SPSR` (sampled once, by an SVC, at start)
+  with the flags cleared, `M` forced to `EL1h`, **only IRQs unmasked** (debug,
+  SError and FIQ stay masked: no handler for them exists), so that every `-cpu max` bit of PSTATE
   (PAN, SSBS, BTYPE ...) is the one the running kernel already has. Creating
   a thread asserts the kernel runs at EL1. The first run is an `eret` into it.
 
@@ -341,6 +342,11 @@ see the gate fail.
 - ADR 0033's layout table has one more row (the stack window); its decision is
   unchanged. ADR 0035's "stopped again until K7 starts it" is answered here.
 - A thread stuck with IRQs masked is not detected (see above).
+- `spawn` reports `NoStack` when the frame allocator cannot give a thread's
+  stack; pages mapped before that stay mapped and are counted, so the next spawn
+  of the slot finishes the stack. Stack frames come from the allocator the heap
+  also draws on and are not part of the heap's reserve of frames. No boot of the
+  gate exhausts frames at a spawn, so that path is exercised by reading only.
 
 ## Alternatives considered
 

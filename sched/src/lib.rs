@@ -90,7 +90,7 @@ pub struct Choice {
 /// print or block.
 pub trait Policy {
     /// `ready` is never empty. `previous` is the thread that ran until now: in
-    /// `ready` unless it exited. `now` is the tick count.
+    /// `ready` unless it exited or was the idle thread. `now` is the tick count.
     fn pick(&mut self, ready: &ReadySet, previous: Option<ThreadIndex>, now: u64) -> Choice;
 }
 
@@ -297,7 +297,8 @@ impl Core {
                 self.threads[leaving].state = State::Ready;
                 self.ready.insert(leaving);
             }
-            _ => {}
+            // Idle is ready whenever it is not running, and never in the set.
+            _ => self.threads[IDLE].state = State::Ready,
         }
         let (next, slice) = if self.ready.is_empty() {
             // Nothing to ask the policy about: the idle thread, for one tick.
