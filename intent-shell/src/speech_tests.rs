@@ -444,9 +444,17 @@ fn silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped() {
         "list the largest files"
     );
     assert_eq!(
-        transcript_line("[BLANK_AUDIO] list downloads (silêncio)").unwrap(),
+        transcript_line("[BLANK_AUDIO] list downloads [Music]").unwrap(),
         "list downloads"
     );
+    // A parenthesis is a tag only when it is the whole line.
+    for speech in [
+        "Show me the folder (downloads)",
+        "(1) list the files",
+        "(a) the first and (b) the second",
+    ] {
+        assert_eq!(transcript_line(speech).unwrap(), speech);
+    }
     let long = "word ".repeat(1000);
     assert!(transcript_line(&long).unwrap().chars().count() <= 500);
     let transcriber = FakeTranscriber::hearing("[BLANK_AUDIO]");
@@ -487,6 +495,11 @@ fn a_request_that_is_the_transcript_as_heard_says_it_came_from_speech() {
     log.record(SharedLog::transcript("downloads")).unwrap();
     log.record(json!({"event": "request", "request": "list downloads"}))
         .unwrap();
+    // An utterance thrown away and said again: the request is the second one.
+    log.record(SharedLog::transcript("list files")).unwrap();
+    log.record(SharedLog::transcript("list the files")).unwrap();
+    log.record(json!({"event": "request", "request": "list the files"}))
+        .unwrap();
     let events = memory.events();
     let inputs: Vec<_> = events
         .iter()
@@ -495,7 +508,13 @@ fn a_request_that_is_the_transcript_as_heard_says_it_came_from_speech() {
         .collect();
     assert_eq!(
         inputs,
-        [Some(json!("speech")), None, None, Some(json!("speech"))]
+        [
+            Some(json!("speech")),
+            None,
+            None,
+            Some(json!("speech")),
+            Some(json!("speech"))
+        ]
     );
     assert_eq!(events[0]["by"], "model");
     assert_eq!(events[0]["decided"], false);

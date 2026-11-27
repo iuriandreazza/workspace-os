@@ -207,21 +207,24 @@ const TRANSCRIPT_LIMIT: usize = 500;
 /// a bracketed tag such as `[BLANK_AUDIO]` for silence.
 pub fn transcript_line(raw: &str) -> Option<String> {
     let mut text = raw.trim();
-    // Tags at either end are the recogniser's, wherever the speech sits between
-    // them: `[Music] list the files [Music]`, `[ Silence ]`.
+    // Bracketed tags at either end are the recogniser's, wherever the speech sits
+    // between them: `[Music] list the files [Music]`, `[ Silence ]`.
     loop {
         let before = text;
-        for (open, close) in [('[', ']'), ('(', ')')] {
-            if text.starts_with(open)
-                && let Some(end) = text.find(close)
-            {
-                text = text[end + 1..].trim_start();
-            }
-            if text.ends_with(close)
-                && let Some(start) = text.rfind(open)
-            {
-                text = text[..start].trim_end();
-            }
+        if text.starts_with('[')
+            && let Some(end) = text.find(']')
+        {
+            text = text[end + 1..].trim_start();
+        }
+        if text.ends_with(']')
+            && let Some(start) = text.rfind('[')
+        {
+            text = text[..start].trim_end();
+        }
+        // A parenthesis is only a tag when it is the whole line: "(1) list" and
+        // "the folder (downloads)" are speech.
+        if text.starts_with('(') && text.ends_with(')') && text.matches(')').count() == 1 {
+            text = "";
         }
         if text == before {
             break;
@@ -315,7 +318,8 @@ impl Talker {
 #[derive(Clone)]
 pub struct SharedLog {
     log: Arc<Mutex<Box<dyn DecisionLog + Send>>>,
-    heard: Arc<Mutex<Option<String>>>,
+    /// The utterances heard since the last request, oldest first.
+    heard: Arc<Mutex<Vec<String>>>,
 }
 
 impl SharedLog {
@@ -336,20 +340,18 @@ impl DecisionLog for SharedLog {
     fn record(&mut self, mut event: Value) -> Result<(), String> {
         if let Ok(mut heard) = self.heard.lock() {
             match event["event"].as_str() {
-                // Utterances heard one after another land in one input line, joined by a space.
                 Some("transcript") => {
-                    let line = event["text"].as_str().unwrap_or_default();
-                    *heard = Some(match heard.take() {
-                        Some(before) => format!("{before} {line}"),
-                        None => line.to_owned(),
-                    });
+                    heard.push(event["text"].as_str().unwrap_or_default().to_owned());
                 }
-                // Only a request that is the transcript as heard is marked: an
-                // edited line was typed.
+                // A request that is one utterance, or several heard in a row, is
+                // spoken; a line with typed words in it, or with a part taken
+                // out, is not.
                 Some("request") => {
-                    let spoken = heard
-                        .take()
-                        .is_some_and(|line| event["request"].as_str() == Some(line.as_str()));
+                    let request = event["request"].as_str().unwrap_or_default();
+                    let spoken = (0..heard.len()).any(|from| {
+                        (from..heard.len()).any(|to| heard[from..=to].join(" ") == request)
+                    });
+                    heard.clear();
                     if spoken {
                         event["input"] = json!("speech");
                     }

@@ -264,6 +264,8 @@ fail, and the code was put back. The list is the second pass, after review round
 | a reply file name taken by a leftover is an error instead of skipped | `audio::tests::a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole` |
 | a speech note or transcript at a question asks the loop to discard pending keys | `tui::state::tests::a_speech_note_at_a_question_does_not_ask_the_loop_to_discard_pending_keys` |
 | the microphone's thread keeps the event channel open after the worker ended | `tui::tests::the_microphones_thread_keeps_no_event_sender_alive_once_the_worker_has_ended` |
+| a request that is any run of utterances is not marked as spoken | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
+| a parenthesis anywhere is a tag | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
@@ -375,10 +377,14 @@ the speaker):
 - The recogniser is told the reply language (`pt` for `pt-BR`), which is the
   language the person is expected to speak; a person who speaks another one
   than the replies are written in gets a worse transcript.
-- The mark `input: speech` on a request compares the whole line with what was
-  heard: a line that mixes typed and spoken words, or one where a heard part was
-  deleted and another heard, is not marked (the `transcript` events are in the
+- The mark `input: speech` on a request compares the whole line with one
+  utterance, or several in a row, since the last request: a line that mixes typed
+  and spoken words, or one with a part of an utterance deleted, is not marked (the `transcript` events are in the
   log either way), and a line typed to equal what was heard is.
+- A SOUL that lists several languages and a personality with no `language` and
+  no `voice`: the recogniser is told the first one (ADR 0031 section 3 takes
+  the first language of the SOUL as the reply language). A person who speaks
+  another of them sets `language` or `voice` in the personality.
 - The servers are found by a fixed loopback port, with no authentication. On a
   machine with several users, another user who binds `8178` or `5178` first
   receives the microphone audio or the reply text of a shell that has not
