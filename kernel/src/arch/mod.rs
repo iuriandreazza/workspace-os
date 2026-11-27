@@ -10,7 +10,7 @@ pub use aarch64::raise_unhandled_class;
 pub use aarch64::raise_unhandled_vector;
 pub use aarch64::{
     Handover, IrqGuard, SVC_EXIT, SVC_SAMPLE_PSTATE, SVC_YIELD, Side, TrapFrame, boot_stack,
-    current_el, disable_interrupts, enable_interrupts, exception_stack, exit_current_thread,
+    current_el, daif, disable_interrupts, enable_interrupts, exception_stack, exit_current_thread,
     give_gicv2_to_non_secure, give_gicv3_to_non_secure, halt, irqs_masked, kernel_image,
     memory_attributes, pointer_to, run_interrupt_selftest, run_selftest, switch_selftest,
     system_control, translation_root, yield_now,

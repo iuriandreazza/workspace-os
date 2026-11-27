@@ -82,6 +82,7 @@ exist at level 0 with a 4 KiB granule).
 | `0xffff_0000_0000_0000` .. `0xffff_8000_0000_0000` (`LINEAR_BASE`, 128 TiB) | the linear map of RAM: virtual = physical + `LINEAR_BASE` | read and write, never executable, Normal; 1 GiB and 2 MiB blocks where aligned |
 | `0xffff_ff80_0000_0000` (`KERNEL_OFFSET`, unchanged) + physical | the image, as ADR 0019 | by section |
 | `KERNEL_OFFSET + 384 GiB` (`DEVICE_BASE`), 1 GiB | device registers | Device-nGnRnE, read and write, never executable, 4 KiB pages |
+| `KERNEL_OFFSET + 416 GiB`, 1 GiB | the kernel threads' stacks (ADR 0037): 64 KiB slots, the upper 32 KiB mapped, the lower 32 KiB a guard | on demand |
 | `KERNEL_OFFSET + 448 GiB`, 1 GiB | the heap (ADR 0029, unchanged) | on demand |
 
 The linear map does **not** use `KERNEL_OFFSET`: `KERNEL_OFFSET + physical`

@@ -43,6 +43,12 @@ fn recorded() -> alloc::vec::Vec<u8> {
         .collect()
 }
 
+/// Switches so far, read in one go.
+fn switch_count() -> u64 {
+    let counters = counters();
+    counters.yields + counters.preemptions
+}
+
 fn start_phase() {
     ORDER_LEN.store(0, Ordering::Relaxed);
     DEADLINE.store(
@@ -71,8 +77,19 @@ fn spawn_named(entry: super::Entry, name: u8) -> ThreadId {
     spawn(entry, usize::from(name)).unwrap_or_else(|error| panic!("threads: {error}"))
 }
 
+/// What a thread starts with: IRQs unmasked, debug, SError and FIQ masked (ADR 0037).
+fn assert_start_state() {
+    const DAIF_IRQS_ONLY_UNMASKED: u64 = 0b1101 << 6;
+    let daif = arch::daif();
+    assert!(
+        daif == DAIF_IRQS_ONLY_UNMASKED,
+        "threads: a thread starts with DAIF {daif:#x}, expected {DAIF_IRQS_ONLY_UNMASKED:#x}"
+    );
+}
+
 /// Phase 1 thread: prints its name and yields, `ROUNDS` times.
 extern "C" fn cooperative(name: usize) {
+    assert_start_state();
     for round in 1..=ROUNDS {
         record(name as u8);
         let mut console = board::console();
@@ -90,6 +107,7 @@ extern "C" fn cooperative(name: usize) {
 /// it is. It prints only when the baton is its own, passes it, and spins until
 /// it comes back: it never yields, so every pass is a switch by the tick.
 extern "C" fn baton(argument: usize) {
+    assert_start_state();
     let me = argument >> 8;
     let name = argument as u8;
     for round in 1..=ROUNDS {
@@ -173,13 +191,13 @@ fn context_phase(mut out: impl Write, handover: Handover) {
     // try again until the other thread has run.
     let mut attempts = 0;
     loop {
-        let switches = counters().yields + counters().preemptions;
+        let switches = switch_count();
         let failed = arch::switch_selftest(handover, Side::Own);
         assert!(
             !failed,
             "threads: context changed across a switch to another thread"
         );
-        if counters().yields + counters().preemptions > switches {
+        if switch_count() > switches {
             break;
         }
         attempts += 1;
@@ -317,10 +335,6 @@ fn check_exclusion(mut out: impl Write) {
         super::state_masks_interrupts(),
         "threads: the scheduler's state is held with IRQs unmasked"
     );
-    assert!(
-        board::console_write_masks_interrupts(),
-        "threads: the console is written with IRQs unmasked"
-    );
     let mut probe = MaskProbe {
         unmasked_write: false,
     };
@@ -333,7 +347,7 @@ fn check_exclusion(mut out: impl Write) {
     klog!(
         Ok,
         out,
-        "threads: IRQs are masked while the heap, the console, a log line and the scheduler's state are held, and unmasked after"
+        "threads: IRQs are masked while the heap, a log line and the scheduler's state are held, and unmasked after"
     );
 }
 
@@ -348,8 +362,17 @@ pub fn selftest(mut out: impl Write) {
     );
     // The tick is stopped here (the interrupt test ended in `stop`): a yield
     // alone decides the order.
+    assert!(
+        !arch::timer::is_running(),
+        "threads: the timer runs where the cooperative phases need the tick stopped"
+    );
+    let ticks = interrupts::ticks();
     cooperative_phase(&mut out);
     context_phase(&mut out, Handover::Yield);
+    assert!(
+        interrupts::ticks() == ticks,
+        "threads: a tick arrived while the cooperative phases ran with the tick stopped"
+    );
     interrupts::resume();
     check_exclusion(&mut out);
     baton_phase(&mut out);

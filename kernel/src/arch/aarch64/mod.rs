@@ -189,12 +189,17 @@ pub fn enable_interrupts() {
     unsafe { asm!("msr daifclr, #2", options(nostack, preserves_flags)) };
 }
 
-/// Whether IRQs are masked on this core.
-pub fn irqs_masked() -> bool {
+/// `DAIF` as a value of the four bits D, A, I, F in bits 9:6.
+pub fn daif() -> u64 {
     let daif: u64;
     // SAFETY: reading `DAIF` has no side effects.
     unsafe { asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack, preserves_flags)) };
-    daif & DAIF_IRQ_MASK != 0
+    daif
+}
+
+/// Whether IRQs are masked on this core.
+pub fn irqs_masked() -> bool {
+    daif() & DAIF_IRQ_MASK != 0
 }
 
 pub fn disable_interrupts() {

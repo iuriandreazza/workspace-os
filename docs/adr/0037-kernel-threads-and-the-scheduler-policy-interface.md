@@ -82,8 +82,9 @@ deterministic code decides" holds:
   back to the fixed heuristic after repeated refusals.
 - `pick` runs in IRQ context with IRQs masked. It must be bounded, must not
   allocate, free, print or block. Nothing in the trait lets it do those things
-  except by breaking the rule, and the heap's re-entry check turns an allocation
-  there into a panic that names it.
+  except by breaking the rule. The rule is about bounded time: the heap's lock is
+  held only with IRQs masked, so a handler never finds it held and an allocation
+  there would work, unreported. Nothing enforces the rule; P3's watchdog does.
 - A trained model cannot run in that path (microseconds, ADR 0002). It does not
   have to: it computes parameters asynchronously (a slice per thread, an order)
   that a small deterministic `Policy` reads in `pick`. How a model gets
@@ -173,7 +174,7 @@ Obligations ADR 0029 put on K7, one by one:
 
 - `Locked::with` (the heap) takes an `IrqGuard` for the whole critical
   section: a tick must not switch away from a thread that holds the heap. The
-  re-entry assertion stays: a handler that allocates is a bug and is reported.
+  re-entry assertion stays, and now only reports a lock taken twice by a thread.
 - Ordering: `msr daifset`/`daifclr` are compiler barriers and the existing
   compiler fences stay; one core observes its own accesses in program order and
   an exception entry or `eret` is a context synchronisation event, so no
@@ -186,9 +187,10 @@ Obligations ADR 0029 put on K7, one by one:
 **The console.** A `klog!` line is several `write_str` calls, so masking only
 inside `write_str` would let two threads interleave inside a line and defeat a
 check on the order of lines. `log::line` masks around the whole line and
-`Console::write_str` masks around each call (for output that is not a `klog!`
-line). The `SAFETY` comment in `board.rs` is rewritten: exclusion is by masking
-on one core, no longer "nothing interrupts". Cost, stated: at 115200 baud a
+`Console::write_str` does not mask: output that is not a `klog!` line comes from
+the boot thread before the scheduler starts or with IRQs masked (the panic
+report), and a thread that wrote outside `klog!` could only garble the text. The
+`SAFETY` comment in `board.rs` says so. Cost, stated: at 115200 baud a
 100-character line is about 9 ms with IRQs masked, nearly a whole tick. A tick
 that arrives late is handled correctly (ADR 0035 skips missed ticks), so
 scheduling is coarser while a thread logs, not wrong; QEMU's UART is instant.
@@ -247,8 +249,8 @@ in it.
   from. `kernel_main` stays `-> !`.
 - **Idle** is a thread created at start, outside the ready set, that loops
   `wfi` with IRQs unmasked. When the ready set is empty the kernel runs it
-  without asking the policy (the policy is never asked with an empty set). It
-  keeps the tick, and so the clock, alive. With no blocking primitive in K7
+  without asking the policy (the policy is never asked with an empty set). While the tick runs it keeps the clock alive (the boot test stops the tick at
+  its end, as ADR 0035 left it, so after it nothing is preempted or woken). With no blocking primitive in K7
   (that comes with IPC, K9) it only runs once every other thread has ended,
   the boot thread included: at the end of `kernel_main` the boot thread ends
   (it replaces `halt`) and the boot test sees the idle thread run.
@@ -311,8 +313,9 @@ The boot test runs the scheduler with a slice of one tick, so that a test needs
 few ticks (production default: `ROUND_ROBIN_SLICE_TICKS`, 2). A seventh check
 asks, with IRQs unmasked, that they are masked while the heap's lock, a log
 line and the scheduler's state are held and that a guard does not unmask what
-was masked before it. The console's mask is checked through the same
-function `write_str` runs under.
+was masked before it. Every thread asserts at its start that only IRQs are
+unmasked, and the boot test asserts that no tick arrived during the phases that
+run with the tick stopped.
 
 Each check is confirmed by mutation before the pull request: break the
 behaviour (skip the frame restore of one register, switch on the wrong
@@ -324,7 +327,7 @@ see the gate fail.
 
 - Every switch goes through the exception path; a yield costs an exception
   entry and two 304-byte copies. Acceptable, measured later by P2's traces.
-- `Locked::with`, `log::line` and `Console::write_str` now mask IRQs. A long
+- `Locked::with` and `log::line` now mask IRQs. A long
   line delays the tick by up to its transmit time on a real UART.
 - The scheduler is single-core by construction (masking, one table, one ready
   set); K11 must replace the masking with a lock and the table with per-core

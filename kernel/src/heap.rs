@@ -37,8 +37,10 @@ struct State {
 ///
 /// - K6, interrupts, and K7, threads: the masking above (`IrqGuard` saves and
 ///   restores `DAIF`, so it nests and never unmasks a caller that had IRQs
-///   masked). A handler must still not allocate: it would find the heap held, and
-///   the assertion reports it.
+///   masked). Because it is only ever held with IRQs masked, a handler never finds
+///   it held: one that allocated would not be reported. That a policy's `pick`
+///   must not allocate is a rule of its bounded time (ADR 0037), not something
+///   this check enforces.
 /// - Memory ordering: on one core the masked section is not interleaved with
 ///   anything, `msr daifset` is a compiler barrier and so are the fences below;
 ///   one core sees its own accesses in order, and exception entry and `eret`
@@ -71,8 +73,7 @@ impl<T> Locked<T> {
     }
 
     fn with<R>(&self, use_value: impl FnOnce(&mut T) -> R) -> R {
-        // A tick must not switch away from a thread that holds the heap, and a
-        // handler that allocates would find it held (ADR 0037).
+        // A tick must not switch away from a thread that holds the heap (ADR 0037).
         let _irqs_masked = IrqGuard::new();
         // A plain load and store, not `swap`: see the type's documentation.
         assert!(

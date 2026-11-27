@@ -594,31 +594,19 @@ pub fn console() -> Console {
     Console
 }
 
-/// Runs `use_console` with IRQs masked, so that no handler and no other thread
-/// drives the UART meanwhile (ADR 0037). `log::line` holds the same mask around a
-/// whole line.
-fn with_console_exclusive<R>(use_console: impl FnOnce() -> R) -> R {
-    let _irqs_masked = crate::arch::IrqGuard::new();
-    use_console()
-}
-
-/// Whether IRQs are masked while the console is written.
-pub fn console_write_masks_interrupts() -> bool {
-    with_console_exclusive(crate::arch::irqs_masked)
-}
-
 impl fmt::Write for Console {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         let base = CONSOLE_BASE.load(Ordering::Relaxed);
         if base == 0 {
             return Ok(());
         }
-        with_console_exclusive(|| {
-            // SAFETY: `base` is the PL011 the device tree describes. The kernel is
-            // its only user: the boot code parks every core but the boot core, and
-            // on this core IRQs are masked, so no handler and no other thread can
-            // drive the UART concurrently.
-            unsafe { Pl011::new(base) }.write_str(text)
-        })
+        // SAFETY: `base` is the PL011 the device tree describes. The kernel is
+        // its only user: the boot code parks every core but the boot core, and a
+        // `klog!` line holds IRQs masked for the whole line (`log::line`, ADR 0037),
+        // so no handler and no other thread writes into it. Other writers run in
+        // the boot thread before the scheduler starts, or with IRQs masked (the
+        // panic report); a thread that writes outside `klog!` can interleave with
+        // another's text, which garbles output and nothing else.
+        unsafe { Pl011::new(base) }.write_str(text)
     }
 }

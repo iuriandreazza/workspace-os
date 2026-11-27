@@ -79,3 +79,13 @@ pub fn start() {
 pub fn stop() {
     set_control(CONTROL_MASK);
 }
+
+/// Whether the timer is enabled and unmasked: it can raise its interrupt.
+pub fn is_running() -> bool {
+    let control: u64;
+    // SAFETY: reading `CNTV_CTL_EL0` has no side effects.
+    unsafe {
+        asm!("mrs {}, cntv_ctl_el0", out(reg) control, options(nomem, nostack, preserves_flags))
+    };
+    control & CONTROL_ENABLE != 0 && control & CONTROL_MASK == 0
+}
