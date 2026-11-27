@@ -69,7 +69,13 @@ fn wait_for(ids: &[ThreadId]) {
             !phase_expired(),
             "threads: a phase did not finish within {PHASE_LIMIT_SECONDS} s"
         );
+        // A thread that yields with IRQs masked (or unmasked) comes back the same.
+        let masked = arch::irqs_masked();
         yield_now();
+        assert!(
+            arch::irqs_masked() == masked,
+            "threads: a thread came back from a yield with its IRQ mask changed"
+        );
     }
 }
 
@@ -193,7 +199,6 @@ fn context_phase(mut out: impl Write, handover: Handover) {
     let other = spawn(context_other, kind).unwrap_or_else(|error| panic!("threads: {error}"));
     // A tick handover can return without a switch (a `wfi` may wake early):
     // try again until the other thread has run.
-    let mut attempts = 0;
     loop {
         let switches = switch_count();
         let failed = arch::switch_selftest(handover, Side::Own);
@@ -204,10 +209,9 @@ fn context_phase(mut out: impl Write, handover: Handover) {
         if switch_count() > switches {
             break;
         }
-        attempts += 1;
         assert!(
-            attempts < 50,
-            "threads: the context test never switched to the other thread"
+            !phase_expired(),
+            "threads: the context test never switched to the other thread within {PHASE_LIMIT_SECONDS} s"
         );
     }
     STOP.store(true, Ordering::Relaxed);

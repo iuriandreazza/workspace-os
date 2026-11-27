@@ -310,8 +310,9 @@ depends on time:
    original thread checks that all of them (and the pattern below its `SP`)
    came back. Output order cannot show a frame-copy bug; this does.
 4. **The policy interface.** Host unit tests of `sched`: round-robin order,
-   exit and slot reuse (a stale id is not the new thread), a refused choice
-   (not ready, slice 0, slice above the maximum) falls back and is counted, an
+   exit and slot reuse (a stale id is not the new thread), a choice that is not ready
+   falls back to round-robin and is counted, a slice of 0 or above the maximum is
+   clamped and counted, an
    empty ready set never reaches the policy, the table and the slot pool fill
    and report.
 5. **Stacks.** The page checks above, run in the boot test.
