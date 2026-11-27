@@ -27,6 +27,13 @@ pub use selftest::canary_intact;
 pub use selftest::selftest;
 
 const STACK_PAGES: usize = (THREAD_STACK_SIZE / PAGE_SIZE) as usize;
+// Every slot of the table has its stack inside the window, and the per-slot
+// page count fits its byte.
+const _: () = assert!(
+    thread_stack(MAX_THREADS - 1).end
+        <= kernelvm::THREAD_STACK_BASE + kernelvm::THREAD_STACK_WINDOW
+);
+const _: () = assert!(STACK_PAGES <= u8::MAX as usize);
 
 /// A thread's entry: it receives the argument it was spawned with and ends the
 /// thread by returning.

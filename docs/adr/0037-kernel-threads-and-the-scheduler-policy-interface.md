@@ -311,9 +311,8 @@ The boot test runs the scheduler with a slice of one tick, so that a test needs
 few ticks (production default: `ROUND_ROBIN_SLICE_TICKS`, 2). A seventh check
 asks, with IRQs unmasked, that they are masked while the heap's lock, a log
 line and the scheduler's state are held and that a guard does not unmask what
-was masked before it. The `Console::write_str` mask is the one part with no
-check of its own: nothing observes a single UART write; a line is covered by
-`log::line`'s.
+was masked before it. The console's mask is checked through the same
+function `write_str` runs under.
 
 Each check is confirmed by mutation before the pull request: break the
 behaviour (skip the frame restore of one register, switch on the wrong
@@ -341,7 +340,11 @@ see the gate fail.
   cannot see per-thread facts (priority, time run) until P1 does.
 - ADR 0033's layout table has one more row (the stack window); its decision is
   unchanged. ADR 0035's "stopped again until K7 starts it" is answered here.
-- A thread stuck with IRQs masked is not detected (see above).
+- A thread stuck with IRQs masked is not detected (see above). Neither is a
+  policy whose `pick` does not return in time or panics: the kernel checks what
+  it returns, not how long it takes. A bound on that is P3's watchdog.
+- The scheduler's state, with its table of saved frames (about 19 KiB), is in
+  `.data`, because the table starts with the boot and idle entries set.
 - `spawn` reports `NoStack` when the frame allocator cannot give a thread's
   stack; pages mapped before that stay mapped and are counted, so the next spawn
   of the slot finishes the stack. Stack frames come from the allocator the heap

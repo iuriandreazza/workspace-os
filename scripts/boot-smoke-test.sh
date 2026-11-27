@@ -586,7 +586,7 @@ check_threads() {
     for marker in \
         "threads: cooperative order ABCABCABC with the tick stopped, [0-9]* yields" \
         "threads: context intact across a switch to another thread, by a yield $context" \
-        "threads: IRQs are masked while the heap, a log line and the scheduler's state are held, and unmasked after" \
+        "threads: IRQs are masked while the heap, the console, a log line and the scheduler's state are held, and unmasked after" \
         "threads: baton order ABABAB without a yield, [0-9]* switches by the tick" \
         "threads: context intact across a switch to another thread, by the tick $context" \
         "threads: [0-9]* stacks of 32 KiB read and write and never executed, the 32 KiB below each unmapped, window at 0x[0-9a-f]*" \
@@ -1685,8 +1685,9 @@ thread_overflow_elf="$work_dir/thread-overflow.elf"
 build_with_feature selftest-thread-panic "$thread_panic_elf"
 build_with_feature selftest-thread-overflow "$thread_overflow_elf"
 cargo build --quiet --target-dir "$TARGET_DIR"
-check_panic thread-panic "$thread_panic_elf" "selftest: a thread panicked"
-expect_once "panicked in thread 1" "report of the thread that panicked"
+# The report's two lines reach the log one after the other: wait for the last.
+check_panic thread-panic "$thread_panic_elf" "panicked in thread 1"
+expect_once "selftest: a thread panicked" "message of the thread that panicked"
 overflow_slot=$((THREAD_STACK_BASE + 2 * THREAD_SLOT_SIZE))
 overflow_stack_bottom=$((overflow_slot + THREAD_SLOT_SIZE / 2))
 FAULT_ALSO="selftest: neighbouring thread stack intact"

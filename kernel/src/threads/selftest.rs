@@ -317,6 +317,10 @@ fn check_exclusion(mut out: impl Write) {
         super::state_masks_interrupts(),
         "threads: the scheduler's state is held with IRQs unmasked"
     );
+    assert!(
+        board::console_write_masks_interrupts(),
+        "threads: the console is written with IRQs unmasked"
+    );
     let mut probe = MaskProbe {
         unmasked_write: false,
     };
@@ -329,7 +333,7 @@ fn check_exclusion(mut out: impl Write) {
     klog!(
         Ok,
         out,
-        "threads: IRQs are masked while the heap, a log line and the scheduler's state are held, and unmasked after"
+        "threads: IRQs are masked while the heap, the console, a log line and the scheduler's state are held, and unmasked after"
     );
 }
 

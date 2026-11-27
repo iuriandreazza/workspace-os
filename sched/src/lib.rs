@@ -13,6 +13,8 @@
 
 /// Thread table entries, the idle thread's included.
 pub const MAX_THREADS: usize = 64;
+// The ready set is one word.
+const _: () = assert!(MAX_THREADS <= u64::BITS as usize);
 /// The idle thread's index: the last entry, never in the ready set.
 pub const IDLE: ThreadIndex = MAX_THREADS - 1;
 /// The longest slice a policy may ask for, in ticks.
@@ -88,7 +90,7 @@ pub struct Choice {
 /// The one question a scheduling policy answers. It runs in interrupt context
 /// with interrupts masked: it must be bounded and must not allocate, free,
 /// print or block.
-pub trait Policy {
+pub trait Policy: Send {
     /// `ready` is never empty. `previous` is the thread that ran until now: in
     /// `ready` unless it exited or was the idle thread. `now` is the tick count.
     fn pick(&mut self, ready: &ReadySet, previous: Option<ThreadIndex>, now: u64) -> Choice;
