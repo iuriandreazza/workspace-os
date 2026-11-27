@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 
 use crate::action::{Access, Action, is_hidden, quoted_path};
 use crate::ports::Entry;
-use crate::ports::{EntryKind, Found, Host, Output, Search, TREE_DEPTH, TreeEntry};
+use crate::ports::{EntryKind, Found, Host, Output, Search, SoulStore, TREE_DEPTH, TreeEntry};
 use crate::reference::Place;
+use crate::soul_files::FileSoulStore;
 
 const MAX_READ_BYTES: u64 = 64 * 1024;
 const MAX_WALKED_ENTRIES: usize = 100_000;
@@ -24,11 +25,18 @@ const MAX_TREE_ENTRIES: usize = 5_000;
 
 pub struct UnixHost {
     home: Option<PathBuf>,
+    soul: Option<FileSoulStore>,
 }
 
 impl UnixHost {
     pub fn new(home: Option<PathBuf>) -> Self {
-        Self { home }
+        Self { home, soul: None }
+    }
+
+    /// Where the SOUL and its history are kept (ADR 0036).
+    pub fn with_soul_store(mut self, store: FileSoulStore) -> Self {
+        self.soul = Some(store);
+        self
     }
 
     fn is_protected(&self, path: &Path) -> bool {
@@ -214,6 +222,10 @@ fn parent_of(path: &Path) -> &Path {
 }
 
 impl Host for UnixHost {
+    fn soul_store(&self) -> Option<&dyn SoulStore> {
+        self.soul.as_ref().map(|store| store as &dyn SoulStore)
+    }
+
     fn place_roots(&self, place: Place) -> Vec<PathBuf> {
         let Some(home) = self.home() else {
             return Vec::new();

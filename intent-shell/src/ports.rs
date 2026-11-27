@@ -9,6 +9,8 @@ use serde_json::Value;
 
 use crate::action::{Access, Action};
 use crate::reference::Place;
+use crate::soul::Soul;
+use crate::soul_change::{Approval, Change, HistoryEntry};
 
 /// Who the shell acts for. `administrator` means allowed to act as root
 /// after confirming (ADR 0007).
@@ -120,6 +122,65 @@ pub trait Host {
     fn allows(&self, access: Access, path: &Path) -> bool;
     /// Run one concrete action, or say why this host cannot.
     fn execute(&self, action: &Action) -> Result<Output, String>;
+    /// Where the SOUL and its history are kept, on a host that has one (ADR 0036).
+    fn soul_store(&self) -> Option<&dyn SoulStore> {
+        None
+    }
+}
+
+/// Why a write of the SOUL did not happen. `outcome` is the word the decision log records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    /// The SOUL on the disk is not the one the approver was shown.
+    Stale,
+    /// Another session holds the SOUL.
+    Locked,
+    /// The history cannot be trusted.
+    Damaged(String),
+    Failed(String),
+    /// The SOUL was replaced, but the history entry is not committed yet; the
+    /// next operation under the lock settles it.
+    AppliedUncommitted(String),
+}
+
+impl ApplyError {
+    pub fn outcome(&self) -> &'static str {
+        match self {
+            Self::Stale => "stale",
+            Self::Locked => "locked",
+            Self::Damaged(_) => "damaged",
+            Self::Failed(_) => "failed",
+            Self::AppliedUncommitted(_) => "applied_uncommitted",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::Stale => "the SOUL changed since you saw it; nothing was changed".to_owned(),
+            Self::Locked => {
+                "another session is changing the SOUL; try again in a moment, nothing was changed"
+                    .to_owned()
+            }
+            Self::Damaged(why) => format!("the history is damaged:\n{why}"),
+            Self::Failed(why) | Self::AppliedUncommitted(why) => why.clone(),
+        }
+    }
+}
+
+/// The SOUL file and its history (ADR 0036). Writing needs an `Approval`.
+pub trait SoulStore {
+    /// The SOUL file as text, or why there is none to change.
+    fn current(&self) -> Result<String, String>;
+    /// Every applied change, oldest first, or what is wrong with the history.
+    /// A missing history is an empty one.
+    fn history(&self) -> Result<Vec<HistoryEntry>, String>;
+    /// The entries up to the first thing wrong with the history, and what that is.
+    fn history_listing(&self) -> Result<(Vec<HistoryEntry>, Option<String>), String>;
+    /// What a SOUL would do to the personality of the person at the keyboard.
+    fn personality_effect(&self, soul: &Soul) -> String;
+    /// Write the change and its history entry, all or nothing, and give the
+    /// number of the entry.
+    fn apply(&self, change: &Change, approval: &Approval) -> Result<u32, ApplyError>;
 }
 
 /// The model's previous attempt and why it was refused.

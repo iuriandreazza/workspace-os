@@ -12,12 +12,15 @@ use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::action::{Action, UserOperation, WriteMode, is_hidden, printable, quoted};
+use crate::action::{Action, Capability, UserOperation, WriteMode, is_hidden, printable, quoted};
 use crate::broker::{Review, ReviewedAction, ReviewedStep, Verdict};
 use crate::label::Labels;
 use crate::plan::{Origin, StepId};
 use crate::ports::{ChoiceLine, EntryKind, TREE_DEPTH, TreeEntry};
 use crate::resolve::Ambiguity;
+use crate::soul_change::{
+    ChangeKind, DETAIL, Mark, Prepared, display_name, line_pieces, shortened,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -105,8 +108,14 @@ pub fn say(action: &Action, labels: &Labels) -> String {
             format!("Set {} to {}", quoted(key), quoted(value))
         }
         Action::SoulProposeChange { rationale, .. } => {
-            format!("Propose a change to the SOUL: {}", quoted(rationale))
+            // Short, so the line of the report that holds it ends before a terminal wraps it.
+            format!(
+                "Propose a change to the SOUL: \"{}\"",
+                shortened(rationale, 36)
+            )
         }
+        Action::SoulUndoChange => "Undo the latest change to the SOUL".to_owned(),
+        Action::SoulHistory => "Show the history of changes to the SOUL".to_owned(),
     }
 }
 
@@ -156,7 +165,19 @@ fn rows(step: &ReviewedStep, labels: &Labels, view: View) -> Vec<Row> {
         let (verdict, reason) = verdict_of(item, labels);
         let mut under: Vec<String> = reason.into_iter().collect();
         if view == View::Details {
-            under.push(format!("exact: {}", item.action.describe()));
+            match &item.action {
+                // What the model wrote is on lines of its own, cut short: the root
+                // panel shows the whole diff, and no wrapped piece starts a row here.
+                Action::SoulProposeChange {
+                    rationale,
+                    new_text,
+                } => {
+                    under.push("exact: soul.propose_change".to_owned());
+                    under.push(format!("  rationale: \"{}\"", shortened(rationale, DETAIL)));
+                    under.push(format!("  new_text: \"{}\"", shortened(new_text, DETAIL)));
+                }
+                other => under.push(format!("exact: {}", other.describe())),
+            }
         }
         out.push(Row {
             step: if index == 0 {
@@ -281,6 +302,76 @@ pub fn root_panel(who: &str, step: &StepId, action: &Action, labels: &Labels) ->
         ),
         true,
     )
+}
+
+/// The root confirmation of a SOUL change or undo: the whole diff, each line
+/// after a mark the code draws, so no line of the SOUL or of the model's text can
+/// pass for a line of the panel (ADR 0036, section 3).
+pub fn soul_panel(who: &str, step: &StepId, prepared: &Prepared) -> String {
+    let change = &prepared.change;
+    let what = match (change.kind, change.reverts) {
+        (ChangeKind::Undo, Some(seq)) => {
+            format!("Undo change {seq}: restore the SOUL as it was before it")
+        }
+        _ => "Replace the SOUL".to_owned(),
+    };
+    let count = |mark| prepared.diff.iter().filter(|l| l.mark == mark).count();
+    let mut lines = vec![
+        format!(
+            "╔═ ROOT CONFIRMATION ═ SOUL change ═ asked of \"{}\" ═ step {step}",
+            display_name(who)
+        ),
+        format!("║ Action  {what}"),
+    ];
+    if let Some(reason) = &change.rationale {
+        lines.push("║ The model's reason, in its words and not part of the change:".to_owned());
+        lines.extend(framed("║   ", "║   ↳ ", &quoted(reason)));
+    }
+    lines.push(format!(
+        "║ The whole file, line by line: {} removed (-), {} added (+), {} kept",
+        count(Mark::Removed),
+        count(Mark::Added),
+        count(Mark::Kept)
+    ));
+    if count(Mark::Removed) + count(Mark::Added) == 0 {
+        lines.push(
+            "║ The lines are the same: only line endings or the final newline change.".to_owned(),
+        );
+    }
+    for line in &prepared.diff {
+        let first = format!("║ {} ", line.mark.symbol());
+        let more = format!("║ {} ↳ ", line.mark.symbol());
+        lines.extend(framed(&first, &more, &line.text));
+    }
+    // The end of a long diff is what stays on a plain terminal above the question.
+    lines.push(format!(
+        "║ End of the file: {} removed (-), {} added (+), {} kept",
+        count(Mark::Removed),
+        count(Mark::Added),
+        count(Mark::Kept)
+    ));
+    lines.extend(framed("║ Personality  ", "║   ↳ ", &prepared.personality));
+    lines.push(format!(
+        "║ Needs   {}, as root. This is written exactly as shown, and the new SOUL is read at the next start.",
+        Capability::SoulPropose
+    ));
+    lines.push("╚═".to_owned());
+    printable(&lines.join("\n"), true)
+}
+
+/// Longest stretch of untrusted text on one panel line: shorter than a terminal,
+/// so the terminal never wraps it and a wrapped piece never starts a line of its own.
+const PANEL_CHUNK: usize = 64;
+
+/// Untrusted text as panel lines: escaped, with the frame characters escaped
+/// too so no text can draw a line of the frame, and cut into pieces that each
+/// start with a prefix the code draws.
+fn framed(first: &str, more: &str, text: &str) -> Vec<String> {
+    line_pieces(text, PANEL_CHUNK)
+        .into_iter()
+        .enumerate()
+        .map(|(i, piece)| format!("{}{piece}", if i == 0 { first } else { more }))
+        .collect()
 }
 
 /// The question for a reference that matched several things, and the

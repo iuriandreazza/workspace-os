@@ -10,16 +10,18 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::action::{Access, Action, is_hidden, printable, quoted, quoted_path};
-use crate::broker::{Authority, Review, ReviewedAction, ReviewedStep, Verdict, review};
+use crate::broker::{Authority, Refusal, Review, ReviewedAction, ReviewedStep, Verdict, review};
 use crate::command::{self, Parsed};
 use crate::label::Labels;
 use crate::plan::{Document, Origin, Plan, StepId, parse_checked};
 use crate::ports::{
-    Confirm, DecisionLog, EntryKind, Host, Output, Planner, Retry, Search, TreeEntry,
+    ApplyError, Confirm, DecisionLog, EntryKind, Host, Output, Planner, Retry, Search, SoulStore,
+    TreeEntry,
 };
 use crate::reference::Place;
 use crate::resolve::Choices;
 use crate::screen::{self, TreeMarks, TreeOptions, View};
+use crate::soul_change::{self, Approval, Failure, history_text};
 
 /// Attempts at a valid document: the first, and one retry with the error (ADR 0011).
 const MAX_ATTEMPTS: usize = 2;
@@ -430,6 +432,9 @@ impl Shell<'_> {
         };
         let result = match (&item.verdict, entering) {
             (Verdict::Refused(why), _) => ItemResult::NotRun(why.friendly(labels)),
+            (Verdict::NeedsRoot, _) if item.action.changes_soul() => {
+                self.change_soul(step, &item.action)?
+            }
             (Verdict::NeedsRoot, _) if !self.confirm_root(step, &item.action, labels)? => {
                 ItemResult::NotRun("root confirmation was not given".to_owned())
             }
@@ -450,6 +455,26 @@ impl Shell<'_> {
                     text: format!("now in {}", self.session.cwd_text(self.host)),
                     ..Output::default()
                 })
+            }
+            (Verdict::Allowed, _) if item.action == Action::SoulHistory => {
+                self.record(
+                    json!({"event": "execute", "step": step.as_str(), "action": rendering}),
+                )?;
+                match self.soul_store().and_then(|store| store.history_listing()) {
+                    Ok((entries, problem)) => ItemResult::Done(Output {
+                        text: match problem {
+                            Some(problem) => {
+                                format!(
+                                    "{}\nWARNING: the history is damaged:\n{problem}",
+                                    history_text(&entries)
+                                )
+                            }
+                            None => history_text(&entries),
+                        },
+                        ..Output::default()
+                    }),
+                    Err(why) => ItemResult::Failed(why),
+                }
             }
             (Verdict::Allowed | Verdict::NeedsRoot, _) => {
                 let event = if item.output.is_some() {
@@ -482,6 +507,89 @@ impl Shell<'_> {
         });
         self.record(logged)?;
         Ok(done)
+    }
+
+    fn soul_store(&self) -> Result<&dyn SoulStore, String> {
+        self.host
+            .soul_store()
+            .ok_or_else(|| "this host keeps no SOUL to change".to_owned())
+    }
+
+    /// A change or an undo of the SOUL (ADR 0036): built from the file as it is
+    /// now, shown whole to the administrator, and written only on their yes, with
+    /// the base checked again at the write. Every end of it is a `soul_change` event.
+    fn change_soul(&mut self, step: &StepId, action: &Action) -> Result<ItemResult, String> {
+        let who = self.authority.user.clone();
+        let (kind, prepared) = match (self.soul_store(), action) {
+            (Err(why), _) => return Ok(ItemResult::Failed(why)),
+            (
+                Ok(store),
+                Action::SoulProposeChange {
+                    rationale,
+                    new_text,
+                },
+            ) => (
+                "change",
+                soul_change::prepare_change(store, rationale, new_text),
+            ),
+            (Ok(store), _) => ("undo", soul_change::prepare_undo(store)),
+        };
+        let ended = |outcome: &str, detail: &str| json!({"event": "soul_change", "step": step.as_str(), "kind": kind, "by": who.name, "outcome": outcome, "detail": detail});
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(Failure { outcome, message }) => {
+                self.record(ended(outcome, &message))?;
+                return Ok(ItemResult::Failed(message));
+            }
+        };
+        let panel = screen::soul_panel(&who.name, step, &prepared);
+        let confirmed = self.confirm.root_action(&panel, &who);
+        self.record(json!({"event": "root_confirmation", "step": step.as_str(), "action": action.describe(), "confirmed_by": who.name, "confirmed": confirmed}))?;
+        if !confirmed {
+            self.record(ended("declined", ""))?;
+            return Ok(ItemResult::NotRun(
+                "root confirmation was not given".to_owned(),
+            ));
+        }
+        let Some(approval) = Approval::from_root(&who) else {
+            self.record(ended("not_administrator", ""))?;
+            return Ok(ItemResult::NotRun(Refusal::NotAdministrator.to_string()));
+        };
+        // On record before the write: the shell changes nothing while the log cannot be written.
+        self.record(json!({"event": "soul_change", "step": step.as_str(), "kind": kind, "by": who.name, "outcome": "writing", "written": prepared.change.after}))?;
+        let applied = self
+            .soul_store()
+            .map(|store| store.apply(&prepared.change, &approval));
+        match applied {
+            Ok(Ok(seq)) => {
+                // The SOUL is changed whatever happens to the log now; the result
+                // event that follows reports a log that fails, with this step done.
+                let _ = self.record(json!({"event": "soul_change", "step": step.as_str(), "kind": kind, "by": who.name, "outcome": "applied", "seq": seq}));
+                Ok(ItemResult::Done(Output {
+                    text: format!(
+                        "The SOUL was changed: history entry {seq}. The new SOUL is read at the next start."
+                    ),
+                    ..Output::default()
+                }))
+            }
+            // Done, though not yet in the history: the SOUL is already the new one.
+            Ok(Err(error @ ApplyError::AppliedUncommitted(_))) => {
+                // As with "applied": the SOUL is changed whatever happens to the log.
+                let _ = self.record(ended(error.outcome(), &error.message()));
+                Ok(ItemResult::Done(Output {
+                    text: format!(
+                        "The SOUL was changed, but {} The new SOUL is read at the next start.",
+                        error.message()
+                    ),
+                    ..Output::default()
+                }))
+            }
+            Ok(Err(error)) => {
+                self.record(ended(error.outcome(), &error.message()))?;
+                Ok(ItemResult::Failed(error.message()))
+            }
+            Err(why) => Ok(ItemResult::Failed(why)),
+        }
     }
 
     fn confirm_root(

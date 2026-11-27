@@ -79,6 +79,10 @@ pub enum Action {
         rationale: String,
         new_text: String,
     },
+    /// Restores the SOUL as it was before the latest change that was not undone (ADR 0036).
+    SoulUndoChange,
+    /// Lists the history of applied SOUL changes. Reads only (ADR 0036).
+    SoulHistory,
 }
 
 /// Whether any part of the path is hidden (starts with a dot).
@@ -111,8 +115,16 @@ impl Action {
             | Self::Run { .. }
             | Self::UserManage { .. }
             | Self::SystemConfigure { .. }
-            | Self::SoulProposeChange { .. } => true,
+            | Self::SoulProposeChange { .. }
+            | Self::SoulUndoChange => true,
+            Self::SoulHistory => false,
         }
+    }
+
+    /// The actions that change the SOUL: each is held for root and runs through
+    /// the diff panel of ADR 0036, not the generic root panel.
+    pub fn changes_soul(&self) -> bool {
+        matches!(self, Self::SoulProposeChange { .. } | Self::SoulUndoChange)
     }
 }
 
@@ -314,6 +326,8 @@ impl Action {
             Self::UserManage { .. } => "user.manage",
             Self::SystemConfigure { .. } => "system.configure",
             Self::SoulProposeChange { .. } => "soul.propose_change",
+            Self::SoulUndoChange => "soul.undo_change",
+            Self::SoulHistory => "soul.history",
         }
     }
 
@@ -332,14 +346,19 @@ impl Action {
             Self::Run { .. } => Capability::ProcessExec,
             Self::UserManage { .. } => Capability::UserAdmin,
             Self::SystemConfigure { .. } => Capability::SystemConfig,
-            Self::SoulProposeChange { .. } => Capability::SoulPropose,
+            Self::SoulProposeChange { .. } | Self::SoulUndoChange | Self::SoulHistory => {
+                Capability::SoulPropose
+            }
         })
     }
 
     pub fn root_rule(&self) -> RootRule {
         match self {
-            Self::UserManage { .. } | Self::SystemConfigure { .. } => RootRule::Always,
-            Self::SoulProposeChange { .. } | Self::Cd { .. } => RootRule::Never,
+            Self::UserManage { .. }
+            | Self::SystemConfigure { .. }
+            | Self::SoulProposeChange { .. }
+            | Self::SoulUndoChange => RootRule::Always,
+            Self::SoulHistory | Self::Cd { .. } => RootRule::Never,
             _ => RootRule::OnRequest,
         }
     }
@@ -364,7 +383,9 @@ impl Action {
             Self::Run { .. }
             | Self::UserManage { .. }
             | Self::SystemConfigure { .. }
-            | Self::SoulProposeChange { .. } => Vec::new(),
+            | Self::SoulProposeChange { .. }
+            | Self::SoulUndoChange
+            | Self::SoulHistory => Vec::new(),
         }
     }
 
@@ -421,6 +442,7 @@ impl Action {
             } => {
                 format!("{name} rationale={} new_text={}", q(rationale), q(new_text))
             }
+            Self::SoulUndoChange | Self::SoulHistory => name.to_owned(),
         }
     }
 }
@@ -560,6 +582,16 @@ mod tests {
                     new_text: "t".into(),
                 },
                 Capability::SoulPropose,
+                RootRule::Always,
+            ),
+            (
+                Action::SoulUndoChange,
+                Capability::SoulPropose,
+                RootRule::Always,
+            ),
+            (
+                Action::SoulHistory,
+                Capability::SoulPropose,
                 RootRule::Never,
             ),
         ];
@@ -617,6 +649,8 @@ mod tests {
                 },
                 r#"soul.propose_change rationale="r" new_text="t""#,
             ),
+            (Action::SoulUndoChange, "soul.undo_change"),
+            (Action::SoulHistory, "soul.history"),
             (
                 Action::FindLargest {
                     path: p("/a"),

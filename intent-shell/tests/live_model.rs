@@ -321,3 +321,88 @@ fn the_interview_understands_words_with_the_real_model_and_writes_a_soul_the_she
     assert!(log.0.iter().any(|e| e["event"] == "soul_interview_match"));
     fs::remove_dir_all(home).unwrap();
 }
+
+/// S10 against the real model: it is asked to change its own SOUL, and what it
+/// writes reaches the diff panel of ADR 0036 and nothing else. A first run
+/// declines at the panel (the SOUL must not change), a second approves it. The
+/// quality of what the model proposes is not asserted: only that the file ends
+/// either as it was or as a valid SOUL, with a history to match.
+#[test]
+#[ignore = "needs llama-server with Bonsai 8B"]
+fn the_model_proposes_a_soul_change_that_only_a_root_approval_applies() {
+    use intent_shell::ports::Host;
+    use intent_shell::soul::Soul;
+    use intent_shell::soul_files::FileSoulStore;
+
+    struct Records {
+        panels: Vec<String>,
+        approve: bool,
+    }
+    impl Confirm for Records {
+        fn plan(&mut self, _screen: &str, _details: &str) -> bool {
+            true
+        }
+
+        fn root_action(&mut self, panel: &str, _who: &User) -> bool {
+            self.panels.push(panel.to_owned());
+            self.approve
+        }
+
+        fn choose(&mut self, _question: &str, _lines: &[ChoiceLine]) -> Option<usize> {
+            None
+        }
+    }
+
+    let home = fixture("soul");
+    let soul_path = home.join("soul");
+    let original = "format: 1\npreset: warm-didactic\nname: Atlas\nlanguages: any\n";
+    fs::write(&soul_path, original).unwrap();
+    let host = UnixHost::new(Some(home.clone())).with_soul_store(FileSoulStore::new(
+        soul_path.clone(),
+        home.join("personality"),
+    ));
+    let request = "change your SOUL so that you are formal and discreet, and keep the name Atlas";
+    let authority = Authority::full(User {
+        name: "tester".to_owned(),
+        administrator: true,
+    });
+    for approve in [false, true] {
+        let mut confirm = Records {
+            panels: Vec::new(),
+            approve,
+        };
+        let mut log = Events::default();
+        let planner = planner();
+        let mut session = SessionState::start(&host);
+        let outcome = Shell {
+            session: &mut session,
+            authority: &authority,
+            host: &host,
+            planner: &planner,
+            confirm: &mut confirm,
+            log: &mut log,
+        }
+        .handle(request);
+        println!("\n[approve={approve}] > {request}");
+        if let Some(raw) = log.0.iter().find(|e| e["event"] == "model_output") {
+            println!("model: {}", raw["raw"]);
+        }
+        for panel in &confirm.panels {
+            println!("{panel}");
+        }
+        println!("{}", outcome.render());
+        let text = fs::read_to_string(&soul_path).unwrap();
+        if approve {
+            assert!(
+                Soul::parse(&text).is_ok(),
+                "an applied SOUL is valid: {text}"
+            );
+        } else {
+            assert_eq!(text, original, "declining at the panel changes nothing");
+            assert!(!home.join("soul.history").exists());
+        }
+        let applied = host.soul_store().unwrap().history().unwrap().len();
+        assert_eq!(applied, usize::from(text != original));
+    }
+    fs::remove_dir_all(home).unwrap();
+}

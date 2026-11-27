@@ -498,7 +498,7 @@ fn a_soul_that_exists_is_never_replaced_and_nothing_is_asked() {
     let run = go_at(path.clone(), Script::new(&["2", "", "1", "y"]), None, true);
     let error = run.done.unwrap_err();
     assert!(
-        error.contains("already exists") && error.contains("S10"),
+        error.contains("already exists") && error.contains("ADR 0036"),
         "{error}"
     );
     assert!(run.script.shown.is_empty());

@@ -18,6 +18,7 @@ NESTED_WITHOUT_END = "the model's tool call nests without end (the server refuse
 STEP_NAMES = [
     "fsList", "fsStat", "fsRead", "fsFindLargest", "fsWrite", "fsMove",
     "fsDelete", "sessionCd", "processRun", "userManage", "systemConfigure", "soulProposeChange",
+    "soulUndoChange", "soulHistory",
 ]
 DESCRIPTIONS = {
     "fs.list": "List what is in a place or a folder.",
@@ -31,7 +32,9 @@ DESCRIPTIONS = {
     "process.run": "Run a program by name with an argument list (never a shell string).",
     "user.manage": "Add or remove a user, or add or remove a user from a group.",
     "system.configure": "Set a system setting.",
-    "soul.propose_change": "Propose a change to the assistant's SOUL (its personality text). Only records a proposal.",
+    "soul.propose_change": "Propose a change to the assistant's SOUL (its personality text). A user with root authority must approve the whole diff.",
+    "soul.undo_change": "Undo the latest change that was made to the assistant's SOUL.",
+    "soul.history": "List the changes that were made to the assistant's SOUL.",
 }
 # The shell prompt shows `"depends_on":[]` in its JSON example; the last sentence
 # of the first preamble gives the tools mode the same information.
