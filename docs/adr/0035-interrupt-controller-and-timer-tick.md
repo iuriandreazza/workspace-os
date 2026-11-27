@@ -1,9 +1,9 @@
 ---
 title: "ADR 0035: Interrupts: GICv2 and GICv3 read from the device tree, the virtual timer's tick, and an EL3 stand-in for firmware"
 type: adr
-status: proposed
+status: accepted
 created: 2026-11-26
-updated: 2026-11-26
+updated: 2026-11-27
 tags: [kernel, interrupts, timer, gic, el3, safety]
 ---
 
