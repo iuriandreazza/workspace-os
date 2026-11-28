@@ -1,9 +1,9 @@
 //! Interrupts: the controller, the generic timer and the tick it raises
 //! (ADR 0035).
 //!
-//! Mechanism only (ADR 0002): the kernel counts ticks and nothing more. What a
-//! tick is for (time slices, timeouts) is for whatever the scheduler turns out
-//! to be, and reads `ticks`.
+//! Mechanism only (ADR 0002): this module counts ticks and nothing more. What a
+//! tick is for is the scheduler's (ADR 0037): the exception handler tells it
+//! when one was taken.
 
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -213,17 +213,38 @@ pub fn start(wiring: &InterruptWiring, entered_at_el3: bool) -> Result<Started, 
     })
 }
 
-/// Masks IRQs and stops the timer: no tick arrives until `start` again.
+/// Masks IRQs and stops the timer: no tick arrives until `resume`.
 pub fn stop() {
     arch::disable_interrupts();
     arch::timer::stop();
+}
+
+/// Starts the ticks again after `stop`, from now: the deadline is one period
+/// away and IRQs are unmasked. The controller is not touched (ADR 0037).
+pub fn resume() {
+    let deadline = arch::timer::count() + PERIOD.load(Ordering::Relaxed);
+    NEXT_DEADLINE.store(deadline, Ordering::Relaxed);
+    arch::timer::set_deadline(deadline);
+    arch::timer::start();
+    arch::enable_interrupts();
+}
+
+/// The counter value `seconds` from now, for a wait that must end in a report
+/// and not in a hang.
+pub fn deadline_in_seconds(seconds: u64) -> u64 {
+    arch::timer::count() + seconds * FREQUENCY.load(Ordering::Relaxed)
+}
+
+/// Whether the counter has reached `deadline`.
+pub fn reached(deadline: u64) -> bool {
+    arch::timer::count() >= deadline
 }
 
 /// With nothing enabled and pending the controller answers every acknowledge
 /// as spurious: the handler must count that and end nothing. Run before the
 /// timer starts, so the answer is certain.
 fn check_spurious_is_counted() -> Result<(), Error> {
-    handle_irq();
+    let _ = handle_irq();
     let counted = SPURIOUS.swap(0, Ordering::Relaxed) == 1
         && TICKS.load(Ordering::Relaxed) == 0
         && UNEXPECTED.load(Ordering::Relaxed) == 0;
@@ -236,20 +257,24 @@ fn check_spurious_is_counted() -> Result<(), Error> {
 
 /// Entered by the IRQ vector with the interrupted context saved, IRQs masked
 /// and the exception stack in use. It prints nothing and unmasks nothing: the
-/// console's SAFETY argument and the single exception stack both rest on that.
-pub fn handle_irq() {
+/// single exception stack rests on the second, and a short handler keeps ticks
+/// from being missed.
+/// True when a tick was taken: what the tick means is for the caller (ADR 0037),
+/// after the interrupt has been ended.
+pub fn handle_irq() -> bool {
     let Some(taken) = acknowledge() else {
         // Nothing to end: an acknowledge that found nothing took nothing.
         SPURIOUS.fetch_add(1, Ordering::Relaxed);
-        return;
+        return false;
     };
+    let mut tick = false;
     if taken.id() == TIMER_INTERRUPT.load(Ordering::Relaxed) {
         // A signal the timer no longer stands behind (a controller slow to see
         // the line drop) is not a tick, and must not move the deadline again.
         if !arch::timer::is_firing() {
             SPURIOUS.fetch_add(1, Ordering::Relaxed);
             end_of_interrupt(taken);
-            return;
+            return false;
         }
         // The line is level: until the deadline moves past the count the timer
         // keeps it asserted, so this comes before the end of the interrupt.
@@ -262,10 +287,12 @@ pub fn handle_irq() {
         NEXT_DEADLINE.store(next, Ordering::Relaxed);
         arch::timer::set_deadline(next);
         TICKS.fetch_add(1, Ordering::Relaxed);
+        tick = true;
     } else {
         UNEXPECTED.fetch_add(1, Ordering::Relaxed);
     }
     end_of_interrupt(taken);
+    tick
 }
 
 /// What a wait for ticks measured.

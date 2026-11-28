@@ -130,7 +130,10 @@ pub use exceptions::raise_nested_exception;
 pub use exceptions::raise_unhandled_class;
 #[cfg(feature = "selftest-unhandled-vector")]
 pub use exceptions::raise_unhandled_vector;
-pub use exceptions::{current_el, run_interrupt_selftest, run_selftest};
+pub use exceptions::{
+    Handover, SVC_EXIT, SVC_YIELD, Side, TrapFrame, current_el, exit_current_thread,
+    run_interrupt_selftest, run_selftest, switch_selftest, yield_now,
+};
 
 /// The calls the boot code's monitor answers when the kernel was started at
 /// EL3 (ADR 0035): give the non-secure world the GIC. They are the Arm SMC
@@ -186,9 +189,59 @@ pub fn enable_interrupts() {
     unsafe { asm!("msr daifclr, #2", options(nostack, preserves_flags)) };
 }
 
+/// `DAIF` as a value of the four bits D, A, I, F in bits 9:6.
+pub fn daif() -> u64 {
+    let daif: u64;
+    // SAFETY: reading `DAIF` has no side effects.
+    unsafe { asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack, preserves_flags)) };
+    daif
+}
+
+/// Whether IRQs are masked on this core.
+pub fn irqs_masked() -> bool {
+    daif() & DAIF_IRQ_MASK != 0
+}
+
 pub fn disable_interrupts() {
     // SAFETY: masking IRQs only delays them. It is a compiler barrier on purpose.
     unsafe { asm!("msr daifset, #2", options(nostack, preserves_flags)) };
+}
+
+/// Masks IRQs for as long as it lives and puts the mask back as it found it
+/// (ADR 0037): it nests, and never unmasks a caller that had IRQs masked. On one
+/// core this is the whole of mutual exclusion against a handler.
+pub struct IrqGuard {
+    irqs_were_masked: bool,
+}
+
+const DAIF_IRQ_MASK: u64 = 1 << 7;
+
+impl IrqGuard {
+    pub fn new() -> Self {
+        let daif: u64;
+        // SAFETY: reading `DAIF` has no side effects; masking IRQs only delays
+        // them. The asm is not `nomem` on purpose: it is a compiler barrier.
+        unsafe {
+            asm!("mrs {}, daif", "msr daifset, #2", out(reg) daif, options(nostack, preserves_flags))
+        };
+        Self {
+            irqs_were_masked: daif & DAIF_IRQ_MASK != 0,
+        }
+    }
+}
+
+impl Drop for IrqGuard {
+    fn drop(&mut self) {
+        if !self.irqs_were_masked {
+            enable_interrupts();
+        }
+    }
+}
+
+/// Waits for an interrupt (or an event); returns when one arrives, masked or not.
+pub fn wait_for_interrupt() {
+    // SAFETY: `wfi` only waits for an interrupt.
+    unsafe { asm!("wfi", options(nomem, nostack, preserves_flags)) };
 }
 
 pub fn halt() -> ! {

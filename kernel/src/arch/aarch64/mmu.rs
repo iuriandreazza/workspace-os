@@ -747,7 +747,7 @@ fn verify_lower_half_is_empty(
     );
 }
 
-// ---- The heap's pages (ADR 0029) -----------------------------------------
+// ---- Pages added to the live upper half (ADR 0029, 0037) -----------------
 
 /// Maps up to `pages` pages from `at` in the live upper half, each to a frame
 /// of `frames`, read and write and never executed, and returns how many it
@@ -758,7 +758,7 @@ fn verify_lower_half_is_empty(
 /// no TLB invalidation (an empty entry is not cached). What the walker needs is
 /// the new descriptors in memory it can see, so the lines of every descriptor
 /// written are cleaned and then a barrier and `isb` make the pages usable.
-pub fn grow_heap(frames: &mut FrameAllocator, at: u64, pages: usize) -> usize {
+pub fn map_pages(frames: &mut FrameAllocator, at: u64, pages: usize) -> usize {
     // `init` read the memory types and stopped the boot if they were missing,
     // so this cannot fail on a kernel that got here; zero would be reported as
     // a heap with no frames.

@@ -82,6 +82,7 @@ exist at level 0 with a 4 KiB granule).
 | `0xffff_0000_0000_0000` .. `0xffff_8000_0000_0000` (`LINEAR_BASE`, 128 TiB) | the linear map of RAM: virtual = physical + `LINEAR_BASE` | read and write, never executable, Normal; 1 GiB and 2 MiB blocks where aligned |
 | `0xffff_ff80_0000_0000` (`KERNEL_OFFSET`, unchanged) + physical | the image, as ADR 0019 | by section |
 | `KERNEL_OFFSET + 384 GiB` (`DEVICE_BASE`), 1 GiB | device registers | Device-nGnRnE, read and write, never executable, 4 KiB pages |
+| `KERNEL_OFFSET + 416 GiB`, 1 GiB | the kernel threads' stacks (ADR 0037): 64 KiB slots, the upper 32 KiB mapped, the lower 32 KiB a guard | on demand |
 | `KERNEL_OFFSET + 448 GiB`, 1 GiB | the heap (ADR 0029, unchanged) | on demand |
 
 The linear map does **not** use `KERNEL_OFFSET`: `KERNEL_OFFSET + physical`
@@ -114,7 +115,7 @@ One rule: **physical addresses are converted to a pointer in one place**,
 the lower half is the way in (the entry's identity map, or phase A's), and
 `LINEAR_BASE` from the moment the linear map is live. Page-table access
 (`PhysicalTables`, `FrameTables`), the cache maintenance of table lines
-(`dc civac`, `dc ivac` take virtual addresses), `grow_heap`'s descriptor
+(`dc civac`, `dc ivac` take virtual addresses), `grow_heap` (now `mmu::map_pages`, ADR 0037)'s descriptor
 cleaning, and the readers of the hand-over all go through it. After the lower
 half is gone nothing may hold a physical address as a pointer: the boot info,
 the memory map, the device tree and the UART are read through the linear map or
@@ -135,7 +136,7 @@ guard). It returns the virtual address of the first register. There is no
 unmapping: a device stays for the life of the kernel.
 
 K4c uses it for the UART, when the upper half is built. K6 will map the
-interrupt controller the same way, on the live root, like `grow_heap` does
+interrupt controller the same way, on the live root, like `grow_heap` (now `mmu::map_pages`, ADR 0037) does
 (`Mapper::resume`), continuing the window from `DeviceWindow::next()`, which
 `init` must then hand on (K4c keeps no state beyond the console's mapping); the
 descriptors are published (`dc civac`, `dsb ish`, `isb`) and no TLB maintenance

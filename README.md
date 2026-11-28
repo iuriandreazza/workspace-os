@@ -31,7 +31,11 @@ and the generic timer's virtual timer: every boot of the gate counts timer ticks
 takes an interrupt with its whole context live (ADR 0035). Started at EL3, the boot
 code stands in for the firmware's GIC setup.
 
-Next milestone: kernel threads and a scheduler. The full plan is in [docs/roadmap.md](docs/roadmap.md).
+The kernel has threads and a round-robin scheduler behind a narrow policy interface
+(ADR 0037, `sched/`): every boot of the gate runs threads that interleave output in an order
+the kernel fixes, switches by yield and by the tick, and keeps each stack behind a guard.
+
+Next milestone: userspace (K8). The full plan is in [docs/roadmap.md](docs/roadmap.md).
 
 ## Requirements
 

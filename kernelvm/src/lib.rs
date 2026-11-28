@@ -49,6 +49,25 @@ pub const HEAP_BASE: u64 = KERNEL_OFFSET + (448 << 30);
 /// The most the heap can grow to: 1 GiB.
 pub const HEAP_WINDOW: u64 = 1 << 30;
 
+/// Where the kernel threads' stacks live (ADR 0037): 416 GiB into the upper
+/// half, between the device window and the heap, in a window of its own.
+pub const THREAD_STACK_BASE: u64 = KERNEL_OFFSET + (416 << 30);
+/// The window's size: 1 GiB.
+pub const THREAD_STACK_WINDOW: u64 = 1 << 30;
+/// One thread's slot: its stack in the top half and, below it, the same size
+/// again that is never mapped, so an overflow faults before it reaches the
+/// stack of the slot below.
+pub const THREAD_SLOT_SIZE: u64 = 64 << 10;
+/// The mapped part of a slot.
+pub const THREAD_STACK_SIZE: u64 = THREAD_SLOT_SIZE / 2;
+
+/// The stack of the thread in slot `index`: the range that is mapped, read and
+/// write, never executed. Its top is the thread's initial stack pointer.
+pub const fn thread_stack(index: usize) -> core::ops::Range<u64> {
+    let slot = THREAD_STACK_BASE + index as u64 * THREAD_SLOT_SIZE;
+    slot + THREAD_STACK_SIZE..slot + THREAD_SLOT_SIZE
+}
+
 /// The frames mapping `pages` consecutive pages inside the heap window takes:
 /// the pages themselves, one level 3 table per 512 of them, and up to three more
 /// tables where the range starts and ends (the window is one level 1 entry, so at

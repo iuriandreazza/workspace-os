@@ -601,8 +601,12 @@ impl fmt::Write for Console {
             return Ok(());
         }
         // SAFETY: `base` is the PL011 the device tree describes. The kernel is
-        // its only user: the boot code parks every core but the boot core and
-        // masks interrupts, so nothing else can drive the UART concurrently.
+        // its only user: the boot code parks every core but the boot core, and a
+        // `klog!` line holds IRQs masked for the whole line (`log::line`, ADR 0037),
+        // so no handler and no other thread writes into it. Other writers run in
+        // the boot thread before the scheduler starts, or with IRQs masked (the
+        // panic report); a thread that writes outside `klog!` can interleave with
+        // another's text, which garbles output and nothing else.
         unsafe { Pl011::new(base) }.write_str(text)
     }
 }

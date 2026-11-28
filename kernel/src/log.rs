@@ -23,6 +23,9 @@ impl Level {
 }
 
 pub fn line(out: &mut impl Write, level: Level, message: fmt::Arguments) {
+    // One line is several writes: a tick must not let another thread's line in
+    // between them (ADR 0037).
+    let _irqs_masked = crate::arch::IrqGuard::new();
     let (tag, color) = level.tag();
     let text = if matches!(level, Level::Error) {
         91

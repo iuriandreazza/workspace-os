@@ -11,6 +11,7 @@ mod interrupts;
 mod log;
 mod memory;
 mod memory_image;
+mod threads;
 
 use core::panic::PanicInfo;
 
@@ -225,6 +226,7 @@ pub extern "C" fn kernel_main(
         used.value
     );
     interrupts::selftest(&mut console, &wiring, entered_at_el3 == 1);
+    threads::selftest(&mut console);
     #[cfg(feature = "selftest-heap-exhaustion")]
     heap::exhaust(&mut console);
 
@@ -248,7 +250,7 @@ pub extern "C" fn kernel_main(
     #[cfg(feature = "selftest-unhandled-vector")]
     arch::raise_unhandled_vector();
 
-    arch::halt()
+    threads::retire_boot_thread()
 }
 
 #[panic_handler]
@@ -257,6 +259,23 @@ fn panic(info: &PanicInfo) -> ! {
     arch::disable_interrupts();
     let mut console = board::console();
     klog!(Error, console, "kernel panic: {info}");
+    klog!(
+        Error,
+        console,
+        "panicked in thread {}.",
+        threads::current_index()
+    );
+    #[cfg(feature = "selftest-thread-overflow")]
+    klog!(
+        Info,
+        console,
+        "selftest: neighbouring thread stack {}",
+        if threads::canary_intact() {
+            "intact"
+        } else {
+            "overwritten"
+        }
+    );
     #[cfg(feature = "selftest-stack-overflow")]
     klog!(
         Info,

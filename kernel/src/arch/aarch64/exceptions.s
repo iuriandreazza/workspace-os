@@ -2,7 +2,8 @@
 //
 // A synchronous exception or an IRQ taken from the kernel itself (current EL,
 // SP_ELx) saves the whole processor context, calls the Rust handler and
-// returns to the interrupted code. Every other entry is not handled yet and
+// returns to the code whose context is in the frame then: the interrupted
+// thread, or another one the scheduler put there (ADR 0037). Every other entry is not handled yet and
 // ends in a kernel panic that names the entry.
 //
 // Both run on their own stack (ADR 0026), never on the one they interrupted,
@@ -173,7 +174,7 @@ unhandled_exception_entry:
 // resumes from) with distinct values in x0 to x30, in the flags and below SP,
 // then checks that every one came back, with SP and SP_EL0. Returns 0 on
 // success.
-.macro context_selftest name, trigger
+.macro context_selftest name, trigger, seed=0x0123456789abcdef, spel0=0x0badc0ffee0ddf00, pattern=0x5e1f7e57c0de0000
 .global \name
 \name:
     stp  x18, x19, [sp, #-112]!
@@ -189,7 +190,7 @@ unhandled_exception_entry:
     // The pattern the exception stack must leave alone (ADR 0026).
     sub  x0, sp, #SELFTEST_BELOW_SP
     mov  x1, sp
-    ldr  x2, =0x5e1f7e57c0de0000
+    ldr  x2, =\pattern
 1:
     str  x2, [x0], #8
     add  x2, x2, #1
@@ -200,10 +201,10 @@ unhandled_exception_entry:
     movz x30, #0xa000, lsl #16
     msr  nzcv, x30
 .irp n, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
-    ldr  x\n, =(0x0123456789abcdef + \n * 0x1111111)
+    ldr  x\n, =(\seed + \n * 0x1111111)
 .endr
     mov  x29, sp
-    ldr  x30, =0x0badc0ffee0ddf00
+    ldr  x30, =\spel0
     msr  sp_el0, x30
     add  x30, sp, #16
     \trigger
@@ -221,17 +222,17 @@ unhandled_exception_entry:
     cmp  x30, x29
     b.ne \name\()_failed
     mrs  x30, sp_el0
-    ldr  x29, =0x0badc0ffee0ddf00
+    ldr  x29, =\spel0
     cmp  x30, x29
     b.ne \name\()_failed
 .irp n, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
-    ldr  x30, =(0x0123456789abcdef + \n * 0x1111111)
+    ldr  x30, =(\seed + \n * 0x1111111)
     cmp  x\n, x30
     b.ne \name\()_failed
 .endr
     sub  x0, sp, #SELFTEST_BELOW_SP
     mov  x1, sp
-    ldr  x2, =0x5e1f7e57c0de0000
+    ldr  x2, =\pattern
 2:
     ldr  x3, [x0], #8
     cmp  x3, x2
@@ -271,5 +272,19 @@ unhandled_exception_entry:
     msr  daifset, #2
 .endm
 
+// Gives the processor to another thread and waits to get it back (ADR 0037).
+.macro take_yield
+    svc  #0x100
+.endm
+
 context_selftest exception_selftest, take_breakpoint
 context_selftest interrupt_selftest, take_interrupt
+
+// The context test again, across a switch to another thread. Each side runs it
+// with values of its own, so a frame that was not saved or not restored shows as
+// the other thread's values coming back. The first of each pair is run by the
+// boot thread, the second by the thread it switches to, which loops on it.
+context_selftest yield_selftest, take_yield
+context_selftest yield_selftest_other, take_yield, seed=0x7a11c0de00000000, spel0=0x0ddba11feedface0, pattern=0x7e57ab1e0000f000
+context_selftest tick_switch_selftest, take_interrupt
+context_selftest tick_switch_selftest_other, take_interrupt, seed=0x7a11c0de00000000, spel0=0x0ddba11feedface0, pattern=0x7e57ab1e0000f000

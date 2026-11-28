@@ -12,7 +12,7 @@ use kernelheap::{AllocError, FreeError, Heap, growth_pages};
 use kernelvm::{HEAP_BASE, HEAP_WINDOW, PAGE_SIZE, Permissions};
 use physmem::FrameAllocator;
 
-use crate::arch::mmu;
+use crate::arch::{IrqGuard, mmu};
 use crate::log::klog;
 
 /// The heap grows by at least this many pages at a time, so a run of small
@@ -29,26 +29,26 @@ struct State {
     pages: usize,
 }
 
-/// One lock around the whole heap.
+/// One lock around the whole heap: IRQs are masked while it is held (ADR 0037),
+/// so a tick cannot switch away from a thread that holds it, and the flag still
+/// reports re-entry.
 ///
-/// Today it only detects re-entry. The kernel has one core, no interrupts and
-/// no threads, so the one way to get inside twice is a handler that allocates
-/// while the code it interrupted was inside the allocator: a bug to report, not
-/// to wait on. What each later item must do (ADR 0029):
+/// What ADR 0029 asked of the items after it, and what was done:
 ///
-/// - K6, interrupts: handlers must not allocate, or this lock masks interrupts
-///   while held (save and restore `DAIF`).
-/// - K7, threads: the same masking, because a tick must not switch away from a
-///   thread that holds the lock, or a sleeping lock once a scheduler exists.
-/// - Memory ordering: compiler fences keep the compiler from moving the heap's
-///   accesses out of the critical section; there is no hardware ordering, and
-///   none is needed with one core and no interrupts. Whoever makes an interrupt able to
-///   interleave with the allocator replaces `with` as a whole (an atomic
-///   `swap` or `compare_exchange` with acquire, a release store, and masking),
-///   not just the flag.
+/// - K6, interrupts, and K7, threads: the masking above (`IrqGuard` saves and
+///   restores `DAIF`, so it nests and never unmasks a caller that had IRQs
+///   masked). Because it is only ever held with IRQs masked, a handler never finds
+///   it held: one that allocated would not be reported. That a policy's `pick`
+///   must not allocate is a rule of its bounded time (ADR 0037), not something
+///   this check enforces.
+/// - Memory ordering: on one core the masked section is not interleaved with
+///   anything, `msr daifset` is a compiler barrier and so are the fences below;
+///   one core sees its own accesses in order, and exception entry and `eret`
+///   are context synchronisation events, so no hardware barrier or atomic
+///   `swap` is needed. K11 must replace all of this.
 /// - Panics: if the closure panics the flag stays set, and an allocation on the
 ///   panic path would hit the re-entry assertion. The panic handler must not
-///   allocate (it does not today), and K6 must keep it so.
+///   allocate (it does not).
 /// - K11, cores: a spin lock on `compare_exchange`. A plain load and store
 ///   cannot exclude a second core. Not done now because exclusive accesses to
 ///   memory that is Device or non-cacheable may never succeed on real cores
@@ -59,9 +59,9 @@ struct Locked<T> {
     value: UnsafeCell<T>,
 }
 
-// SAFETY: access goes through `with`, which refuses a second entry. With one
-// core and no interrupts that is exclusion; K6, K7 and K11 must change `with`
-// before they exist (see the type's documentation).
+// SAFETY: access goes through `with`, which masks IRQs and refuses a second
+// entry. With one core that is exclusion; K11 must change `with` before a
+// second core runs (see the type's documentation).
 unsafe impl<T: Send> Sync for Locked<T> {}
 
 impl<T> Locked<T> {
@@ -73,6 +73,8 @@ impl<T> Locked<T> {
     }
 
     fn with<R>(&self, use_value: impl FnOnce(&mut T) -> R) -> R {
+        // A tick must not switch away from a thread that holds the heap (ADR 0037).
+        let _irqs_masked = IrqGuard::new();
         // A plain load and store, not `swap`: see the type's documentation.
         assert!(
             !self.busy.load(Ordering::Relaxed),
@@ -129,12 +131,12 @@ pub fn init(frames: FrameAllocator<'static>) -> Result<(), InitError> {
             return Err(InitError::AlreadyInitialised);
         }
         let mut frames = frames;
-        let pages = mmu::grow_heap(&mut frames, HEAP_BASE, MIN_GROWTH_PAGES);
+        let pages = mmu::map_pages(&mut frames, HEAP_BASE, MIN_GROWTH_PAGES);
         if pages == 0 {
             return Err(InitError::NoMemory);
         }
         let mut heap = Heap::empty();
-        // SAFETY: `grow_heap` mapped `pages` pages at `HEAP_BASE`, read and
+        // SAFETY: `map_pages` mapped `pages` pages at `HEAP_BASE`, read and
         // write, and nothing else is ever mapped or used there.
         unsafe { heap.init(HEAP_BASE as *mut u8, pages * PAGE_SIZE as usize) }
             .expect("a mapped, aligned, non-empty range");
@@ -162,7 +164,7 @@ impl State {
         ) else {
             return false;
         };
-        let added = mmu::grow_heap(
+        let added = mmu::map_pages(
             &mut self.frames,
             HEAP_BASE + self.pages as u64 * PAGE_SIZE,
             wanted,
@@ -170,7 +172,7 @@ impl State {
         if added == 0 {
             return false;
         }
-        // SAFETY: `grow_heap` mapped `added` pages read and write right after
+        // SAFETY: `map_pages` mapped `added` pages read and write right after
         // the heap's end, which is where `pages` pages from `HEAP_BASE` end.
         unsafe { self.heap.extend(added * PAGE_SIZE as usize) }
             .expect("the pages just mapped follow the heap");
@@ -186,6 +188,11 @@ impl State {
             }
         }
     }
+}
+
+/// Whether IRQs are masked while the heap's lock is held (ADR 0037).
+pub fn lock_masks_interrupts() -> bool {
+    HEAP.state.with(|_| crate::arch::irqs_masked())
 }
 
 /// Runs `use_frames` with the frame allocator the heap owns (ADR 0033). The heap

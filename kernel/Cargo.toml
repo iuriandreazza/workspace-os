@@ -14,6 +14,7 @@ giclayout = { path = "../giclayout" }
 kernelheap = { path = "../kernelheap" }
 kernelvm = { path = "../kernelvm" }
 physmem = { path = "../physmem" }
+sched = { path = "../sched" }
 
 # Each feature makes the kernel raise an exception nothing handles, so the boot
 # smoke test can check that it still ends in a kernel panic.
@@ -37,6 +38,12 @@ selftest-dirty-tcr2 = []
 # Takes memory from the heap until it refuses, then frees it all: the refusal
 # must be reported and the heap must work again (ADR 0029).
 selftest-heap-exhaustion = []
+
+# A kernel thread panics, and another overflows its stack: each must end in a
+# report that names the thread, and the overflow must leave its neighbour whole
+# (ADR 0037).
+selftest-thread-panic = []
+selftest-thread-overflow = []
 
 # The counter frequency reads as zero, as firmware that never programmed it
 # leaves it: the boot must be refused with a message (ADR 0035).
