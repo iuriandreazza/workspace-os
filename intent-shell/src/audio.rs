@@ -282,7 +282,7 @@ mod mac {
         _descriptions: *const c_void,
     ) {
         // SAFETY: `user` is the `Arc<Recording>` pointer given to
-        // `AudioQueueNewInput`; `Recorder` keeps that reference alive until the
+        // `AudioQueueNewInput`; `AudioQueueCapture` keeps that reference alive until the
         // queue is disposed, after which this callback is never called again.
         let recording = unsafe { &*user.cast::<Recording>() };
         // SAFETY: the queue passes a buffer it allocated, whose `data` holds
