@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::action::{capped, printable};
-use crate::speech::{self, SpokenVoice};
+use crate::voices::{self, SpokenVoice};
 
 /// The version of the SOUL file this shell reads.
 pub const FORMAT: u32 = 1;
@@ -488,7 +488,7 @@ impl Soul {
         if let Some(voice) = personality.voice {
             let wanted = personality.language.as_ref();
             // The personality's own language, or else what the SOUL allows.
-            let fits = |tag: &str| speech::language_fits(voice.language, tag);
+            let fits = |tag: &str| voices::language_fits(voice.language, tag);
             match (&self.languages, wanted) {
                 (_, Some(tag)) if !fits(tag) => contradictions.push(format!(
                     "voice: {} speaks {}, not the personality's language {tag}",
@@ -546,11 +546,11 @@ impl Personality {
                     if version < 2 {
                         return Err(at("a voice needs \"format: 2\"".to_owned()));
                     }
-                    personality.voice = Some(speech::voice(value).ok_or_else(|| {
+                    personality.voice = Some(voices::voice(value).ok_or_else(|| {
                         at(format!(
                             "{} is not a voice (one of {})",
                             shown(value),
-                            speech::voice_ids()
+                            voices::voice_ids()
                         ))
                     })?);
                 }
@@ -615,7 +615,7 @@ impl Persona {
     /// else the first of the list for the reply language, chosen by code.
     pub fn spoken_voice(&self) -> &'static SpokenVoice {
         self.voice
-            .unwrap_or_else(|| speech::default_voice(self.reply_language()))
+            .unwrap_or_else(|| voices::default_voice(self.reply_language()))
     }
 
     /// The voice lines of the prompt, one per line, all of them fixed text but

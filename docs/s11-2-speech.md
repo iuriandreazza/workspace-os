@@ -23,7 +23,7 @@ Nothing in ADR 0031 failed on this machine, so there is no ADR 0038.
 | Part | Where |
 |---|---|
 | Four ports: `Transcriber`, `Synthesizer`, `AudioCapture`, `AudioPlayback`. (The ADR calls the second one "speaker"; `ports::Speaker` is already the model writing a reply, ADR 0021, so it is `Synthesizer`.) | `ports.rs` |
-| The closed list of four voices, `language_fits`, the default voice, what a reply says aloud (`speakable`), what a transcript becomes (`transcript_line`), `Mouth` (synthesise and play), `Ear` (record and transcribe), `Talker` (speaks on a thread), `Speaking` (the gate that shuts the microphone), `SharedLog` | `speech.rs` |
+| The closed list of four voices, `language_fits` and the default voice (in `voices.rs`, a leaf that imports nothing, so `soul` does not depend on the speech adapters); what a reply says aloud (`speakable`), what a transcript becomes (`transcript_line`), `Mouth` (synthesise and play), `Ear` (record and transcribe), `Talker` (speaks on a thread), `Speaking` (the gate that shuts the microphone), `SharedLog` | `speech.rs` |
 | Loopback adapters for `whisper-server` (`POST /inference`, multipart) and Piper (`GET /voices`, `POST /synthesize`); only IP addresses on the loopback interface are accepted | `speech_http.rs`, over `model::exchange` (the model's HTTP client, made to carry bytes and GET) |
 | Playback with `afplay` on a file in a private directory; capture with the AudioQueue API of macOS | `audio.rs` |
 | Format 2 of the personality: `voice`, and the third contradiction rule | `soul.rs` |
@@ -276,6 +276,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | a region with no voice gets the first voice of the list instead of one of its language | `speech_tests::a_personality_with_no_voice_is_spoken_in_the_first_voice_of_the_reply_language` |
 | tags that touch each other are kept | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
 | a closed sink still sends | `tui::tests::nothing_is_sent_through_a_closed_sink_and_the_sender_is_dropped` |
+| the queue of replies to speak has no bound | `speech_tests::a_voice_that_is_behind_drops_replies_instead_of_queueing_them_without_end` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
@@ -413,6 +414,8 @@ the speaker):
   mark): audio has no equivalent, and the text of a reply is escaped, so an odd
   character is voiced as its escape. ADR 0031 asks for the same escaping and
   cap as the screen, and that is what is done.
+- At most three replies wait to be spoken, the one playing included; a fourth
+  is not spoken and says so. Nothing stops a reply that is playing.
 - Leaving the shell while a reply is playing leaves `afplay` playing to the end
   of that reply, and its temporary file in the private directory; the next
   playback by the same user removes files older than five minutes.

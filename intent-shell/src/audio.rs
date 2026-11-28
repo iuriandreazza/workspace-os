@@ -136,10 +136,11 @@ fn write_reply(dir: &std::path::Path, wav: &[u8]) -> Result<PathBuf, String> {
             .open(&path)
         {
             Ok(mut file) => {
-                return file
-                    .write_all(wav)
-                    .map(|()| path)
-                    .map_err(|e| format!("cannot write the audio: {e}"));
+                return file.write_all(wav).map(|()| path.clone()).map_err(|e| {
+                    // Half a reply as audio is still the reply: it does not stay.
+                    let _ = fs::remove_file(&path);
+                    format!("cannot write the audio: {e}")
+                });
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(format!("cannot write the audio: {e}")),

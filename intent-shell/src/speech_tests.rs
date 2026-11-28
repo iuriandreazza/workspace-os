@@ -383,6 +383,45 @@ fn the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been
 }
 
 #[test]
+fn a_voice_that_is_behind_drops_replies_instead_of_queueing_them_without_end() {
+    let (started_tx, started) = channel();
+    let (release_tx, release) = channel();
+    let (reported_tx, reported) = channel();
+    let speaking = Speaking::default();
+    let mouth = Mouth::new(
+        Box::new(FakeSynthesizer::with(&["pt_BR-cadu-medium"])),
+        Box::new(Held {
+            started: started_tx,
+            release: Mutex::new(release),
+        }),
+        voice("cadu").unwrap(),
+    );
+    let talker = Talker::spawn(mouth, speaking.clone(), move |why| {
+        reported_tx.send(why).unwrap();
+    });
+    for n in 0..5 {
+        talker.say(format!("reply {n}"));
+    }
+    started.recv_timeout(Duration::from_secs(10)).unwrap();
+    // Three are held (one playing, two waiting); the other two were dropped with a line.
+    for _ in 0..2 {
+        let why = reported.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(why.contains("the voice is behind"), "{why}");
+    }
+    assert!(reported.try_recv().is_err());
+    for _ in 0..3 {
+        release_tx.send(()).unwrap();
+    }
+    for _ in 0..300 {
+        if !speaking.active() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!speaking.active());
+}
+
+#[test]
 fn a_failure_while_speaking_is_reported_and_reopens_the_microphone() {
     let (reported_tx, reported) = channel();
     let speaking = Speaking::default();

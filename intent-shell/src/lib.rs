@@ -28,6 +28,7 @@ pub mod soul_change;
 pub mod soul_files;
 pub mod speech;
 pub mod speech_http;
+pub mod voices;
 
 #[cfg(feature = "tui")]
 pub mod tui;
