@@ -273,6 +273,9 @@ fail, and the code was put back. The list is the second pass, after review round
 | forgetting keeps what was heard | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
 | a bracket with a digit, or attached to a word, is a tag | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
 | the sending of a recording has no deadline | `speech_tests::a_server_that_never_reads_cannot_hold_a_recording_being_sent_past_the_timeout` |
+| a region with no voice gets the first voice of the list instead of one of its language | `speech_tests::a_personality_with_no_voice_is_spoken_in_the_first_voice_of_the_reply_language` |
+| tags that touch each other are kept | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
+| a closed sink still sends | `tui::tests::nothing_is_sent_through_a_closed_sink_and_the_sender_is_dropped` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
@@ -402,8 +405,9 @@ the speaker):
   checked. The shell only guarantees the audio does not leave the machine.
   Pick other ports with `--whisper` and `--tts`, and start the servers before
   the shell.
-- A language the list has no voice for (`es`, `pt-PT`) is spoken with the first
-  voice of the list, a pt-BR one. A named voice is checked against the
+- A language the list has no voice for (`es`) is spoken with the first voice of
+  the list, a pt-BR one; a region with no voice of its own (`en-GB`, `pt-PT`)
+  gets the voice of its language that the list has (`joe`, `cadu`). A named voice is checked against the
   languages; an absent one is not, because there is nothing to compare.
 - A reply is voiced without the screen's frame ("Reply from the model", the
   mark): audio has no equivalent, and the text of a reply is escaped, so an odd

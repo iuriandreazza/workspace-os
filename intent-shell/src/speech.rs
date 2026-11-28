@@ -101,11 +101,18 @@ pub fn language_fits(voice_language: &str, wanted: &str) -> bool {
 /// (a SOUL that says `any` and a personality that names none) it is the first
 /// voice of the list, because there is nothing to match.
 pub fn default_voice(language: Option<&str>) -> &'static SpokenVoice {
+    let base = |tag: &str| tag.split('-').next().unwrap_or_default().to_owned();
     language
         .and_then(|wanted| {
             VOICES
                 .iter()
                 .find(|voice| language_fits(voice.language, wanted))
+                // No voice of that region: one of the same language, `en-GB` for `joe`.
+                .or_else(|| {
+                    VOICES
+                        .iter()
+                        .find(|voice| base(voice.language) == base(wanted))
+                })
         })
         .unwrap_or(&VOICES[0])
 }
@@ -218,7 +225,7 @@ pub fn transcript_line(raw: &str) -> Option<String> {
             && text[end + 1..]
                 .chars()
                 .next()
-                .is_none_or(char::is_whitespace)
+                .is_none_or(|c| c.is_whitespace() || c == '[')
         {
             text = text[end + 1..].trim_start();
         }
@@ -228,7 +235,7 @@ pub fn transcript_line(raw: &str) -> Option<String> {
             && text[..start]
                 .chars()
                 .next_back()
-                .is_none_or(char::is_whitespace)
+                .is_none_or(|c| c.is_whitespace() || c == ']')
         {
             text = text[..start].trim_end();
         }

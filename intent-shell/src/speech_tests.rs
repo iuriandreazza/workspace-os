@@ -133,6 +133,9 @@ fn a_personality_with_no_voice_is_spoken_in_the_first_voice_of_the_reply_languag
     assert_eq!(default_voice(Some("pt-BR")).id, "cadu");
     assert_eq!(default_voice(Some("en")).id, "joe");
     assert_eq!(default_voice(Some("fr")).id, "cadu");
+    // A region with no voice of its own gets a voice of the same language.
+    assert_eq!(default_voice(Some("en-GB")).id, "joe");
+    assert_eq!(default_voice(Some("pt-PT")).id, "cadu");
     assert_eq!(default_voice(None).id, "cadu");
     // The reply language is the personality's, else the first the SOUL allows.
     // The SOUL of these tests lists `en` first.
@@ -431,7 +434,14 @@ fn what_was_heard_is_one_escaped_line_with_the_reply_language_passed_on() {
 
 #[test]
 fn silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped() {
-    for raw in ["", "   ", "[BLANK_AUDIO]", " (silêncio) ", "[ Silence ]"] {
+    for raw in [
+        "",
+        "   ",
+        "[BLANK_AUDIO][Music]",
+        "[BLANK_AUDIO]",
+        " (silêncio) ",
+        "[ Silence ]",
+    ] {
         assert_eq!(transcript_line(raw), None, "{raw:?}");
     }
     assert_eq!(
@@ -447,6 +457,9 @@ fn silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped() {
         transcript_line("[BLANK_AUDIO] list downloads [Music]").unwrap(),
         "list downloads"
     );
+    // Tags that touch each other are all dropped, a bracket with a digit is not.
+    assert_eq!(transcript_line("[Music][2] list").unwrap(), "[2] list");
+    assert_eq!(transcript_line("list [2][Music]").unwrap(), "list [2]");
     // A bracket is a tag only as a word of its own with no digit in it.
     for speech in [
         "set the array a[0]",

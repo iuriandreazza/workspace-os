@@ -217,15 +217,17 @@ fn worker(
     let mut talker = None;
     let mut closing = None;
     if let (Some(speech), Some(shared)) = (speech, shared) {
+        // Both speech threads send through one closable sink, so neither keeps
+        // the event channel open once the worker has ended.
+        let sink: Sink = Arc::new(Mutex::new(Some(events.clone())));
+        closing = Some(Closing(Arc::clone(&sink)));
         if let Some(mouth) = speech.mouth {
-            let notes = events.clone();
+            let notes = Arc::clone(&sink);
             talker = Some(Talker::spawn(mouth, speech.speaking, move |why| {
-                let _ = notes.send(Event::Note(format!("▸ {why}")));
+                send_through(&notes, Event::Note(format!("▸ {why}")));
             }));
         }
         if let Some(ear) = speech.ear {
-            let sink = Arc::new(Mutex::new(Some(events.clone())));
-            closing = Some(Closing(Arc::clone(&sink)));
             let language = speech.listen_language;
             thread::spawn(move || listen(ear, language.as_deref(), &listens, &sink, shared));
         }
@@ -254,6 +256,14 @@ fn worker(
 /// it ends, by returning or by a panic, so that the interface sees the end of
 /// the worker as it always did: the thread keeps no sender of the event channel alive.
 type Sink = Arc<Mutex<Option<Sender<Event>>>>;
+
+/// Send an event if the sink is still open; whether it was sent.
+fn send_through(sink: &Sink, event: Event) -> bool {
+    sink.lock()
+        .ok()
+        .and_then(|open| open.as_ref().map(|events| events.send(event).is_ok()))
+        .unwrap_or(false)
+}
 
 struct Closing(Sink);
 
@@ -306,11 +316,7 @@ fn listen(
                 }),
             ),
         };
-        let sent = sink.lock().ok().and_then(|open| {
-            open.as_ref()
-                .map(|events| events.send(Event::Heard(recording, heard)))
-        });
-        if !matches!(sent, Some(Ok(()))) {
+        if !send_through(sink, Event::Heard(recording, heard)) {
             return;
         }
     }
@@ -1193,6 +1199,20 @@ mod tests {
         assert!(matches!(
             events.recv_timeout(Duration::from_secs(5)),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn nothing_is_sent_through_a_closed_sink_and_the_sender_is_dropped() {
+        let (tx, events) = channel();
+        let sink: Sink = Arc::new(Mutex::new(Some(tx)));
+        assert!(send_through(&sink, Event::Note("a".to_owned())));
+        assert_eq!(events.try_recv(), Ok(Event::Note("a".to_owned())));
+        drop(Closing(Arc::clone(&sink)));
+        assert!(!send_through(&sink, Event::Note("b".to_owned())));
+        assert!(matches!(
+            events.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
         ));
     }
 
