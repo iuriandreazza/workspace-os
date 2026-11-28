@@ -232,3 +232,35 @@ pub trait DecisionLog {
     /// written, because every model decision must be logged (ADR 0002).
     fn record(&mut self, event: Value) -> Result<(), String>;
 }
+
+/// Audio in, words out (ADR 0031, section 4). What comes back is untrusted
+/// text, like anything a person typed.
+pub trait Transcriber {
+    /// The words in a WAV file. `language` is a tag such as `pt-BR` when the
+    /// session knows which language to expect.
+    fn transcribe(&self, wav: &[u8], language: Option<&str>) -> Result<String, String>;
+}
+
+/// Words in, audio out: the text-to-speech engine, which is not the `Speaker`
+/// above (that one is the model writing a reply).
+pub trait Synthesizer {
+    /// The names of the voices the engine has loaded.
+    fn voices(&self) -> Result<Vec<String>, String>;
+    /// A WAV file of `text` in the voice named `voice`.
+    fn synthesize(&self, voice: &str, text: &str) -> Result<Vec<u8>, String>;
+}
+
+/// The microphone, for one utterance at a time.
+pub trait AudioCapture {
+    /// Start recording. An error says why the microphone cannot be used.
+    fn start(&mut self) -> Result<(), String>;
+    /// Stop and give what was recorded as a mono 16-bit WAV file.
+    fn finish(&mut self) -> Result<Vec<u8>, String>;
+    /// Stop and drop what was recorded.
+    fn cancel(&mut self);
+}
+
+/// The speaker: plays a WAV file and returns when it has ended.
+pub trait AudioPlayback {
+    fn play(&self, wav: &[u8]) -> Result<(), String>;
+}

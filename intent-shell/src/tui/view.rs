@@ -29,6 +29,17 @@ fn dim(text: String) -> Line<'static> {
     Line::styled(text, Style::new().fg(Color::DarkGray))
 }
 
+/// The key hint under the input. The ones that only exist with `--listen` are
+/// wrapped, so no key of them is cut off on a narrow terminal; the old ones are
+/// drawn as they always were.
+fn hint(lines: &mut Vec<Line<'static>>, text: &str, wrapped: bool, width: usize) {
+    if wrapped {
+        lines.extend(wrap(text, width).into_iter().map(dim));
+    } else {
+        lines.push(dim(text.to_owned()));
+    }
+}
+
 /// The lines under the history, for every mode but a root confirmation.
 fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![dim("─".repeat(width))];
@@ -38,13 +49,33 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
                 "▸ {}",
                 tail(&state.input, width.saturating_sub(3))
             )));
-            lines.push(dim("Enter send · PgUp/Dn scroll · ^D quit".to_owned()));
+            hint(&mut lines, state.input_hint(), state.listening(), width);
         }
         Mode::Busy { label, since_ms } => {
             let frame = SPINNER[(state.clock_ms / 100) as usize % SPINNER.len()];
             let seconds = state.clock_ms.saturating_sub(*since_ms) / 1000;
             lines.push(Line::from(format!("{frame} {label}… {seconds}s")));
-            lines.push(dim("PgUp/Dn scroll · ^C quit".to_owned()));
+            match *label {
+                "listening" => hint(
+                    &mut lines,
+                    &format!(
+                        "Enter or ^T stop (only the first {} s are kept) · Esc cancel · ^C quit",
+                        crate::speech::MAX_RECORDING_SECONDS
+                    ),
+                    true,
+                    width,
+                ),
+                "transcribing" => hint(
+                    &mut lines,
+                    &format!(
+                        "gives up after {} s · ^C quit",
+                        crate::speech::TRANSCRIBE_SECONDS
+                    ),
+                    true,
+                    width,
+                ),
+                _ => hint(&mut lines, "PgUp/Dn scroll · ^C quit", false, width),
+            }
         }
         Mode::Plan { .. } => lines.extend(
             wrap(PLAN_KEYS, width)
@@ -263,6 +294,29 @@ mod tests {
         state.clock_ms = 3200;
         let screen = render(&state, 40, 12);
         assert!(screen[10].contains("asking the model… 3s"), "{screen:#?}");
+    }
+
+    #[test]
+    fn the_microphone_hints_wrap_on_a_narrow_terminal_and_the_old_ones_are_as_before() {
+        let narrow = |state: &State| render(state, 40, 12).join("\n");
+        let mut listening = state_with(&[]).with_listening();
+        let input = narrow(&listening);
+        assert!(input.contains("^D quit"), "{input}");
+        listening.on_key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('t'),
+            ratatui::crossterm::event::KeyModifiers::CONTROL,
+        ));
+        let recording = narrow(&listening);
+        assert!(
+            recording.contains("Esc cancel") && recording.contains("^C quit"),
+            "{recording}"
+        );
+        // Without `--listen` the hint is the single line it was.
+        let plain = narrow(&state_with(&[]));
+        assert!(
+            plain.contains("Enter send · PgUp/Dn scroll · ^D quit"),
+            "{plain}"
+        );
     }
 
     #[test]

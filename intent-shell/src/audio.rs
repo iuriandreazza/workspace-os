@@ -1,0 +1,674 @@
+//! The two audio ports of the host: the speaker and the microphone (ADR 0031,
+//! section 4).
+//!
+//! Playback hands a temporary WAV file to the machine's own player. Capture on
+//! macOS is the AudioQueue API of the system's AudioToolbox, declared here by
+//! hand, so no crate is added: `cpal` and `hound` are Apache-2.0 only
+//! (ADR 0005), and `coreaudio-sys` would bring a C binding generator for a handful of
+//! declarations. Other systems have neither adapter yet: the message says so.
+
+use std::fs::{self, DirBuilder, OpenOptions};
+use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use crate::ports::{AudioCapture, AudioPlayback};
+
+/// Whisper reads 16 kHz.
+pub const SAMPLE_RATE: u32 = 16_000;
+/// An utterance is a request: this stops a forgotten recording from filling memory.
+pub const MAX_SECONDS: u32 = crate::speech::MAX_RECORDING_SECONDS;
+const BYTES_PER_SECOND: usize = SAMPLE_RATE as usize * 2;
+/// Less than this is a key pressed twice, not a request.
+const MIN_BYTES: usize = BYTES_PER_SECOND / 4;
+/// A reply is a few sentences; a player that runs longer than this is stuck.
+const PLAYBACK_LIMIT: Duration = Duration::from_secs(180);
+
+/// A mono 16-bit little-endian PCM file of `samples`, with its header.
+pub fn wav_of(samples: &[u8]) -> Vec<u8> {
+    let data = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+    let mut wav = Vec::with_capacity(44 + samples.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&data.saturating_add(36).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    wav.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes()); // bytes per frame
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    wav.extend_from_slice(samples);
+    wav
+}
+
+/// What a finished recording is checked for before it is sent to anything.
+pub fn checked_recording(samples: &[u8]) -> Result<Vec<u8>, String> {
+    if samples.len() < MIN_BYTES {
+        return Err("nothing was recorded: speak after the recording starts".to_owned());
+    }
+    // A microphone the terminal may not use gives zeros, not an error.
+    if samples.iter().all(|&byte| byte == 0) {
+        return Err("the microphone gave only silence: the terminal may lack permission to use it (System Settings, Privacy & Security, Microphone)".to_owned());
+    }
+    Ok(wav_of(samples))
+}
+
+/// The directory only this user can open, where audio is written for the player.
+fn private_directory() -> Result<PathBuf, String> {
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    private_directory_of(
+        &std::env::temp_dir().join(format!("workspace-os-speech-{uid}")),
+        uid,
+    )
+}
+
+/// `dir`, made with mode 0700 if it is not there, once it is known to be a
+/// directory of `uid` that nobody else can open.
+fn private_directory_of(dir: &std::path::Path, uid: u32) -> Result<PathBuf, String> {
+    let made = DirBuilder::new().mode(0o700).create(dir);
+    if let Err(e) = made
+        && e.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(format!("cannot make {}: {e}", dir.display()));
+    }
+    // Whoever made it first may have been someone else, or it may be a link.
+    let meta = fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
+    if !meta.is_dir() || meta.uid() != uid || meta.permissions().mode() & 0o077 != 0 {
+        return Err(format!(
+            "{} is not a private directory of yours; remove it and try again",
+            dir.display()
+        ));
+    }
+    Ok(dir.to_path_buf())
+}
+
+/// Plays through macOS's `afplay`, on a temporary file that is removed after.
+pub struct AfplayPlayback {
+    program: PathBuf,
+    limit: Duration,
+}
+
+impl AfplayPlayback {
+    pub fn new() -> Self {
+        Self {
+            program: PathBuf::from("/usr/bin/afplay"),
+            limit: PLAYBACK_LIMIT,
+        }
+    }
+
+    /// Write the audio in `dir`, play it, and remove it whatever came of the playing.
+    fn play_in(&self, dir: &std::path::Path, wav: &[u8]) -> Result<(), String> {
+        remove_stale(dir);
+        let path = write_reply(dir, wav)?;
+        let played = self.run(&path);
+        let _ = fs::remove_file(&path);
+        played
+    }
+
+    fn run(&self, path: &std::path::Path) -> Result<(), String> {
+        run_player(&self.program, path, self.limit)
+    }
+}
+
+impl Default for AfplayPlayback {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How old a reply file must be to be taken for one a closed shell left.
+const STALE_AFTER: Duration = Duration::from_secs(300);
+
+/// Remove the replies a shell that was closed while it spoke left behind: the
+/// file holds the reply as audio, so it does not stay.
+fn remove_stale(dir: &std::path::Path) {
+    let own = format!("reply-{}-", std::process::id());
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age > STALE_AFTER);
+        if name.starts_with("reply-") && !name.starts_with(&own) && old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+static FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+impl AudioPlayback for AfplayPlayback {
+    fn play(&self, wav: &[u8]) -> Result<(), String> {
+        self.play_in(&private_directory()?, wav)
+    }
+}
+
+/// The audio in a new file of the directory. A name taken by a file a closed
+/// shell left (its process number may come back) is skipped, never an error.
+fn write_reply(dir: &std::path::Path, wav: &[u8]) -> Result<PathBuf, String> {
+    for _ in 0..100 {
+        let path = dir.join(format!(
+            "reply-{}-{}.wav",
+            std::process::id(),
+            FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                return file.write_all(wav).map(|()| path.clone()).map_err(|e| {
+                    // Half a reply as audio is still the reply: it does not stay.
+                    let _ = fs::remove_file(&path);
+                    format!("cannot write the audio: {e}")
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("cannot write the audio: {e}")),
+        }
+    }
+    Err("cannot write the audio: no free file name".to_owned())
+}
+
+fn run_player(
+    program: &std::path::Path,
+    path: &std::path::Path,
+    limit: Duration,
+) -> Result<(), String> {
+    let mut child = Command::new(program)
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("cannot run {}: {e}", program.display()))?;
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(format!("the player stopped with {status}")),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("the player did not finish".to_owned());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// The player of this system, or why there is none.
+pub fn platform_playback() -> Result<Box<dyn AudioPlayback + Send>, String> {
+    if cfg!(target_os = "macos") {
+        Ok(Box::new(AfplayPlayback::new()))
+    } else {
+        Err("playing audio is only implemented for macOS (afplay) so far".to_owned())
+    }
+}
+
+/// The microphone of this system, or why there is none.
+pub fn platform_capture() -> Result<Box<dyn AudioCapture + Send>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(Box::new(mac::AudioQueueCapture::default()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("recording audio is only implemented for macOS (AudioQueue) so far".to_owned())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::ffi::c_void;
+    use std::ptr;
+    use std::sync::{Arc, Mutex};
+
+    use super::{BYTES_PER_SECOND, MAX_SECONDS, SAMPLE_RATE, checked_recording};
+    use crate::ports::AudioCapture;
+
+    #[repr(C)]
+    struct StreamDescription {
+        sample_rate: f64,
+        format_id: u32,
+        format_flags: u32,
+        bytes_per_packet: u32,
+        frames_per_packet: u32,
+        bytes_per_frame: u32,
+        channels_per_frame: u32,
+        bits_per_channel: u32,
+        reserved: u32,
+    }
+
+    #[repr(C)]
+    struct QueueBuffer {
+        capacity: u32,
+        data: *mut c_void,
+        size: u32,
+        user_data: *mut c_void,
+        description_capacity: u32,
+        descriptions: *mut c_void,
+        description_count: u32,
+    }
+
+    type Queue = *mut c_void;
+    type InputCallback = extern "C" fn(
+        user: *mut c_void,
+        queue: Queue,
+        buffer: *mut QueueBuffer,
+        start_time: *const c_void,
+        packets: u32,
+        descriptions: *const c_void,
+    );
+
+    // SAFETY: these are the AudioToolbox functions of the system, declared with the
+    // signatures of its headers; each call below states why its arguments are valid.
+    #[link(name = "AudioToolbox", kind = "framework")]
+    unsafe extern "C" {
+        fn AudioQueueNewInput(
+            format: *const StreamDescription,
+            callback: InputCallback,
+            user: *mut c_void,
+            run_loop: *const c_void,
+            run_loop_mode: *const c_void,
+            flags: u32,
+            queue: *mut Queue,
+        ) -> i32;
+        fn AudioQueueAllocateBuffer(queue: Queue, bytes: u32, buffer: *mut *mut QueueBuffer)
+        -> i32;
+        fn AudioQueueEnqueueBuffer(
+            queue: Queue,
+            buffer: *mut QueueBuffer,
+            descriptions: u32,
+            description_array: *const c_void,
+        ) -> i32;
+        fn AudioQueueStart(queue: Queue, start_time: *const c_void) -> i32;
+        fn AudioQueueStop(queue: Queue, immediately: u8) -> i32;
+        fn AudioQueueDispose(queue: Queue, immediately: u8) -> i32;
+    }
+
+    const LINEAR_PCM: u32 = u32::from_be_bytes(*b"lpcm");
+    const SIGNED_INTEGER_PACKED: u32 = 0x4 | 0x8;
+    const BUFFERS: usize = 8;
+    /// A fiftieth of a second of audio per buffer: what is lost at the end of a
+    /// recording is at most the buffer being filled when it is stopped.
+    const BUFFER_BYTES: u32 = (SAMPLE_RATE / 50) * 2;
+
+    /// What the audio thread writes and the caller reads.
+    struct Recording {
+        samples: Mutex<Vec<u8>>,
+    }
+
+    extern "C" fn on_audio(
+        user: *mut c_void,
+        queue: Queue,
+        buffer: *mut QueueBuffer,
+        _start_time: *const c_void,
+        _packets: u32,
+        _descriptions: *const c_void,
+    ) {
+        // SAFETY: `user` is the `Arc<Recording>` pointer given to
+        // `AudioQueueNewInput`; `AudioQueueCapture` keeps that reference alive until the
+        // queue is disposed, after which this callback is never called again.
+        let recording = unsafe { &*user.cast::<Recording>() };
+        // SAFETY: the queue passes a buffer it allocated, whose `data` holds
+        // `size` valid bytes for the duration of this call.
+        let chunk = unsafe {
+            let buffer = &*buffer;
+            std::slice::from_raw_parts(buffer.data.cast::<u8>(), buffer.size as usize)
+        };
+        if let Ok(mut samples) = recording.samples.lock() {
+            let room = (MAX_SECONDS as usize * BYTES_PER_SECOND).saturating_sub(samples.len());
+            samples.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        }
+        // SAFETY: the buffer belongs to this queue and is handed back to it.
+        unsafe { AudioQueueEnqueueBuffer(queue, buffer, 0, ptr::null()) };
+    }
+
+    /// One open queue: the handle and the recording its callback writes to.
+    struct Running {
+        queue: Queue,
+        recording: *const Recording,
+    }
+
+    // SAFETY: the queue handle and the pointer are only used by the thread that
+    // owns the `AudioQueueCapture`, one call at a time; the audio thread only
+    // touches the `Recording`, which is `Sync`.
+    unsafe impl Send for Running {}
+
+    #[derive(Default)]
+    pub struct AudioQueueCapture {
+        running: Option<Running>,
+    }
+
+    impl AudioQueueCapture {
+        fn stop(&mut self) -> Option<Arc<Recording>> {
+            let running = self.running.take()?;
+            // SAFETY: `queue` was created by `AudioQueueNewInput` and is
+            // disposed once. An immediate stop returns after the callbacks it
+            // owes, and disposing then means the callback will not run again.
+            // (A stop that is not immediate returns at once and keeps calling
+            // back, which disposing would throw away: measured, not assumed.)
+            unsafe {
+                AudioQueueStop(running.queue, 1);
+                AudioQueueDispose(running.queue, 1);
+            }
+            // SAFETY: the pointer came from `Arc::into_raw` in `start` and the
+            // callback that borrowed it is finished.
+            Some(unsafe { Arc::from_raw(running.recording) })
+        }
+    }
+
+    impl AudioCapture for AudioQueueCapture {
+        fn start(&mut self) -> Result<(), String> {
+            if self.running.is_some() {
+                return Err("the microphone is already recording".to_owned());
+            }
+            let format = StreamDescription {
+                sample_rate: f64::from(SAMPLE_RATE),
+                format_id: LINEAR_PCM,
+                format_flags: SIGNED_INTEGER_PACKED,
+                bytes_per_packet: 2,
+                frames_per_packet: 1,
+                bytes_per_frame: 2,
+                channels_per_frame: 1,
+                bits_per_channel: 16,
+                reserved: 0,
+            };
+            let recording = Arc::new(Recording {
+                samples: Mutex::new(Vec::new()),
+            });
+            let user = Arc::into_raw(Arc::clone(&recording));
+            let mut queue: Queue = ptr::null_mut();
+            // SAFETY: `format` and `queue` are live for the call; `user` stays
+            // valid until `stop` reclaims it; a null run loop makes the queue
+            // call back on its own thread.
+            let made = unsafe {
+                AudioQueueNewInput(
+                    &raw const format,
+                    on_audio,
+                    user.cast_mut().cast(),
+                    ptr::null(),
+                    ptr::null(),
+                    0,
+                    &raw mut queue,
+                )
+            };
+            let reclaim = || {
+                // SAFETY: `user` came from `Arc::into_raw` above and the queue
+                // that would have used it was not created or is gone.
+                drop(unsafe { Arc::from_raw(user) });
+            };
+            if made != 0 || queue.is_null() {
+                reclaim();
+                return Err(format!("the microphone cannot be opened (error {made})"));
+            }
+            for _ in 0..BUFFERS {
+                let mut buffer: *mut QueueBuffer = ptr::null_mut();
+                // SAFETY: `queue` is the live queue made above; `buffer` is
+                // written by the call and used only if it succeeded.
+                let ready = unsafe {
+                    AudioQueueAllocateBuffer(queue, BUFFER_BYTES, &raw mut buffer) == 0
+                        && AudioQueueEnqueueBuffer(queue, buffer, 0, ptr::null()) == 0
+                };
+                if !ready {
+                    // SAFETY: the queue is live and disposed once, here.
+                    unsafe { AudioQueueDispose(queue, 1) };
+                    reclaim();
+                    return Err("the microphone buffers cannot be set up".to_owned());
+                }
+            }
+            // SAFETY: `queue` is live and has buffers enqueued.
+            let started = unsafe { AudioQueueStart(queue, ptr::null()) };
+            if started != 0 {
+                // SAFETY: the queue is live and disposed once, here.
+                unsafe { AudioQueueDispose(queue, 1) };
+                reclaim();
+                return Err(format!(
+                    "the microphone cannot be started (error {started})"
+                ));
+            }
+            self.running = Some(Running {
+                queue,
+                recording: user,
+            });
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<Vec<u8>, String> {
+            let recording = self.stop().ok_or("the microphone was not recording")?;
+            let samples = recording
+                .samples
+                .lock()
+                .map_err(|_| "the recording was lost".to_owned())?;
+            checked_recording(&samples)
+        }
+
+        fn cancel(&mut self) {
+            drop(self.stop());
+        }
+    }
+
+    impl Drop for AudioQueueCapture {
+        fn drop(&mut self) {
+            self.cancel();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tests that write replies share the global file counter: one at a time.
+    static COUNTER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ws-audio-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn the_audio_directory_must_be_a_real_directory_of_ours_that_nobody_else_can_open() {
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        let base = scratch("private");
+        fs::create_dir_all(&base).unwrap();
+        // Made here: mode 0700, ours.
+        let made = private_directory_of(&base.join("mine"), uid).unwrap();
+        assert_eq!(
+            fs::metadata(&made).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        // Already there and fine.
+        assert!(private_directory_of(&made, uid).is_ok());
+        // Open to others.
+        let open = base.join("open");
+        fs::create_dir(&open).unwrap();
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            private_directory_of(&open, uid)
+                .unwrap_err()
+                .contains("not a private directory")
+        );
+        // Somebody else's: the owner is not who we say we are.
+        assert!(private_directory_of(&made, uid + 1).is_err());
+        // A link, even to a good directory, and a file.
+        std::os::unix::fs::symlink(&made, base.join("link")).unwrap();
+        assert!(private_directory_of(&base.join("link"), uid).is_err());
+        fs::write(base.join("file"), b"x").unwrap();
+        assert!(private_directory_of(&base.join("file"), uid).is_err());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed() {
+        let _one_at_a_time = COUNTER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch("play");
+        fs::create_dir_all(&dir).unwrap();
+        let listing = || fs::read_dir(&dir).unwrap().count();
+        let with = |program: &str, limit: Duration| AfplayPlayback {
+            program: PathBuf::from(program),
+            limit,
+        };
+        // A reply a closed shell left, long ago, goes with the next playback.
+        let left = dir.join("reply-1-0.wav");
+        fs::File::create(&left)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - STALE_AFTER * 2)
+            .unwrap();
+        assert!(
+            with("/usr/bin/true", PLAYBACK_LIMIT)
+                .play_in(&dir, b"audio")
+                .is_ok()
+        );
+        assert_eq!(listing(), 0, "the leftover and the new audio are both gone");
+        let error = with("/usr/bin/false", PLAYBACK_LIMIT)
+            .play_in(&dir, b"audio")
+            .unwrap_err();
+        assert!(error.contains("stopped"), "{error}");
+        assert_eq!(listing(), 0);
+        // A player that never ends is killed at the limit: `yes` run on the audio file
+        // writes to nowhere for ever, and no process with that file's path is left.
+        let started = Instant::now();
+        let error = with("/usr/bin/yes", Duration::from_millis(500))
+            .play_in(&dir, b"audio")
+            .unwrap_err();
+        assert!(error.contains("did not finish"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let pattern = format!("yes {}/reply-", dir.display());
+        let gone = (0..100).any(|_| {
+            let running = Command::new("pgrep")
+                .args(["-f", &pattern])
+                .output()
+                .expect("this test needs pgrep to see whether the player is left running")
+                .status
+                .success();
+            if running {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            !running
+        });
+        assert!(gone, "the stuck player was left running");
+        assert_eq!(listing(), 0);
+        assert!(
+            with("/nonexistent/player", PLAYBACK_LIMIT)
+                .play_in(&dir, b"audio")
+                .is_err()
+        );
+        assert_eq!(listing(), 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole() {
+        let _one_at_a_time = COUNTER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!("ws-audio-taken-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // Files a closed shell with this very process number left behind.
+        let next = FILE_COUNTER.load(Ordering::Relaxed);
+        for n in next..next + 3 {
+            fs::write(
+                dir.join(format!("reply-{}-{n}.wav", std::process::id())),
+                b"old",
+            )
+            .unwrap();
+        }
+        let path = write_reply(&dir, b"new audio").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new audio");
+        // The reply as audio is the user's alone.
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::read(dir.join(format!("reply-{}-{next}.wav", std::process::id()))).unwrap(),
+            b"old"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("ws-audio-stale-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let old = std::time::SystemTime::now() - STALE_AFTER * 2;
+        let make = |name: String, age: Option<std::time::SystemTime>| {
+            let file = fs::File::create(dir.join(&name)).unwrap();
+            if let Some(time) = age {
+                file.set_modified(time).unwrap();
+            }
+            name
+        };
+        let own = format!("reply-{}-0.wav", std::process::id());
+        let stale = make("reply-1-0.wav".to_owned(), Some(old));
+        let recent = make("reply-2-0.wav".to_owned(), None);
+        let mine_old = make(own, Some(old));
+        let other = make("notes.txt".to_owned(), Some(old));
+        remove_stale(&dir);
+        assert!(!dir.join(&stale).exists());
+        for kept in [&recent, &mine_old, &other] {
+            assert!(dir.join(kept).exists(), "{kept}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_wav_header_describes_the_samples_it_carries() {
+        let wav = wav_of(&[1, 0, 2, 0]);
+        // All 44 bytes: PCM, mono, 16 kHz, 32000 bytes a second, 2 a frame, 16 bits.
+        let mut header = Vec::new();
+        header.extend_from_slice(b"RIFF");
+        header.extend_from_slice(&40u32.to_le_bytes());
+        header.extend_from_slice(b"WAVEfmt ");
+        header.extend_from_slice(&16u32.to_le_bytes());
+        header.extend_from_slice(&1u16.to_le_bytes());
+        header.extend_from_slice(&1u16.to_le_bytes());
+        header.extend_from_slice(&16_000u32.to_le_bytes());
+        header.extend_from_slice(&32_000u32.to_le_bytes());
+        header.extend_from_slice(&2u16.to_le_bytes());
+        header.extend_from_slice(&16u16.to_le_bytes());
+        header.extend_from_slice(b"data");
+        header.extend_from_slice(&4u32.to_le_bytes());
+        assert_eq!(&wav[..44], header.as_slice());
+        assert_eq!(&wav[44..], &[1, 0, 2, 0]);
+    }
+
+    #[test]
+    fn silence_and_a_blip_are_refused_with_a_reason_and_speech_is_wrapped() {
+        let blip = vec![1u8; MIN_BYTES - 1];
+        assert!(
+            checked_recording(&blip)
+                .unwrap_err()
+                .contains("nothing was recorded")
+        );
+        let zeros = vec![0u8; MIN_BYTES * 2];
+        assert!(
+            checked_recording(&zeros)
+                .unwrap_err()
+                .contains("permission")
+        );
+        let speech = vec![3u8; MIN_BYTES * 2];
+        assert_eq!(checked_recording(&speech).unwrap().len(), 44 + speech.len());
+    }
+}

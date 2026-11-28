@@ -12,6 +12,7 @@ use crate::reply::{self, Voice};
 use crate::screen::fit;
 use crate::session::{Entry, SessionState, Shell};
 use crate::setup::{Setup, planner_of};
+use crate::speech::Mouth;
 
 struct TerminalConfirm {
     /// Set when the input ended at a question: the session is over, and there
@@ -184,6 +185,13 @@ fn reply_text(reply: &str, width: usize) -> String {
     reply::block(reply, width, reply::cautious_cells).join("\n")
 }
 
+/// Speak the reply, when `--speak` is on. What comes back is the line to print
+/// when speech failed: a failure of the voice is never an error of the request.
+fn spoken_line(mouth: Option<&Mouth>, reply: &str) -> Option<String> {
+    let said = mouth?.say(reply);
+    said.err().map(|why| format!("  ▸ {why}"))
+}
+
 struct LineDialog;
 
 impl Dialog for LineDialog {
@@ -211,6 +219,7 @@ pub fn interview(mut task: Task) -> Result<(), String> {
 }
 
 pub fn run(mut setup: Setup) -> Result<(), String> {
+    let mouth = setup.speech.take().and_then(|speech| speech.mouth);
     let speaker = setup.speaker();
     let voice = speaker
         .as_ref()
@@ -261,6 +270,11 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
                 REDIRECTED_REPLY_WIDTH
             };
             println!("{}", reply_text(&reply, width));
+            // After the text is on screen: the voice is only an addition, and
+            // a failure of it is a line, never an error of the request.
+            if let Some(line) = spoken_line(mouth.as_ref(), &reply) {
+                println!("{line}");
+            }
         }
     }
 }
@@ -269,6 +283,32 @@ pub fn run(mut setup: Setup) -> Result<(), String> {
 mod tests {
     use super::{Entry, TerminalConfirm, is_details, is_yes, numbered, parse_choice, prompt};
     use crate::ports::ChoiceLine;
+
+    #[test]
+    fn a_reply_is_spoken_only_with_a_mouth_and_a_failure_is_one_printed_line() {
+        use crate::speech::loopback::{FakePlayback, FakeSynthesizer};
+        use crate::speech::{Mouth, voice};
+
+        let mouth = |installed: &[&str]| {
+            Mouth::new(
+                Box::new(FakeSynthesizer::with(installed)),
+                Box::new(FakePlayback::default()),
+                voice("cadu").unwrap(),
+                crate::speech::Speaking::default(),
+            )
+        };
+        assert_eq!(super::spoken_line(None, "Done."), None);
+        assert_eq!(
+            super::spoken_line(Some(&mouth(&["pt_BR-cadu-medium"])), "Done."),
+            None
+        );
+        let line = super::spoken_line(Some(&mouth(&[])), "Done.").unwrap();
+        assert!(
+            line.starts_with("  ▸ speech is off for this reply"),
+            "{line}"
+        );
+        assert!(!line.contains('\n'));
+    }
 
     #[test]
     fn the_prompt_says_whether_a_model_is_listening_and_where_the_session_is() {

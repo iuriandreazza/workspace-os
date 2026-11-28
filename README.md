@@ -48,7 +48,7 @@ cargo build                           # build the kernel
 cargo run                             # boot it in QEMU (exit with Ctrl-A then X)
 ./scripts/check.sh                    # format, licences, lint, unit tests and boot smoke test
 ./scripts/build-disk-image.sh         # bootable UEFI disk image; see docs/booting-the-image.md
-./scripts/intent-shell.sh             # the intent shell, on the host (needs llama-server); --plain for the line adapter; --no-model types commands with no model (S5); starts in $HOME, understands paths and "go to ~/Downloads", shows listings as a tree (docs/s3e-directories-and-tree.md); after each result the model writes a short marked reply in the tone of a voice profile (docs/s8a-answer-voice.md), `--no-reply` turns it off
+./scripts/intent-shell.sh             # the intent shell, on the host (needs llama-server); --plain for the line adapter; --no-model types commands with no model (S5); starts in $HOME, understands paths and "go to ~/Downloads", shows listings as a tree (docs/s3e-directories-and-tree.md); after each result the model writes a short marked reply in the tone of a voice profile (docs/s8a-answer-voice.md), `--no-reply` turns it off; `--speak` speaks the reply and `--listen` adds push-to-talk (Ctrl-T) with local whisper.cpp and Piper servers, all on loopback and off by default (docs/s11-2-speech.md)
 ```
 
 ## Checks

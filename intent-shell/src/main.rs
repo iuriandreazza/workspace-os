@@ -10,18 +10,26 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
+use intent_shell::audio;
 use intent_shell::broker::Authority;
 use intent_shell::host::UnixHost;
 use intent_shell::interview;
 use intent_shell::log::JsonlLog;
 use intent_shell::model::LlamaPlanner;
 use intent_shell::plain;
-use intent_shell::ports::{DecisionLog, User};
-use intent_shell::setup::Setup;
+use intent_shell::ports::{AudioCapture, AudioPlayback, DecisionLog, Synthesizer as _, User};
+use intent_shell::setup::{Setup, SpeechSetup};
 use intent_shell::soul::{self, Persona, Source};
 use intent_shell::soul_files::FileSoulStore;
+use intent_shell::speech::{Ear, Mouth, Speaking, reason};
+use intent_shell::speech_http::{PiperClient, WhisperClient};
 
-const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--soul FILE] [--personality FILE] [--setup-soul]";
+const USAGE: &str = "usage: intent-shell [--model HOST:PORT | --no-model] [--log FILE] [--administrator] [--plain] [--transcript FILE] [--no-reply] [--soul FILE] [--personality FILE] [--setup-soul] [--listen] [--speak] [--whisper 127.0.0.1:PORT] [--tts 127.0.0.1:PORT]";
+
+/// Where `whisper-server` and Piper are expected, unless told otherwise. The
+/// docs start them on these ports; both are loopback addresses (ADR 0031).
+const WHISPER_ADDRESS: &str = "127.0.0.1:8178";
+const TTS_ADDRESS: &str = "127.0.0.1:5178";
 
 struct Options {
     /// `None` is the deterministic shell: no model, lines are commands (ADR 0022).
@@ -37,6 +45,12 @@ struct Options {
     personality: (PathBuf, bool),
     /// Build the SOUL with the interview or a preset instead of starting a session (S9).
     setup_soul: bool,
+    /// Push-to-talk (`--listen`) and spoken replies (`--speak`), ADR 0031.
+    listen: bool,
+    speak: bool,
+    /// Where the speech servers are, when the person said; `None` is the default.
+    whisper: Option<String>,
+    tts: Option<String>,
 }
 
 /// The value of a flag. One that looks like a flag is not taken for it, so
@@ -59,6 +73,10 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
         soul: (config.join("soul"), false),
         personality: (config.join("personality"), false),
         setup_soul: false,
+        listen: false,
+        speak: false,
+        whisper: None,
+        tts: None,
     };
     let mut args = args;
     let (mut chose_model, mut chose_none) = (false, false);
@@ -80,6 +98,10 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
             "--soul" | "--voice-profile" => options.soul = (PathBuf::from(value(&mut args)?), true),
             "--personality" => options.personality = (PathBuf::from(value(&mut args)?), true),
             "--setup-soul" => options.setup_soul = true,
+            "--listen" => options.listen = true,
+            "--speak" => options.speak = true,
+            "--whisper" => options.whisper = Some(value(&mut args)?),
+            "--tts" => options.tts = Some(value(&mut args)?),
             "--transcript" => options.transcript = Some(PathBuf::from(value(&mut args)?)),
             _ => return Err(USAGE.to_owned()),
         }
@@ -89,7 +111,35 @@ fn parse_options(home: &str, args: impl Iterator<Item = String>) -> Result<Optio
             "--model and --no-model exclude each other\n{USAGE}"
         ));
     }
+    check_speech_options(&options)?;
     Ok(options)
+}
+
+/// What speech may be combined with. A speech flag that could not do anything
+/// is refused, never silently ignored.
+fn check_speech_options(options: &Options) -> Result<(), String> {
+    if !(options.listen || options.speak) {
+        if options.whisper.is_some() || options.tts.is_some() {
+            return Err("--whisper and --tts need --listen or --speak".to_owned());
+        }
+        return Ok(());
+    }
+    if options.model.is_none() {
+        return Err("--listen and --speak need a model: with none, lines are commands and there is no reply to speak (ADR 0031)".to_owned());
+    }
+    if options.speak && options.no_reply {
+        return Err("--speak speaks the model's reply, and --no-reply turns it off".to_owned());
+    }
+    if options.setup_soul {
+        return Err("--listen and --speak do not apply to --setup-soul".to_owned());
+    }
+    if options.whisper.is_some() && !options.listen {
+        return Err("--whisper needs --listen".to_owned());
+    }
+    if options.tts.is_some() && !options.speak {
+        return Err("--tts needs --speak".to_owned());
+    }
+    Ok(())
 }
 
 /// A terminal that can draw a screen: not a pipe, and not `dumb` or unset.
@@ -169,6 +219,105 @@ fn voice_of(
     }
     let notice = (!problems.is_empty()).then(|| problems.join("\n"));
     Ok((Some(loaded.persona), notice))
+}
+
+/// The microphone and the speaker of this system, or why there is none.
+struct Adapters {
+    capture: Result<Box<dyn AudioCapture + Send>, String>,
+    playback: Result<Box<dyn AudioPlayback + Send>, String>,
+}
+
+impl Adapters {
+    fn of_this_system() -> Self {
+        Self {
+            capture: audio::platform_capture(),
+            playback: audio::platform_playback(),
+        }
+    }
+}
+
+/// Speech, when asked for (ADR 0031). The addresses must be on this machine,
+/// or the shell does not start. A system with no microphone or speaker adapter
+/// is said once and leaves the shell running without that half of speech; a
+/// server that is not running yet or a voice that is not installed is said once
+/// too, and each reply then says again that it was not spoken. The adapters are
+/// asked for only when a speech option was given.
+fn speech_setup(
+    options: &Options,
+    persona: Option<&Persona>,
+    log: &mut dyn DecisionLog,
+    adapters: impl FnOnce() -> Adapters,
+) -> Result<(Option<SpeechSetup>, Vec<String>), String> {
+    if !(options.listen || options.speak) {
+        return Ok((None, Vec::new()));
+    }
+    let Adapters { capture, playback } = adapters();
+    let mut problems = Vec::new();
+    let speaking = Speaking::default();
+    let language = persona
+        .and_then(Persona::listen_language)
+        .map(str::to_owned);
+    let mut ear = None;
+    if options.listen {
+        let client = WhisperClient::new(options.whisper.as_deref().unwrap_or(WHISPER_ADDRESS))?;
+        match capture {
+            Ok(capture) => {
+                if let Err(why) = client.ping() {
+                    problems.push(format!("--listen: {}; start whisper-server before you use the microphone key: with it down, a recording is lost when you stop it, and the shell says so then", reason(&why)));
+                }
+                ear = Some(Ear::new(capture, Box::new(client), speaking.clone()));
+            }
+            Err(why) => problems.push(format!("--listen is off: {why}")),
+        }
+    }
+    let mut mouth = None;
+    if options.speak {
+        let client = PiperClient::new(options.tts.as_deref().unwrap_or(TTS_ADDRESS))?;
+        let chosen = persona
+            .ok_or("--speak needs the persona of the replies")?
+            .spoken_voice();
+        match playback {
+            Ok(playback) => {
+                match client.voices() {
+                    Err(why) => problems.push(format!(
+                        "--speak: the speech server at {} does not answer: {}; replies are spoken once it does",
+                        options.tts.as_deref().unwrap_or(TTS_ADDRESS),
+                        reason(&why)
+                    )),
+                    Ok(installed) if !installed.iter().any(|name| name == chosen.piper) => {
+                        problems.push(format!(
+                            "--speak: the voice {} ({}) is not installed on the speech server",
+                            chosen.id, chosen.piper
+                        ));
+                    }
+                    Ok(_) => {}
+                }
+                mouth = Some(Mouth::new(
+                    Box::new(client),
+                    playback,
+                    chosen,
+                    speaking.clone(),
+                ));
+            }
+            Err(why) => problems.push(format!("--speak is off: {why}")),
+        }
+    }
+    if let (Some(ear), Some(mouth)) = (&ear, &mouth) {
+        // One gate for both, or the system hears itself (ADR 0031, section 5, point 4).
+        assert!(
+            ear.gate().same_as(mouth.gate()),
+            "the ear and the mouth must share a gate"
+        );
+    }
+    let voice = mouth.as_ref().map(|mouth| mouth.voice().id);
+    log.record(json!({"event": "speech", "listen": ear.is_some(), "speak": mouth.is_some(), "voice": voice, "problems": problems}))
+        .map_err(|e| format!("cannot write the decision log: {e}"))?;
+    let setup = (ear.is_some() || mouth.is_some()).then(|| SpeechSetup {
+        ear,
+        listen_language: language,
+        mouth,
+    });
+    Ok((setup, problems))
 }
 
 /// The SOUL interview, in the interface the session would have used (S9).
@@ -260,8 +409,23 @@ fn run() -> Result<(), String> {
     if options.transcript.is_some() && !screen {
         return Err("--transcript needs the conversational interface".to_owned());
     }
+    if options.listen && !screen {
+        return Err("--listen needs the conversational interface: a terminal, without --plain (the transcript goes into its input line)".to_owned());
+    }
     let first = first_soul(&options)?;
     let (reply, notice) = voice_of(&options, &mut log)?;
+    let (speech, speech_problems) =
+        speech_setup(&options, reply.as_ref(), &mut log, Adapters::of_this_system)?;
+    for problem in &speech_problems {
+        eprintln!("{problem}");
+    }
+    let notice = [
+        notice,
+        (!speech_problems.is_empty()).then(|| speech_problems.join("\n")),
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(|a, b| format!("{a}\n{b}"));
     let notice = match (first, notice) {
         (Some(first), Some(notice)) => Some(format!("{first}\n{notice}")),
         (first, notice) => first.or(notice),
@@ -284,6 +448,7 @@ fn run() -> Result<(), String> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        speech,
     };
     #[cfg(feature = "tui")]
     if screen {
@@ -353,5 +518,247 @@ mod tests {
                 "{stdin} {stdout} {term:?}"
             );
         }
+    }
+
+    #[test]
+    fn speech_is_off_by_default_and_asks_for_nothing() {
+        let off = options(&[]).unwrap();
+        assert!(!off.listen && !off.speak && off.whisper.is_none() && off.tts.is_none());
+        struct NoLog;
+        impl intent_shell::ports::DecisionLog for NoLog {
+            fn record(&mut self, _: serde_json::Value) -> Result<(), String> {
+                Err("the log must not be written".to_owned())
+            }
+        }
+        // No flag: nothing is built, no process is contacted, nothing is logged.
+        let (setup, problems) =
+            super::speech_setup(&off, None, &mut NoLog, || panic!("no adapter is asked for"))
+                .unwrap();
+        assert!(setup.is_none() && problems.is_empty());
+    }
+
+    #[test]
+    fn speech_flags_that_could_do_nothing_are_refused_not_ignored() {
+        let on = options(&[
+            "--listen",
+            "--speak",
+            "--whisper",
+            "127.0.0.1:1",
+            "--tts",
+            "[::1]:2",
+        ])
+        .unwrap();
+        assert!(on.listen && on.speak);
+        assert_eq!(on.whisper.as_deref(), Some("127.0.0.1:1"));
+        for args in [
+            &["--no-model", "--listen"][..],
+            &["--no-model", "--speak"],
+            &["--speak", "--no-reply"],
+            &["--listen", "--setup-soul"],
+            &["--whisper", "127.0.0.1:1"],
+            &["--tts", "127.0.0.1:1"],
+            &["--speak", "--whisper", "127.0.0.1:1"],
+            &["--listen", "--tts", "127.0.0.1:1"],
+            &["--listen", "--whisper"],
+        ] {
+            assert!(options(args).is_err(), "{args:?}");
+        }
+        // Listening alone does not need replies: the transcript is only a line to edit.
+        assert!(options(&["--listen", "--no-reply"]).is_ok());
+    }
+
+    #[test]
+    fn an_address_that_is_not_on_this_machine_stops_the_shell_before_it_starts() {
+        struct Sink;
+        impl intent_shell::ports::DecisionLog for Sink {
+            fn record(&mut self, _: serde_json::Value) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let persona = intent_shell::soul::Persona::of(intent_shell::soul::Profile::DirectTechnical);
+        for args in [
+            &["--speak", "--tts", "example.com:5178"][..],
+            &["--listen", "--whisper", "192.168.1.9:8178"],
+            &["--speak", "--tts", "localhost:5178"],
+        ] {
+            let chosen = options(args).unwrap();
+            let error = super::speech_setup(&chosen, Some(&persona), &mut Sink, fakes)
+                .err()
+                .unwrap_or_else(|| panic!("{args:?} was accepted"));
+            assert!(
+                error.contains("machine") || error.contains("IP address"),
+                "{error}"
+            );
+        }
+    }
+
+    struct SilentCapture;
+    impl intent_shell::ports::AudioCapture for SilentCapture {
+        fn start(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn finish(&mut self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+        fn cancel(&mut self) {}
+    }
+
+    struct SilentPlayback;
+    impl intent_shell::ports::AudioPlayback for SilentPlayback {
+        fn play(&self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn fakes() -> super::Adapters {
+        super::Adapters {
+            capture: Ok(Box::new(SilentCapture)),
+            playback: Ok(Box::new(SilentPlayback)),
+        }
+    }
+
+    /// A persona from a SOUL and a personality, the way the files make one.
+    fn persona(soul: &str, personality: &str) -> intent_shell::soul::Persona {
+        intent_shell::soul::Soul::parse(soul)
+            .unwrap()
+            .with(&intent_shell::soul::Personality::parse(personality).unwrap())
+            .unwrap()
+    }
+
+    /// What `--listen --speak` builds, with nothing listening on port 1: the
+    /// start-up checks say so and the shell goes on.
+    fn built(
+        persona: &intent_shell::soul::Persona,
+    ) -> (intent_shell::setup::SpeechSetup, Vec<String>) {
+        struct Sink;
+        impl intent_shell::ports::DecisionLog for Sink {
+            fn record(&mut self, _: serde_json::Value) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let chosen = options(&[
+            "--listen",
+            "--speak",
+            "--whisper",
+            "127.0.0.1:1",
+            "--tts",
+            "127.0.0.1:1",
+        ])
+        .unwrap();
+        let (setup, problems) =
+            super::speech_setup(&chosen, Some(persona), &mut Sink, fakes).unwrap();
+        (setup.expect("both halves were built"), problems)
+    }
+
+    const SOUL: &str = "format: 1\npreset: warm-didactic\nlanguages: en, pt-BR\n";
+
+    #[test]
+    fn the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate() {
+        let (setup, problems) = built(&persona(SOUL, "format: 1\n"));
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        let (ear, mouth) = (setup.ear.unwrap(), setup.mouth.unwrap());
+        assert!(ear.gate().same_as(mouth.gate()));
+    }
+
+    #[test]
+    fn the_voice_of_the_personality_is_the_one_the_mouth_is_built_with() {
+        for (voice, language) in [
+            ("cadu", "pt-BR"),
+            ("jeff", "pt-BR"),
+            ("faber", "pt-BR"),
+            ("joe", "en"),
+        ] {
+            let personality = format!("format: 2\nlanguage: {language}\nvoice: {voice}\n");
+            let (setup, _) = built(&persona(SOUL, &personality));
+            assert_eq!(setup.mouth.unwrap().voice().id, voice);
+        }
+    }
+
+    #[test]
+    fn the_recogniser_language_is_the_replies_and_reaches_the_setup() {
+        let (setup, _) = built(&persona(SOUL, "format: 1\nlanguage: pt-BR\n"));
+        assert_eq!(setup.listen_language.as_deref(), Some("pt-BR"));
+        let (setup, _) = built(&persona(SOUL, "format: 2\nvoice: cadu\n"));
+        assert_eq!(setup.listen_language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn a_system_with_no_adapter_runs_without_that_half_of_speech_and_says_so() {
+        struct Sink;
+        impl intent_shell::ports::DecisionLog for Sink {
+            fn record(&mut self, _: serde_json::Value) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let persona = persona(SOUL, "format: 1\n");
+        let chosen = options(&[
+            "--listen",
+            "--speak",
+            "--whisper",
+            "127.0.0.1:1",
+            "--tts",
+            "127.0.0.1:1",
+        ])
+        .unwrap();
+        let none = || super::Adapters {
+            capture: Err("no microphone here".to_owned()),
+            playback: Err("no speaker here".to_owned()),
+        };
+        let (setup, problems) =
+            super::speech_setup(&chosen, Some(&persona), &mut Sink, none).unwrap();
+        assert!(setup.is_none());
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("--listen is off: no microphone here"))
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("--speak is off: no speaker here"))
+        );
+    }
+
+    #[test]
+    fn the_speech_event_says_what_was_started_with_the_voice_that_is_used() {
+        #[derive(Default)]
+        struct Recorded(std::sync::Mutex<Vec<serde_json::Value>>);
+        impl intent_shell::ports::DecisionLog for &Recorded {
+            fn record(&mut self, event: serde_json::Value) -> Result<(), String> {
+                self.0.lock().unwrap().push(event);
+                Ok(())
+            }
+        }
+        let recorded = Recorded::default();
+        let chosen = options(&[
+            "--listen",
+            "--speak",
+            "--whisper",
+            "127.0.0.1:1",
+            "--tts",
+            "127.0.0.1:1",
+        ])
+        .unwrap();
+        let persona = persona(SOUL, "format: 2\nlanguage: pt-BR\nvoice: jeff\n");
+        let (_, problems) =
+            super::speech_setup(&chosen, Some(&persona), &mut &recorded, fakes).unwrap();
+        let events = recorded.0.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["event"], "speech");
+        assert_eq!(events[0]["listen"], true);
+        assert_eq!(events[0]["speak"], true);
+        assert_eq!(events[0]["voice"], "jeff");
+        assert_eq!(
+            events[0]["problems"].as_array().unwrap().len(),
+            problems.len()
+        );
+        // With no speaker the voice is not named: none is used.
+        let none = || super::Adapters {
+            capture: Ok(Box::new(SilentCapture)),
+            playback: Err("no speaker".to_owned()),
+        };
+        let again = Recorded::default();
+        super::speech_setup(&chosen, Some(&persona), &mut &again, none).unwrap();
+        assert_eq!(again.0.lock().unwrap()[0]["voice"], serde_json::Value::Null);
     }
 }

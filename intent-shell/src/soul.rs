@@ -15,9 +15,12 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::action::{capped, printable};
+use crate::voices::{self, SpokenVoice};
 
-/// The version of the file format this shell reads.
+/// The version of the SOUL file this shell reads.
 pub const FORMAT: u32 = 1;
+/// The versions of the personality file: 2 adds the spoken `voice` (ADR 0031).
+pub const PERSONALITY_FORMATS: [u32; 2] = [1, 2];
 /// Larger files are invalid; the file is read only this far, never to its end.
 pub const MAX_BYTES: usize = 2048;
 const MAX_LANGUAGES: usize = 8;
@@ -205,11 +208,27 @@ fn language(value: &str) -> Result<String, String> {
     }
 }
 
-/// The `key: value` pairs of a file, after the `format` line, each with its line
-/// number. Anything outside the grammar is an error: nothing is skipped.
-fn pairs<'a>(text: &'a str, keys: &[&str]) -> Result<Vec<(usize, &'a str, &'a str)>, String> {
-    let mut found: Vec<(usize, &str, &str)> = Vec::new();
-    let mut versioned = false;
+/// The format line of a file, as the messages say it: `format: 1`, or `format: 1 or 2`.
+fn format_words(formats: &[u32]) -> String {
+    let words: Vec<String> = formats.iter().map(u32::to_string).collect();
+    words.join(" or ")
+}
+
+/// A `key: value` line of a file, with its line number.
+type Pair<'a> = (usize, &'a str, &'a str);
+
+/// The version a file declares and its `key: value` pairs, each with its line
+/// number, after the `format` line. Anything outside the grammar is an error:
+/// nothing is skipped.
+fn pairs<'a>(
+    text: &'a str,
+    keys: &[&str],
+    formats: &[u32],
+    // Keys that only the last format has: still keys, but not named to a file of an earlier one.
+    newest_only: &[&str],
+) -> Result<(u32, Vec<Pair<'a>>), String> {
+    let mut found: Vec<Pair> = Vec::new();
+    let mut version = None;
     for (index, line) in text.lines().enumerate() {
         let (number, line) = (index + 1, line.trim());
         if line.is_empty() || line.starts_with('#') {
@@ -222,26 +241,33 @@ fn pairs<'a>(text: &'a str, keys: &[&str]) -> Result<Vec<(usize, &'a str, &'a st
             ));
         };
         let (key, value) = (key.trim(), value.trim());
-        if !versioned {
+        if version.is_none() {
             if key != "format" {
                 return Err(format!(
-                    "line {number}: the first line must be \"format: {FORMAT}\""
+                    "line {number}: the first line must be \"format: {}\"",
+                    format_words(formats)
                 ));
             }
-            if value != FORMAT.to_string() {
+            let known = formats.iter().find(|format| format.to_string() == value);
+            let Some(&known) = known else {
                 return Err(format!(
-                    "line {number}: format {} is not one this shell reads (it reads {FORMAT})",
-                    shown(value)
+                    "line {number}: format {} is not one this shell reads (it reads {})",
+                    shown(value),
+                    format_words(formats)
                 ));
-            }
-            versioned = true;
+            };
+            version = Some(known);
             continue;
         }
         if !keys.contains(&key) {
             return Err(format!(
                 "line {number}: {} is not a key here (the keys are {})",
                 shown(key),
-                keys.join(", ")
+                keys.iter()
+                    .filter(|k| version == formats.last().copied() || !newest_only.contains(k))
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         if found.iter().any(|(_, seen, _)| *seen == key) {
@@ -249,10 +275,12 @@ fn pairs<'a>(text: &'a str, keys: &[&str]) -> Result<Vec<(usize, &'a str, &'a st
         }
         found.push((number, key, value));
     }
-    if versioned {
-        Ok(found)
-    } else {
-        Err(format!("there is no \"format: {FORMAT}\" line"))
+    match version {
+        Some(version) => Ok((version, found)),
+        None => Err(format!(
+            "there is no \"format: {}\" line",
+            format_words(formats)
+        )),
     }
 }
 
@@ -366,7 +394,7 @@ impl Soul {
             "detail",
             "languages",
         ];
-        let found = pairs(text, &keys)?;
+        let (_, found) = pairs(text, &keys, &[FORMAT], &[])?;
         for &(number, key, value) in &found {
             let at = |message: String| format!("line {number}: {key}: {message}");
             match key {
@@ -423,6 +451,11 @@ impl Soul {
             nickname: None,
             levels: Axis::ALL.map(|axis| self.default_level(axis)),
             language: None,
+            soul_language: self
+                .languages
+                .as_ref()
+                .and_then(|tags| tags.first().cloned()),
+            voice: None,
         }
     }
 
@@ -458,6 +491,26 @@ impl Soul {
                 _ => persona.language = Some(tag.clone()),
             }
         }
+        if let Some(voice) = personality.voice {
+            let wanted = personality.language.as_ref();
+            // The personality's own language, or else what the SOUL allows.
+            let fits = |tag: &str| voices::voice_may_speak(voice, tag);
+            match (&self.languages, wanted) {
+                (_, Some(tag)) if !fits(tag) => contradictions.push(format!(
+                    "voice: {} speaks {}, not the personality's language {tag}",
+                    voice.id, voice.language
+                )),
+                (Some(allowed), _) if !allowed.iter().any(|tag| fits(tag)) => {
+                    contradictions.push(format!(
+                        "voice: {} speaks {}, which is not among the SOUL's languages {}",
+                        voice.id,
+                        voice.language,
+                        allowed.join(", ")
+                    ));
+                }
+                _ => persona.voice = Some(voice),
+            }
+        }
         if contradictions.is_empty() {
             Ok(persona)
         } else {
@@ -476,21 +529,37 @@ pub struct Personality {
     nickname: Option<String>,
     levels: [Option<u8>; 3],
     language: Option<String>,
+    /// The spoken voice: only a personality of format 2 has one (ADR 0031).
+    voice: Option<&'static SpokenVoice>,
 }
 
 impl Personality {
     pub fn parse(text: &str) -> Result<Self, String> {
-        let keys = ["name", "formality", "humour", "detail", "language"];
+        let keys = ["name", "formality", "humour", "detail", "language", "voice"];
         let mut personality = Self {
             nickname: None,
             levels: [None; 3],
             language: None,
+            voice: None,
         };
-        for (number, key, value) in pairs(text, &keys)? {
+        let (version, found) = pairs(text, &keys, &PERSONALITY_FORMATS, &["voice"])?;
+        for (number, key, value) in found {
             let at = |message: String| format!("line {number}: {key}: {message}");
             match key {
                 "name" => personality.nickname = Some(name(value).map_err(at)?),
                 "language" => personality.language = Some(language(value).map_err(at)?),
+                "voice" => {
+                    if version < 2 {
+                        return Err(at("a voice needs \"format: 2\"".to_owned()));
+                    }
+                    personality.voice = Some(voices::voice(value).ok_or_else(|| {
+                        at(format!(
+                            "{} is not a voice (one of {})",
+                            shown(value),
+                            voices::voice_ids()
+                        ))
+                    })?);
+                }
                 _ => {
                     let axis = Axis::ALL.into_iter().find(|axis| axis.key() == key);
                     if let Some(axis) = axis {
@@ -519,12 +588,38 @@ pub struct Persona {
     pub nickname: Option<String>,
     levels: [u8; 3],
     pub language: Option<String>,
+    /// The first language the SOUL allows: what a personality with no language
+    /// of its own is spoken to in. `None` for `any`. The reply prompt does not
+    /// name it; only the voice and the recogniser use it.
+    soul_language: Option<String>,
+    /// The voice the personality names. Only the speaker port ever reads it.
+    voice: Option<&'static SpokenVoice>,
 }
 
 impl Persona {
     /// A preset with nothing else: the S8a profile.
     pub fn of(preset: Profile) -> Self {
         Soul::preset(preset).persona()
+    }
+
+    /// The language the replies are written in: the personality's, else the
+    /// first one the SOUL allows, else none.
+    pub fn reply_language(&self) -> Option<&str> {
+        self.language.as_deref().or(self.soul_language.as_deref())
+    }
+
+    /// The language the person is expected to speak: the reply language, which
+    /// is where the personality's `language` and the SOUL's first one come in.
+    /// The voice is not consulted: it reaches only the speech call (ADR 0031).
+    pub fn listen_language(&self) -> Option<&str> {
+        self.reply_language()
+    }
+
+    /// The voice the replies are spoken with: the one the personality names,
+    /// else the first of the list for the reply language, chosen by code.
+    pub fn spoken_voice(&self) -> &'static SpokenVoice {
+        self.voice
+            .unwrap_or_else(|| voices::default_voice(self.reply_language()))
     }
 
     /// The voice lines of the prompt, one per line, all of them fixed text but

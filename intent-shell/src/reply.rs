@@ -174,9 +174,14 @@ pub fn facts(request: &str, outcome: &Outcome) -> Option<String> {
 /// The model's text, made safe to show: on one line, capped, escaped. What it
 /// says it is (a verdict, a panel, a command, a plan) changes nothing here.
 pub fn clean(raw: &str) -> String {
+    escaped_line(raw, REPLY_LIMIT)
+}
+
+/// Untrusted text as one line: whitespace collapsed, escaped, then capped.
+/// Capped after escaping, which can make a character six: the cap is on what is shown.
+pub fn escaped_line(raw: &str, limit: usize) -> String {
     let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    // Capped after escaping, which can make a character six: the cap is on what is shown.
-    capped(&printable(&one_line, false), REPLY_LIMIT)
+    capped(&printable(&one_line, false), limit)
 }
 
 /// The width of a character where the terminal's table is not at hand (the

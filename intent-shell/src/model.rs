@@ -171,17 +171,36 @@ fn completion(address: &str, body: &str, timeout: Duration) -> Result<String, St
 }
 
 fn post(address: &str, path: &str, body: &str, timeout: Duration) -> Result<String, String> {
+    let answer = exchange(
+        address,
+        "POST",
+        path,
+        "application/json",
+        body.as_bytes(),
+        timeout,
+    )?;
+    String::from_utf8(answer).map_err(|e| e.to_string())
+}
+
+/// One request and its whole answer body. The speech adapters use it too: the
+/// body and the answer are bytes, and a GET has no body to send.
+pub(crate) fn exchange(
+    address: &str,
+    method: &str,
+    path: &str,
+    content_type: &str,
+    body: &[u8],
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
     // The timeout covers the connection and the answer together.
     let deadline = Instant::now() + timeout;
     let mut stream = connect(address, deadline)?;
     let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    stream
-        .write_all(head.as_bytes())
-        .and_then(|()| stream.write_all(body.as_bytes()))
-        .map_err(|e| e.to_string())?;
+    write_within(&mut stream, head.as_bytes(), deadline)?;
+    write_within(&mut stream, body, deadline)?;
     // The timeout bounds the whole answer, not each read: a server that drips
     // a byte every few seconds must not hold the shell.
     let mut raw = Vec::new();
@@ -209,6 +228,31 @@ fn post(address: &str, path: &str, body: &str, timeout: Duration) -> Result<Stri
     parse_response(&raw)
 }
 
+/// Writes everything, but not for longer than the deadline: a server that
+/// accepts and never reads must not hold the shell once the buffers are full
+/// (a recording is far bigger than a socket buffer).
+fn write_within(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> Result<(), String> {
+    const CHUNK: usize = 16 * 1024;
+    while !bytes.is_empty() {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or("the server did not read the request in time")?;
+        stream
+            .set_write_timeout(Some(left))
+            .map_err(|e| e.to_string())?;
+        match stream.write(&bytes[..bytes.len().min(CHUNK)]) {
+            Ok(0) => return Err("the server closed the connection".to_owned()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err("the server did not read the request in time".to_owned());
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
+}
+
 /// Connects with a limit, so an address nothing answers on cannot hold the shell.
 fn connect(address: &str, deadline: Instant) -> Result<TcpStream, String> {
     let cannot = |e: &dyn std::fmt::Display| format!("cannot connect to {address}: {e}");
@@ -227,7 +271,7 @@ fn connect(address: &str, deadline: Instant) -> Result<TcpStream, String> {
     Err(cannot(&last))
 }
 
-fn parse_response(raw: &[u8]) -> Result<String, String> {
+fn parse_response(raw: &[u8]) -> Result<Vec<u8>, String> {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -241,12 +285,19 @@ fn parse_response(raw: &[u8]) -> Result<String, String> {
             String::from_utf8_lossy(body)
         ));
     }
-    let bytes = if head.contains("transfer-encoding: chunked") {
-        dechunk(body)?
-    } else {
-        body.to_vec()
-    };
-    String::from_utf8(bytes).map_err(|e| e.to_string())
+    if head.contains("transfer-encoding: chunked") {
+        return dechunk(body);
+    }
+    // A connection that closes before the promised length is a cut answer,
+    // which for audio would be played as if it were whole.
+    let promised = head
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|length| length.trim().parse::<usize>().ok());
+    if promised.is_some_and(|length| body.len() < length) {
+        return Err("the server's answer was cut short".to_owned());
+    }
+    Ok(body.to_vec())
 }
 
 fn dechunk(mut body: &[u8]) -> Result<Vec<u8>, String> {
@@ -294,6 +345,12 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_shorter_than_its_length_is_cut_short() {
+        assert!(parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab").is_err());
+        assert!(parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nab").is_ok());
+    }
+
+    #[test]
     fn refuses_a_truncated_chunk() {
         assert!(dechunk(b"9\r\nhi\r\n").is_err());
     }
@@ -302,7 +359,7 @@ mod tests {
     fn reads_a_plain_reply_and_refuses_an_error_status() {
         assert_eq!(
             parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").unwrap(),
-            "{}"
+            b"{}"
         );
         assert!(parse_response(b"HTTP/1.1 500 Internal Server Error\r\n\r\nboom").is_err());
     }

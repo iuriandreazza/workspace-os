@@ -14,6 +14,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,8 +31,9 @@ use crate::model::NoModel;
 use crate::ports::{ChoiceLine, Confirm, DecisionLog, Host, Planner, Retry, User};
 use crate::reply::{self, Voice};
 use crate::session::{Entry, SessionState, Shell};
-use crate::setup::Setup;
-use state::{Effect, Event, Mode, Reply, State};
+use crate::setup::{Setup, SpeechSetup};
+use crate::speech::{Ear, SharedLog, Talker};
+use state::{Effect, Event, Listen, Mode, Reply, State};
 
 /// How long a step is waited for after a termination signal.
 const SIGNAL_PATIENCE: Duration = Duration::from_secs(5);
@@ -110,6 +112,8 @@ struct Wires {
     requests: Receiver<String>,
     events: Sender<Event>,
     replies: Receiver<Reply>,
+    /// Speaks each reply aloud, when `--speak` was given (ADR 0031).
+    talker: Option<Talker>,
 }
 
 /// Runs the shell for each request until the interface closes the channel.
@@ -127,6 +131,7 @@ fn serve(
         requests,
         events,
         replies,
+        talker,
     } = wires;
     let entry = Entry::for_model(model.is_some());
     let planner = ProgressPlanner {
@@ -172,10 +177,82 @@ fn serve(
         }
         if let Some(voice) = speaking {
             let said = reply::reply_to(voice, &request, &outcome, log);
-            if events.send(Event::Said(said)).is_err() {
+            if events.send(said_event(talker.as_ref(), said)).is_err() {
                 return;
             }
         }
+    }
+}
+
+/// The event that shows a reply and gives the keyboard back, made only once the
+/// reply is queued to be spoken: the microphone is shut from then on, so the
+/// person cannot start recording in the gap before the voice begins (ADR 0031,
+/// section 5, point 4). There is no way to have the event without the queueing.
+fn said_event(talker: Option<&Talker>, said: Option<String>) -> Event {
+    if let (Some(text), Some(talker)) = (&said, talker) {
+        talker.say(text.clone());
+    }
+    Event::Said(said)
+}
+
+/// Start the threads of speech: the one that speaks, when there is a voice, and
+/// the microphone's, when there is an ear. Both send through one closable sink,
+/// so neither keeps the event channel open once the worker has ended: drop the
+/// returned `Closing` when it has.
+fn start_speech(
+    speech: SpeechSetup,
+    shared: SharedLog,
+    events: &Sender<Event>,
+    listens: Receiver<Listen>,
+) -> (Option<Talker>, Closing) {
+    let sink: Sink = Arc::new(Mutex::new(Some(events.clone())));
+    let closing = Closing(Arc::clone(&sink));
+    let talker = speech.mouth.map(|mouth| {
+        let notes = Arc::clone(&sink);
+        Talker::spawn(mouth, move |why| {
+            send_through(&notes, Event::Note(format!("▸ {why}")));
+        })
+    });
+    if let Some(ear) = speech.ear {
+        let language = speech.listen_language;
+        thread::spawn(move || listen(ear, language.as_deref(), &listens, &sink, shared));
+    }
+    (talker, closing)
+}
+
+/// The threads of speech when speech is on, and nothing when it is off.
+fn speech_threads(
+    speech: Option<SpeechSetup>,
+    shared: Option<SharedLog>,
+    events: &Sender<Event>,
+    listens: Receiver<Listen>,
+) -> (Option<Talker>, Option<Closing>) {
+    match (speech, shared) {
+        (Some(speech), Some(shared)) => {
+            let (talker, closing) = start_speech(speech, shared, events, listens);
+            (talker, Some(closing))
+        }
+        _ => (None, None),
+    }
+}
+
+/// The state a session opens with: its header and notice, and the microphone key
+/// when there is an ear.
+fn opening(setup: &Setup) -> State {
+    let state = opening_state(
+        setup.header(&SessionState::start(&setup.host)),
+        setup.entry(),
+        setup.notice.clone(),
+    );
+    with_speech_keys(state, setup.speech.as_ref())
+}
+
+/// The interface of a session: with an ear there is a microphone key.
+fn with_speech_keys(state: State, speech: Option<&SpeechSetup>) -> State {
+    if speech.is_some_and(|speech| speech.ear.is_some()) {
+        state.with_listening()
+    } else {
+        state
     }
 }
 
@@ -184,6 +261,7 @@ fn worker(
     requests: Receiver<String>,
     events: Sender<Event>,
     replies: Receiver<Reply>,
+    listens: Receiver<Listen>,
 ) {
     let header = setup.header_fn();
     let speaker = setup.speaker();
@@ -191,25 +269,108 @@ fn worker(
         authority,
         host,
         planner,
-        mut log,
+        log,
+        speech,
         ..
     } = setup;
+    // The decision log is shared with the microphone's thread only when speech
+    // is on: with it off nothing here is wrapped, started or contacted.
+    let (mut log, shared): (Box<dyn DecisionLog>, Option<SharedLog>) = if speech.is_some() {
+        let shared = SharedLog::new(Box::new(log));
+        (Box::new(shared.clone()), Some(shared))
+    } else {
+        (Box::new(log), None)
+    };
+    let (talker, closing) = speech_threads(speech, shared, &events, listens);
     let wires = Wires {
         requests,
         events,
         replies,
+        talker,
     };
     serve(
         &authority,
         &host,
         planner.as_ref().map(|p| p as &dyn Planner),
-        &mut log,
+        &mut *log,
         wires,
         &header,
         speaker
             .as_ref()
             .map(|(speaker, persona)| Voice { speaker, persona }),
     );
+    drop(closing);
+}
+
+/// Where the speech threads send what they have to say. The worker closes it
+/// when it returns (a panic aborts the process in this workspace's profiles), so
+/// that the interface sees the end of the worker as it always did: no speech
+/// thread keeps a sender of the event channel alive.
+type Sink = Arc<Mutex<Option<Sender<Event>>>>;
+
+/// Send an event if the sink is still open; whether it was sent.
+fn send_through(sink: &Sink, event: Event) -> bool {
+    sink.lock()
+        .ok()
+        .and_then(|open| open.as_ref().map(|events| events.send(event).is_ok()))
+        .unwrap_or(false)
+}
+
+struct Closing(Sink);
+
+impl Drop for Closing {
+    fn drop(&mut self) {
+        if let Ok(mut sink) = self.0.lock() {
+            *sink = None;
+        }
+    }
+}
+
+/// The microphone's thread: records on the key, and puts what the recogniser
+/// heard on record before the interface shows it.
+fn listen(
+    mut ear: Ear,
+    language: Option<&str>,
+    commands: &Receiver<Listen>,
+    sink: &Sink,
+    mut log: SharedLog,
+) {
+    // The recording the microphone is held for; a command or an answer for any
+    // other one is stale and does nothing.
+    let mut current = 0;
+    for command in commands {
+        let (recording, heard) = match command {
+            Listen::Start(recording) => {
+                current = recording;
+                match ear.start() {
+                    Ok(()) => continue,
+                    Err(why) => (recording, Err(why)),
+                }
+            }
+            Listen::Cancel(recording) => {
+                if recording == current {
+                    ear.cancel();
+                }
+                continue;
+            }
+            Listen::Forget => {
+                log.forget();
+                continue;
+            }
+            Listen::Stop(recording) if recording != current => continue,
+            Listen::Stop(recording) => (
+                recording,
+                ear.finish(language).and_then(|line| {
+                    log.record(SharedLog::transcript(&line))
+                        .map_err(|e| format!("cannot write the decision log: {e}"))?;
+                    Ok(line)
+                }),
+            ),
+        };
+        if !send_through(sink, Event::Heard(recording, heard)) {
+            return;
+        }
+    }
 }
 
 /// Whether leaving may abandon what the worker is doing: only a wait for the
@@ -270,8 +431,7 @@ fn watch_termination() {
 fn event_loop(
     terminal: &mut DefaultTerminal,
     state: &mut State,
-    requests: &Sender<String>,
-    replies: &Sender<Reply>,
+    (requests, replies, listens): (&Sender<String>, &Sender<Reply>, &Sender<Listen>),
     events: &Receiver<Event>,
 ) -> std::io::Result<()> {
     let started = Instant::now();
@@ -314,6 +474,9 @@ fn event_loop(
                 }
                 Effect::Reply(reply) => {
                     let _ = replies.send(reply);
+                }
+                Effect::Listen(command) => {
+                    let _ = listens.send(command);
                 }
             }
         }
@@ -362,14 +525,14 @@ fn opening_state(header: String, entry: Entry, notice: Option<String>) -> State 
 /// Open the interface and run until the person quits. The history is printed
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
-    let state = opening_state(
-        setup.header(&SessionState::start(&setup.host)),
-        setup.entry(),
-        setup.notice.clone(),
-    );
-    run_with(state, transcript, move |requests, events, replies| {
-        worker(setup, requests, events, replies);
-    })
+    let state = opening(&setup);
+    run_with(
+        state,
+        transcript,
+        move |requests, events, replies, listens| {
+            worker(setup, requests, events, replies, listens);
+        },
+    )
 }
 
 /// The worker's `Dialog` for the SOUL interview: a line the person submits is the answer.
@@ -436,7 +599,7 @@ pub fn interview(
     run_with(
         interview_state(),
         transcript,
-        move |requests, events, _replies| {
+        move |requests, events, _replies, _listens| {
             serve_interview(task, requests, events, leave);
         },
     )
@@ -445,11 +608,14 @@ pub fn interview(
 fn run_with(
     mut state: State,
     transcript: Option<&Path>,
-    work: impl FnOnce(Receiver<String>, Sender<Event>, Receiver<Reply>) + Send + 'static,
+    work: impl FnOnce(Receiver<String>, Sender<Event>, Receiver<Reply>, Receiver<Listen>)
+    + Send
+    + 'static,
 ) -> Result<(), String> {
     let (request_tx, requests) = channel();
     let (event_tx, events) = channel();
     let (reply_tx, replies) = channel();
+    let (listen_tx, listens) = channel();
 
     let mut terminal = ratatui::init();
     // `ratatui::init` restores the screen on a panic; the mouse and paste
@@ -462,8 +628,13 @@ fn run_with(
     }));
     let _ = execute!(stdout(), EnableMouseCapture, EnableBracketedPaste);
     watch_termination();
-    let worker = thread::spawn(move || work(requests, event_tx, replies));
-    let result = event_loop(&mut terminal, &mut state, &request_tx, &reply_tx, &events);
+    let worker = thread::spawn(move || work(requests, event_tx, replies, listens));
+    let result = event_loop(
+        &mut terminal,
+        &mut state,
+        (&request_tx, &reply_tx, &listen_tx),
+        &events,
+    );
 
     // Questions sent but not yet read from the channel still count as asked.
     while let Ok(event) = events.try_recv() {
@@ -474,7 +645,7 @@ fn run_with(
     // step is waited for rather than killed half way. Only a wait for the
     // model is abandoned, because nothing has run and the request is logged.
     let waiting_for_model = abandons_when_leaving(&state.mode);
-    drop((request_tx, reply_tx));
+    drop((request_tx, reply_tx, listen_tx));
     // A second Ctrl-C or signal stops the wait for a stuck step, and a signal
     // alone (a closed terminal never sends a second) waits only a few seconds.
     let waiting_since = Instant::now();
@@ -614,6 +785,7 @@ mod tests {
                 requests,
                 events: events_tx,
                 replies,
+                talker: None,
             },
             &|cwd| format!("header in {cwd}"),
             None,
@@ -656,6 +828,7 @@ mod tests {
                 requests,
                 events: events_tx,
                 replies,
+                talker: None,
             },
             &|cwd| format!("header in {cwd}"),
             None,
@@ -722,6 +895,7 @@ mod tests {
                 requests,
                 events: events_tx,
                 replies,
+                talker: None,
             },
             &|cwd| format!("header in {cwd}"),
             speaker.map(|speaker| Voice {
@@ -819,6 +993,7 @@ mod tests {
                 requests,
                 events: events_tx,
                 replies,
+                talker: None,
             },
             &|cwd| format!("header in {cwd}"),
             Some(Voice {
@@ -927,5 +1102,544 @@ mod tests {
         }
         assert!(matches!(state.mode, Mode::Busy { .. }), "{:?}", state.mode);
         assert!(!abandons_when_leaving(&state.mode), "{:?}", state.mode);
+    }
+
+    // ---- speech: a spoken request through the same path as a typed one -------
+
+    use crate::speech::loopback::{
+        FakeCapture, FakePlayback, FakeSynthesizer, FakeTranscriber, HeldPlayback, SharedMemory,
+        tagged_wav,
+    };
+    use crate::speech::{Mouth, Speaking, voice};
+
+    struct Talking {
+        playback: FakePlayback,
+        synthesizer: FakeSynthesizer,
+        log: SharedMemory,
+        events: Vec<Event>,
+        speaking: Speaking,
+    }
+
+    /// Hear `heard` through the microphone's thread, press Enter on what the
+    /// person is shown, and run the request that comes out of it.
+    fn spoken_request(
+        heard: &str,
+        plan: &str,
+        administrator: bool,
+        answers: &[Reply],
+        spoken: Option<&str>,
+    ) -> Talking {
+        use crate::pipeline_tests::files;
+        use crate::testing::{ScriptedPlanner, ScriptedSpeaker, user};
+
+        let log = SharedMemory::default();
+        let shared = SharedLog::new(Box::new(log.clone()));
+        let speaking = Speaking::default();
+        let (listen_tx, listens) = channel();
+        let (events_tx, events) = channel();
+        let ear = Ear::new(
+            Box::new(FakeCapture::default()),
+            Box::new(FakeTranscriber::hearing(heard)),
+            speaking.clone(),
+        );
+        let listener = {
+            let sink: Sink = Arc::new(Mutex::new(Some(events_tx.clone())));
+            let shared = shared.clone();
+            thread::spawn(move || listen(ear, Some("pt-BR"), &listens, &sink, shared))
+        };
+        let mut state = State::new("header".to_owned()).with_listening();
+        state.clock_ms = 0;
+        assert_eq!(state.on_key(ctrl_t()), Effect::Listen(Listen::Start(1)));
+        listen_tx.send(Listen::Start(state.listen_gen)).unwrap();
+        state.clock_ms += state::DWELL_MS;
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(state.on_key(enter), Effect::Listen(Listen::Stop(1)));
+        listen_tx.send(Listen::Stop(state.listen_gen)).unwrap();
+        let shown = events.recv_timeout(Duration::from_secs(10)).unwrap();
+        state.on_event(shown);
+        // A person reads what was heard before pressing Enter.
+        state.clock_ms += state::DWELL_MS;
+        // Heard: it waits in the input line until the person presses Enter.
+        let Effect::Submit(request) = state.on_key(enter) else {
+            panic!("Enter did not send what was heard");
+        };
+        drop((listen_tx, events_tx));
+        listener.join().unwrap();
+
+        let playback = FakePlayback::default();
+        let synthesizer = FakeSynthesizer::with(&["pt_BR-cadu-medium"]);
+        let mouth = Mouth::new(
+            Box::new(synthesizer.clone()),
+            Box::new(playback.clone()),
+            voice("cadu").unwrap(),
+            speaking.clone(),
+        );
+        let talker = Talker::spawn(mouth, |_| {});
+        let persona = crate::soul::Persona::of(crate::soul::Profile::WarmDidactic);
+        let words = ScriptedSpeaker::says(spoken.unwrap_or("Pronto."));
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        let (reply_tx, replies) = channel();
+        request_tx.send(request).unwrap();
+        for answer in answers {
+            reply_tx.send(*answer).unwrap();
+        }
+        drop(request_tx);
+        let mut shared_log = shared;
+        serve(
+            &Authority::full(user(administrator)),
+            &files(),
+            Some(&ScriptedPlanner::new(&[plan])),
+            &mut shared_log,
+            Wires {
+                requests,
+                events: events_tx,
+                replies,
+                talker: Some(talker),
+            },
+            &|cwd| format!("header in {cwd}"),
+            Some(Voice {
+                speaker: &words,
+                persona: &persona,
+            }),
+        );
+        drop(reply_tx);
+        for _ in 0..500 {
+            if !speaking.active() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Talking {
+            playback,
+            synthesizer,
+            log,
+            events: events.try_iter().collect(),
+            speaking,
+        }
+    }
+
+    #[test]
+    fn the_microphones_thread_keeps_no_event_sender_alive_once_the_worker_has_ended() {
+        let (events_tx, events) = channel();
+        let (_listen_tx, listens) = channel();
+        let sink: Sink = Arc::new(Mutex::new(Some(events_tx)));
+        let closing = Closing(Arc::clone(&sink));
+        let ear = Ear::new(
+            Box::new(FakeCapture::default()),
+            Box::new(FakeTranscriber::hearing("x")),
+            Speaking::default(),
+        );
+        let shared = SharedLog::new(Box::new(SharedMemory::default()));
+        // The thread is alive and waiting for the key, as with `--listen`.
+        thread::spawn(move || listen(ear, None, &listens, &sink, shared));
+        assert!(matches!(
+            events.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(closing);
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(5)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn the_event_that_gives_the_keyboard_back_exists_only_once_the_reply_is_queued() {
+        let (started_tx, started) = channel();
+        let (release_tx, release) = channel();
+        let speaking = Speaking::default();
+        let mouth = Mouth::new(
+            Box::new(FakeSynthesizer::with(&["pt_BR-cadu-medium"])),
+            Box::new(HeldPlayback::new(started_tx, release)),
+            voice("cadu").unwrap(),
+            speaking.clone(),
+        );
+        let talker = Talker::spawn(mouth, |_| {});
+        assert!(!speaking.active());
+        let event = said_event(Some(&talker), Some("Done.".to_owned()));
+        // The gate is shut as soon as the event can be sent, before the voice has begun.
+        assert!(speaking.active());
+        assert_eq!(event, Event::Said(Some("Done.".to_owned())));
+        // Without a reply, or without a voice, nothing is queued.
+        assert_eq!(said_event(Some(&talker), None), Event::Said(None));
+        assert_eq!(
+            said_event(None, Some("x".to_owned())),
+            Event::Said(Some("x".to_owned()))
+        );
+        started.recv_timeout(Duration::from_secs(10)).unwrap();
+        release_tx.send(()).unwrap();
+        for _ in 0..300 {
+            if !speaking.active() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!speaking.active());
+    }
+
+    /// A session as the shell starts it: a model on a port of the test (it asks a
+    /// question, and writes a reply), a log in a file, speech on with fakes.
+    fn speaking_setup(
+        name: &str,
+        reply: &str,
+        playback: &FakePlayback,
+        transcriber: &FakeTranscriber,
+    ) -> (Setup, std::path::PathBuf, Speaking) {
+        use crate::broker::Authority;
+        use crate::host::UnixHost;
+        use crate::log::JsonlLog;
+        use crate::model::LlamaPlanner;
+        use crate::speech::loopback::{http, stub};
+
+        let completion = |text: &str| {
+            let body = serde_json::json!({"choices": [{"message": {"content": text}}]});
+            http("200 OK", "application/json", body.to_string().as_bytes())
+        };
+        let clarify = r#"{"kind":"clarify","version":3,"question":"Which one?"}"#;
+        let server = stub(vec![completion(clarify), completion(reply)]);
+        let log =
+            std::env::temp_dir().join(format!("ws-worker-{name}-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let speaking = Speaking::default();
+        let setup = Setup {
+            authority: Authority::full(crate::testing::user(false)),
+            host: UnixHost::from_environment(),
+            planner: Some(LlamaPlanner {
+                address: server.address.clone(),
+            }),
+            log: JsonlLog::open(&log).unwrap(),
+            reply: Some(crate::soul::Persona::of(crate::soul::Profile::WarmDidactic)),
+            notice: None,
+            log_name: "d.jsonl".to_owned(),
+            speech: Some(SpeechSetup {
+                ear: Some(Ear::new(
+                    Box::new(FakeCapture::default()),
+                    Box::new(transcriber.clone()),
+                    speaking.clone(),
+                )),
+                listen_language: Some("pt-BR".to_owned()),
+                mouth: Some(Mouth::new(
+                    Box::new(FakeSynthesizer::with(&["pt_BR-cadu-medium"])),
+                    Box::new(playback.clone()),
+                    voice("cadu").unwrap(),
+                    speaking.clone(),
+                )),
+            }),
+        };
+        (setup, log, speaking)
+    }
+
+    #[test]
+    fn the_worker_of_a_session_with_speech_speaks_the_reply_listens_and_logs_what_it_heard() {
+        let (playback, transcriber) = (FakePlayback::default(), FakeTranscriber::hearing("ola"));
+        let (setup, log, speaking) =
+            speaking_setup("worker", "Qual deles?", &playback, &transcriber);
+        // The interface the session opens has the microphone key.
+        assert!(opening(&setup).listening());
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        let (_reply_tx, replies) = channel();
+        let (listen_tx, listens) = channel();
+        let worker = thread::spawn(move || worker(setup, requests, events_tx, replies, listens));
+        request_tx.send("open it".to_owned()).unwrap();
+        let mut said = None;
+        while said.is_none() {
+            if let Event::Said(text) = events.recv_timeout(Duration::from_secs(10)).unwrap() {
+                said = Some(text);
+            }
+        }
+        assert_eq!(said, Some(Some("Qual deles?".to_owned())));
+        // Spoken in the voice of the mouth the session was given.
+        for _ in 0..300 {
+            if !playback.played.lock().unwrap().is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            playback.played.lock().unwrap().as_slice(),
+            [tagged_wav("pt_BR-cadu-medium", "Qual deles?")]
+        );
+        // The microphone's thread answers, told the language, and the log has it
+        // (once the voice has ended and the gate is open again).
+        for _ in 0..300 {
+            if !speaking.active() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        listen_tx.send(Listen::Start(1)).unwrap();
+        listen_tx.send(Listen::Stop(1)).unwrap();
+        loop {
+            if let Event::Heard(1, heard) = events.recv_timeout(Duration::from_secs(10)).unwrap() {
+                assert_eq!(heard, Ok("ola".to_owned()));
+                break;
+            }
+        }
+        assert_eq!(
+            transcriber.languages.lock().unwrap().as_slice(),
+            [Some("pt-BR".to_owned())]
+        );
+        drop((request_tx, listen_tx));
+        worker.join().unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains(r#""event":"transcript""#), "{text}");
+        assert!(text.contains(r#""event":"reply""#), "{text}");
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn the_microphone_key_exists_only_with_an_ear_and_speech_threads_only_with_speech() {
+        let speaking = Speaking::default();
+        let with_ear = SpeechSetup {
+            ear: Some(Ear::new(
+                Box::new(FakeCapture::default()),
+                Box::new(FakeTranscriber::hearing("x")),
+                speaking.clone(),
+            )),
+            listen_language: None,
+            mouth: None,
+        };
+        assert!(with_speech_keys(State::new(String::new()), Some(&with_ear)).listening());
+        assert!(!with_speech_keys(State::new(String::new()), None).listening());
+        let only_mouth = SpeechSetup {
+            ear: None,
+            listen_language: None,
+            mouth: Some(Mouth::new(
+                Box::new(FakeSynthesizer::with(&[])),
+                Box::new(FakePlayback::default()),
+                voice("cadu").unwrap(),
+                speaking,
+            )),
+        };
+        assert!(!with_speech_keys(State::new(String::new()), Some(&only_mouth)).listening());
+        // Threads: none without speech; a talker with a voice.
+        let (events_tx, _events) = channel();
+        let (_listen_tx, listens) = channel();
+        let (talker, closing) = speech_threads(None, None, &events_tx, listens);
+        assert!(talker.is_none() && closing.is_none());
+        let (_listen_tx, listens) = channel();
+        let shared = SharedLog::new(Box::new(SharedMemory::default()));
+        let (talker, closing) = speech_threads(Some(only_mouth), Some(shared), &events_tx, listens);
+        assert!(talker.is_some() && closing.is_some());
+    }
+
+    #[test]
+    fn the_speech_the_worker_starts_speaks_replies_and_listens_in_the_replies_language() {
+        let (playback, transcriber) = (FakePlayback::default(), FakeTranscriber::hearing("ola"));
+        let speaking = Speaking::default();
+        let setup = SpeechSetup {
+            ear: Some(Ear::new(
+                Box::new(FakeCapture::default()),
+                Box::new(transcriber.clone()),
+                speaking.clone(),
+            )),
+            listen_language: Some("pt-BR".to_owned()),
+            mouth: Some(Mouth::new(
+                Box::new(FakeSynthesizer::with(&["pt_BR-jeff-medium"])),
+                Box::new(playback.clone()),
+                voice("jeff").unwrap(),
+                speaking.clone(),
+            )),
+        };
+        let (events_tx, events) = channel();
+        let (listen_tx, listens) = channel();
+        let shared = SharedLog::new(Box::new(SharedMemory::default()));
+        let (talker, closing) = start_speech(setup, shared, &events_tx, listens);
+        // The voice: a reply is spoken in the voice the mouth was built with.
+        talker
+            .expect("a mouth gives a talker")
+            .say("Pronto.".to_owned());
+        for _ in 0..300 {
+            if !speaking.active() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            playback.played.lock().unwrap().as_slice(),
+            [tagged_wav("pt_BR-jeff-medium", "Pronto.")]
+        );
+        // The ear: the microphone's thread answers a recording, told the language.
+        listen_tx.send(Listen::Start(1)).unwrap();
+        listen_tx.send(Listen::Stop(1)).unwrap();
+        let heard = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(heard, Event::Heard(1, Ok("ola".to_owned())));
+        assert_eq!(
+            transcriber.languages.lock().unwrap().as_slice(),
+            [Some("pt-BR".to_owned())]
+        );
+        // And both let go of the event channel with the worker.
+        drop((closing, events_tx, listen_tx));
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(5)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn what_the_microphones_thread_is_told_to_forget_no_longer_marks_a_request() {
+        let memory = SharedMemory::default();
+        let shared = SharedLog::new(Box::new(memory.clone()));
+        let ear = Ear::new(
+            Box::new(FakeCapture::default()),
+            Box::new(FakeTranscriber::hearing("delete the folder")),
+            Speaking::default(),
+        );
+        let (events_tx, events) = channel();
+        let (listen_tx, listens) = channel();
+        let sink: Sink = Arc::new(Mutex::new(Some(events_tx)));
+        let mut log = shared.clone();
+        let thread = thread::spawn({
+            let shared = shared.clone();
+            move || listen(ear, None, &listens, &sink, shared)
+        });
+        for command in [Listen::Start(1), Listen::Stop(1), Listen::Forget] {
+            listen_tx.send(command).unwrap();
+        }
+        assert!(events.recv_timeout(Duration::from_secs(5)).is_ok());
+        drop(listen_tx);
+        thread.join().unwrap();
+        log.record(serde_json::json!({"event": "request", "request": "delete the folder"}))
+            .unwrap();
+        let request = memory
+            .events()
+            .into_iter()
+            .find(|e| e["event"] == "request")
+            .unwrap();
+        assert!(request.get("input").is_none(), "{request}");
+    }
+
+    #[test]
+    fn nothing_is_sent_through_a_closed_sink_and_the_sender_is_dropped() {
+        let (tx, events) = channel();
+        let sink: Sink = Arc::new(Mutex::new(Some(tx)));
+        assert!(send_through(&sink, Event::Note("a".to_owned())));
+        assert_eq!(events.try_recv(), Ok(Event::Note("a".to_owned())));
+        drop(Closing(Arc::clone(&sink)));
+        assert!(!send_through(&sink, Event::Note("b".to_owned())));
+        assert!(matches!(
+            events.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn the_microphones_thread_ignores_a_stop_or_a_cancel_for_an_earlier_recording() {
+        let capture = FakeCapture::default();
+        let ear = Ear::new(
+            Box::new(capture.clone()),
+            Box::new(FakeTranscriber::hearing("second")),
+            Speaking::default(),
+        );
+        let (events_tx, events) = channel();
+        let (listen_tx, listens) = channel();
+        let sink: Sink = Arc::new(Mutex::new(Some(events_tx)));
+        let shared = SharedLog::new(Box::new(SharedMemory::default()));
+        let thread = thread::spawn(move || listen(ear, None, &listens, &sink, shared));
+        for command in [
+            Listen::Start(1),
+            Listen::Cancel(1),
+            Listen::Start(2),
+            Listen::Cancel(1),
+            Listen::Stop(1),
+            Listen::Stop(2),
+        ] {
+            listen_tx.send(command).unwrap();
+        }
+        let heard = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(heard, Event::Heard(2, Ok("second".to_owned())));
+        drop(listen_tx);
+        thread.join().unwrap();
+        // One stale stop and one stale cancel did nothing: no extra transcription and no extra cancel.
+        assert_eq!(
+            capture.state.lock().unwrap().as_slice(),
+            ["start", "cancel", "start", "finish"]
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    fn ctrl_t() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn a_spoken_request_becomes_a_validated_plan_and_the_answer_is_spoken_back() {
+        use crate::pipeline_tests::LARGEST;
+
+        let run = spoken_request(
+            "list the largest files in downloads",
+            LARGEST,
+            false,
+            &[],
+            Some("Encontrei os dois maiores arquivos."),
+        );
+        let events = run.log.events();
+        let kinds: Vec<&str> = events.iter().filter_map(|e| e["event"].as_str()).collect();
+        // The transcript is on record first, then the request that is that very text, marked as spoken.
+        assert_eq!(&kinds[..2], ["transcript", "request"], "{kinds:?}");
+        assert_eq!(events[0]["text"], "list the largest files in downloads");
+        assert_eq!(events[1]["request"], "list the largest files in downloads");
+        assert_eq!(events[1]["input"], "speech");
+        // The same pipeline as a typed request: the plan was validated, reviewed and run.
+        for step in ["plan_accepted", "review", "execute", "result", "reply"] {
+            assert!(kinds.contains(&step), "{step} missing from {kinds:?}");
+        }
+        // The answer is spoken, in the voice, and nothing else is.
+        assert_eq!(
+            run.playback.played.lock().unwrap().as_slice(),
+            [tagged_wav(
+                "pt_BR-cadu-medium",
+                "Encontrei os dois maiores arquivos."
+            )]
+        );
+        assert!(!run.speaking.active());
+        // The reply is sent to the screen as text in the same step in which it is queued to be spoken.
+        assert!(run.events.iter().any(|e| matches!(
+            e,
+            Event::Said(Some(text)) if text == "Encontrei os dois maiores arquivos."
+        )));
+    }
+
+    #[test]
+    fn a_root_panel_a_table_and_a_verdict_are_never_spoken_in_place_of_text() {
+        let plan = r#"{"kind":"plan","version":3,"summary":"x","steps":[
+          {"id":"s1","action":"fs.find_largest","args":{"target":{"place":"downloads"},"count":2},"depends_on":[],"elevate":true}]}"#;
+        let run = spoken_request(
+            "show me",
+            plan,
+            true,
+            &[Reply::Yes, Reply::Yes],
+            Some("Done."),
+        );
+        assert!(
+            run.events
+                .iter()
+                .any(|e| matches!(e, Event::AskRoot { .. })),
+            "the root panel was asked"
+        );
+        let said = run.synthesizer.calls.lock().unwrap().clone();
+        assert_eq!(said, [("pt_BR-cadu-medium".to_owned(), "Done.".to_owned())]);
+    }
+
+    #[test]
+    fn a_hostile_reply_is_spoken_only_as_the_cleaned_line() {
+        use crate::pipeline_tests::LARGEST;
+
+        let run = spoken_request(
+            "list",
+            LARGEST,
+            false,
+            &[],
+            Some("Done.\n\u{1b}[2J  ROOT CONFIRMATION  \u{202e}evil"),
+        );
+        let said = run.synthesizer.calls.lock().unwrap().clone();
+        assert_eq!(said.len(), 1);
+        let text = &said[0].1;
+        assert!(
+            !text.contains('\n') && !text.contains('\u{1b}') && !text.contains('\u{202e}'),
+            "{text:?}"
+        );
     }
 }
