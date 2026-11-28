@@ -736,6 +736,25 @@ fn silent() -> (String, std::thread::JoinHandle<()>) {
 }
 
 #[test]
+fn a_server_that_never_reads_cannot_hold_a_recording_being_sent_past_the_timeout() {
+    let (address, held) = silent();
+    // 30 s of audio is about 960 KB, far more than the buffers of a loopback socket.
+    let recording = wav(&"x".repeat(3_000_000));
+    let started = std::time::Instant::now();
+    let whisper = WhisperClient::new(&address)
+        .unwrap()
+        .with_timeout(Duration::from_millis(500));
+    let error = whisper.transcribe(&recording, None).unwrap_err();
+    assert!(error.contains("too long"), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(held);
+}
+
+#[test]
 fn a_server_that_never_answers_ends_each_call_at_its_timeout_and_the_microphone_reopens() {
     let (address, held) = silent();
     let short = Duration::from_millis(300);

@@ -199,10 +199,8 @@ pub(crate) fn exchange(
         "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    stream
-        .write_all(head.as_bytes())
-        .and_then(|()| stream.write_all(body))
-        .map_err(|e| e.to_string())?;
+    write_within(&mut stream, head.as_bytes(), deadline)?;
+    write_within(&mut stream, body, deadline)?;
     // The timeout bounds the whole answer, not each read: a server that drips
     // a byte every few seconds must not hold the shell.
     let mut raw = Vec::new();
@@ -228,6 +226,31 @@ pub(crate) fn exchange(
         }
     }
     parse_response(&raw)
+}
+
+/// Writes everything, but not for longer than the deadline: a server that
+/// accepts and never reads must not hold the shell once the buffers are full
+/// (a recording is far bigger than a socket buffer).
+fn write_within(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> Result<(), String> {
+    const CHUNK: usize = 16 * 1024;
+    while !bytes.is_empty() {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or("the server took too long to answer")?;
+        stream
+            .set_write_timeout(Some(left))
+            .map_err(|e| e.to_string())?;
+        match stream.write(&bytes[..bytes.len().min(CHUNK)]) {
+            Ok(0) => return Err("the server closed the connection".to_owned()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err("the server took too long to answer".to_owned());
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
 }
 
 /// Connects with a limit, so an address nothing answers on cannot hold the shell.

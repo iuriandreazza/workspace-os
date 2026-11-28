@@ -272,6 +272,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | erasing what was heard is not told to the log | `tui::state::tests::erasing_what_was_heard_tells_the_microphone_to_forget_it_and_typing_does_not` |
 | forgetting keeps what was heard | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
 | a bracket with a digit, or attached to a word, is a tag | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
+| the sending of a recording has no deadline | `speech_tests::a_server_that_never_reads_cannot_hold_a_recording_being_sent_past_the_timeout` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
@@ -416,10 +417,14 @@ the speaker):
   is not Apache-2.0-only or does not bring a binding generator. The FFI has not
   been run against a microphone the process may use: the hand test is the
   proof it still lacks.
+- With speech off, three things still differ from today, none in a session that
+  runs: the `USAGE` text lists the four new options; a personality file with a
+  `voice` key, with a first line other than `format: 1`, or with a wrong key says
+  so in the new words (format 2 and the new key list); and a model answer cut
+  short reads as below. The byte comparison above covers valid files only.
 - A truncated answer from the model server now reads "the server's answer was
   cut short" instead of "server reply is not JSON": the check lives in the HTTP
-  code both share, and is the one behaviour of today's output that changes (for
-  a reply cut in the middle).
+  code both share, and is a behaviour of today's output that changes (for a reply cut in the middle).
 - No voice is cloned and no voice is downloaded by the shell.
 
 ## Appendix: the commands that were run
