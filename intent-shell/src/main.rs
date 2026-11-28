@@ -17,7 +17,7 @@ use intent_shell::interview;
 use intent_shell::log::JsonlLog;
 use intent_shell::model::LlamaPlanner;
 use intent_shell::plain;
-use intent_shell::ports::{DecisionLog, Synthesizer as _, User};
+use intent_shell::ports::{AudioCapture, AudioPlayback, DecisionLog, Synthesizer as _, User};
 use intent_shell::setup::{Setup, SpeechSetup};
 use intent_shell::soul::{self, Persona, Source};
 use intent_shell::soul_files::FileSoulStore;
@@ -221,18 +221,37 @@ fn voice_of(
     Ok((Some(loaded.persona), notice))
 }
 
+/// The microphone and the speaker of this system, or why there is none.
+struct Adapters {
+    capture: Result<Box<dyn AudioCapture + Send>, String>,
+    playback: Result<Box<dyn AudioPlayback + Send>, String>,
+}
+
+impl Adapters {
+    fn of_this_system() -> Self {
+        Self {
+            capture: audio::platform_capture(),
+            playback: audio::platform_playback(),
+        }
+    }
+}
+
 /// Speech, when asked for (ADR 0031). The addresses must be on this machine,
-/// or the shell does not start. Everything else that can go wrong (a server not
-/// running yet, a voice not installed, a system with no microphone adapter) is
-/// said once and leaves the shell running without that half of speech.
+/// or the shell does not start. A system with no microphone or speaker adapter
+/// is said once and leaves the shell running without that half of speech; a
+/// server that is not running yet or a voice that is not installed is said once
+/// too, and each reply then says again that it was not spoken. The adapters are
+/// asked for only when a speech option was given.
 fn speech_setup(
     options: &Options,
     persona: Option<&Persona>,
     log: &mut dyn DecisionLog,
+    adapters: impl FnOnce() -> Adapters,
 ) -> Result<(Option<SpeechSetup>, Vec<String>), String> {
     if !(options.listen || options.speak) {
         return Ok((None, Vec::new()));
     }
+    let Adapters { capture, playback } = adapters();
     let mut problems = Vec::new();
     let speaking = Speaking::default();
     let language = persona
@@ -241,7 +260,7 @@ fn speech_setup(
     let mut ear = None;
     if options.listen {
         let client = WhisperClient::new(options.whisper.as_deref().unwrap_or(WHISPER_ADDRESS))?;
-        match audio::platform_capture() {
+        match capture {
             Ok(capture) => {
                 if let Err(why) = client.ping() {
                     problems.push(format!("--listen: {}; start whisper-server before you use the microphone key: with it down, a recording is lost when you stop it, and the shell says so then", reason(&why)));
@@ -258,7 +277,7 @@ fn speech_setup(
         let chosen = persona
             .ok_or("--speak needs the persona of the replies")?
             .spoken_voice();
-        match audio::platform_playback() {
+        match playback {
             Ok(playback) => {
                 voice = Some(chosen.id);
                 match client.voices() {
@@ -389,7 +408,8 @@ fn run() -> Result<(), String> {
     }
     let first = first_soul(&options)?;
     let (reply, notice) = voice_of(&options, &mut log)?;
-    let (speech, speech_problems) = speech_setup(&options, reply.as_ref(), &mut log)?;
+    let (speech, speech_problems) =
+        speech_setup(&options, reply.as_ref(), &mut log, Adapters::of_this_system)?;
     for problem in &speech_problems {
         eprintln!("{problem}");
     }
@@ -505,7 +525,9 @@ mod tests {
             }
         }
         // No flag: nothing is built, no process is contacted, nothing is logged.
-        let (setup, problems) = super::speech_setup(&off, None, &mut NoLog).unwrap();
+        let (setup, problems) =
+            super::speech_setup(&off, None, &mut NoLog, || panic!("no adapter is asked for"))
+                .unwrap();
         assert!(setup.is_none() && problems.is_empty());
     }
 
@@ -554,7 +576,7 @@ mod tests {
             &["--speak", "--tts", "localhost:5178"],
         ] {
             let chosen = options(args).unwrap();
-            let error = super::speech_setup(&chosen, Some(&persona), &mut Sink)
+            let error = super::speech_setup(&chosen, Some(&persona), &mut Sink, fakes)
                 .err()
                 .unwrap_or_else(|| panic!("{args:?} was accepted"));
             assert!(
@@ -564,20 +586,50 @@ mod tests {
         }
     }
 
-    /// The real wiring: the ear built for `--listen` and the mouth built for
-    /// `--speak` share one gate, so the system cannot hear itself. Only where the
-    /// audio adapters exist; nothing here touches a microphone or a speaker.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate() {
+    struct SilentCapture;
+    impl intent_shell::ports::AudioCapture for SilentCapture {
+        fn start(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn finish(&mut self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+        fn cancel(&mut self) {}
+    }
+
+    struct SilentPlayback;
+    impl intent_shell::ports::AudioPlayback for SilentPlayback {
+        fn play(&self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn fakes() -> super::Adapters {
+        super::Adapters {
+            capture: Ok(Box::new(SilentCapture)),
+            playback: Ok(Box::new(SilentPlayback)),
+        }
+    }
+
+    /// A persona from a SOUL and a personality, the way the files make one.
+    fn persona(soul: &str, personality: &str) -> intent_shell::soul::Persona {
+        intent_shell::soul::Soul::parse(soul)
+            .unwrap()
+            .with(&intent_shell::soul::Personality::parse(personality).unwrap())
+            .unwrap()
+    }
+
+    /// What `--listen --speak` builds, with nothing listening on port 1: the
+    /// start-up checks say so and the shell goes on.
+    fn built(
+        persona: &intent_shell::soul::Persona,
+    ) -> (intent_shell::setup::SpeechSetup, Vec<String>) {
         struct Sink;
         impl intent_shell::ports::DecisionLog for Sink {
             fn record(&mut self, _: serde_json::Value) -> Result<(), String> {
                 Ok(())
             }
         }
-        let persona = intent_shell::soul::Persona::of(intent_shell::soul::Profile::DirectTechnical);
-        // Nothing listens on port 1: the start-up checks say so and the shell goes on.
         let chosen = options(&[
             "--listen",
             "--speak",
@@ -587,10 +639,77 @@ mod tests {
             "127.0.0.1:1",
         ])
         .unwrap();
-        let (setup, problems) = super::speech_setup(&chosen, Some(&persona), &mut Sink).unwrap();
-        let setup = setup.expect("both halves were built");
+        let (setup, problems) =
+            super::speech_setup(&chosen, Some(persona), &mut Sink, fakes).unwrap();
+        (setup.expect("both halves were built"), problems)
+    }
+
+    const SOUL: &str = "format: 1\npreset: warm-didactic\nlanguages: en, pt-BR\n";
+
+    #[test]
+    fn the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate() {
+        let (setup, problems) = built(&persona(SOUL, "format: 1\n"));
         assert_eq!(problems.len(), 2, "{problems:?}");
         let (ear, mouth) = (setup.ear.unwrap(), setup.mouth.unwrap());
         assert!(ear.gate().same_as(mouth.gate()));
+    }
+
+    #[test]
+    fn the_voice_of_the_personality_is_the_one_the_mouth_is_built_with() {
+        for (voice, language) in [
+            ("cadu", "pt-BR"),
+            ("jeff", "pt-BR"),
+            ("faber", "pt-BR"),
+            ("joe", "en"),
+        ] {
+            let personality = format!("format: 2\nlanguage: {language}\nvoice: {voice}\n");
+            let (setup, _) = built(&persona(SOUL, &personality));
+            assert_eq!(setup.mouth.unwrap().voice().id, voice);
+        }
+    }
+
+    #[test]
+    fn the_recogniser_language_is_the_replies_and_reaches_the_setup() {
+        let (setup, _) = built(&persona(SOUL, "format: 1\nlanguage: pt-BR\n"));
+        assert_eq!(setup.listen_language.as_deref(), Some("pt-BR"));
+        let (setup, _) = built(&persona(SOUL, "format: 2\nvoice: cadu\n"));
+        assert_eq!(setup.listen_language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn a_system_with_no_adapter_runs_without_that_half_of_speech_and_says_so() {
+        struct Sink;
+        impl intent_shell::ports::DecisionLog for Sink {
+            fn record(&mut self, _: serde_json::Value) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let persona = persona(SOUL, "format: 1\n");
+        let chosen = options(&[
+            "--listen",
+            "--speak",
+            "--whisper",
+            "127.0.0.1:1",
+            "--tts",
+            "127.0.0.1:1",
+        ])
+        .unwrap();
+        let none = || super::Adapters {
+            capture: Err("no microphone here".to_owned()),
+            playback: Err("no speaker here".to_owned()),
+        };
+        let (setup, problems) =
+            super::speech_setup(&chosen, Some(&persona), &mut Sink, none).unwrap();
+        assert!(setup.is_none());
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("--listen is off: no microphone here"))
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("--speak is off: no speaker here"))
+        );
     }
 }

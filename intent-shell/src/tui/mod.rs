@@ -31,7 +31,7 @@ use crate::model::NoModel;
 use crate::ports::{ChoiceLine, Confirm, DecisionLog, Host, Planner, Retry, User};
 use crate::reply::{self, Voice};
 use crate::session::{Entry, SessionState, Shell};
-use crate::setup::Setup;
+use crate::setup::{Setup, SpeechSetup};
 use crate::speech::{Ear, SharedLog, Talker};
 use state::{Effect, Event, Listen, Mode, Reply, State};
 
@@ -195,6 +195,31 @@ fn said_event(talker: Option<&Talker>, said: Option<String>) -> Event {
     Event::Said(said)
 }
 
+/// Start the threads of speech: the one that speaks, when there is a voice, and
+/// the microphone's, when there is an ear. Both send through one closable sink,
+/// so neither keeps the event channel open once the worker has ended: drop the
+/// returned `Closing` when it has.
+fn start_speech(
+    speech: SpeechSetup,
+    shared: SharedLog,
+    events: &Sender<Event>,
+    listens: Receiver<Listen>,
+) -> (Option<Talker>, Closing) {
+    let sink: Sink = Arc::new(Mutex::new(Some(events.clone())));
+    let closing = Closing(Arc::clone(&sink));
+    let talker = speech.mouth.map(|mouth| {
+        let notes = Arc::clone(&sink);
+        Talker::spawn(mouth, move |why| {
+            send_through(&notes, Event::Note(format!("▸ {why}")));
+        })
+    });
+    if let Some(ear) = speech.ear {
+        let language = speech.listen_language;
+        thread::spawn(move || listen(ear, language.as_deref(), &listens, &sink, shared));
+    }
+    (talker, closing)
+}
+
 fn worker(
     setup: Setup,
     requests: Receiver<String>,
@@ -220,24 +245,13 @@ fn worker(
     } else {
         (Box::new(log), None)
     };
-    let mut talker = None;
-    let mut closing = None;
-    if let (Some(speech), Some(shared)) = (speech, shared) {
-        // Both speech threads send through one closable sink, so neither keeps
-        // the event channel open once the worker has ended.
-        let sink: Sink = Arc::new(Mutex::new(Some(events.clone())));
-        closing = Some(Closing(Arc::clone(&sink)));
-        if let Some(mouth) = speech.mouth {
-            let notes = Arc::clone(&sink);
-            talker = Some(Talker::spawn(mouth, move |why| {
-                send_through(&notes, Event::Note(format!("▸ {why}")));
-            }));
+    let (talker, closing) = match (speech, shared) {
+        (Some(speech), Some(shared)) => {
+            let (talker, closing) = start_speech(speech, shared, &events, listens);
+            (talker, Some(closing))
         }
-        if let Some(ear) = speech.ear {
-            let language = speech.listen_language;
-            thread::spawn(move || listen(ear, language.as_deref(), &listens, &sink, shared));
-        }
-    }
+        _ => (None, None),
+    };
     let wires = Wires {
         requests,
         events,
@@ -1242,6 +1256,92 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(!speaking.active());
+    }
+
+    #[test]
+    fn the_speech_the_worker_starts_speaks_replies_and_listens_in_the_replies_language() {
+        let (playback, transcriber) = (FakePlayback::default(), FakeTranscriber::hearing("ola"));
+        let speaking = Speaking::default();
+        let setup = SpeechSetup {
+            ear: Some(Ear::new(
+                Box::new(FakeCapture::default()),
+                Box::new(transcriber.clone()),
+                speaking.clone(),
+            )),
+            listen_language: Some("pt-BR".to_owned()),
+            mouth: Some(Mouth::new(
+                Box::new(FakeSynthesizer::with(&["pt_BR-jeff-medium"])),
+                Box::new(playback.clone()),
+                voice("jeff").unwrap(),
+                speaking.clone(),
+            )),
+        };
+        let (events_tx, events) = channel();
+        let (listen_tx, listens) = channel();
+        let shared = SharedLog::new(Box::new(SharedMemory::default()));
+        let (talker, closing) = start_speech(setup, shared, &events_tx, listens);
+        // The voice: a reply is spoken in the voice the mouth was built with.
+        talker
+            .expect("a mouth gives a talker")
+            .say("Pronto.".to_owned());
+        for _ in 0..300 {
+            if !speaking.active() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            playback.played.lock().unwrap().as_slice(),
+            [tagged_wav("pt_BR-jeff-medium", "Pronto.")]
+        );
+        // The ear: the microphone's thread answers a recording, told the language.
+        listen_tx.send(Listen::Start(1)).unwrap();
+        listen_tx.send(Listen::Stop(1)).unwrap();
+        let heard = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(heard, Event::Heard(1, Ok("ola".to_owned())));
+        assert_eq!(
+            transcriber.languages.lock().unwrap().as_slice(),
+            [Some("pt-BR".to_owned())]
+        );
+        // And both let go of the event channel with the worker.
+        drop((closing, events_tx, listen_tx));
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(5)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn what_the_microphones_thread_is_told_to_forget_no_longer_marks_a_request() {
+        let memory = SharedMemory::default();
+        let shared = SharedLog::new(Box::new(memory.clone()));
+        let ear = Ear::new(
+            Box::new(FakeCapture::default()),
+            Box::new(FakeTranscriber::hearing("delete the folder")),
+            Speaking::default(),
+        );
+        let (events_tx, events) = channel();
+        let (listen_tx, listens) = channel();
+        let sink: Sink = Arc::new(Mutex::new(Some(events_tx)));
+        let mut log = shared.clone();
+        let thread = thread::spawn({
+            let shared = shared.clone();
+            move || listen(ear, None, &listens, &sink, shared)
+        });
+        for command in [Listen::Start(1), Listen::Stop(1), Listen::Forget] {
+            listen_tx.send(command).unwrap();
+        }
+        assert!(events.recv_timeout(Duration::from_secs(5)).is_ok());
+        drop(listen_tx);
+        thread.join().unwrap();
+        log.record(serde_json::json!({"event": "request", "request": "delete the folder"}))
+            .unwrap();
+        let request = memory
+            .events()
+            .into_iter()
+            .find(|e| e["event"] == "request")
+            .unwrap();
+        assert!(request.get("input").is_none(), "{request}");
     }
 
     #[test]

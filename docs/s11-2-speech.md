@@ -279,6 +279,12 @@ fail, and the code was put back. The list is the second pass, after review round
 | a closed sink still sends | `tui::tests::nothing_is_sent_through_a_closed_sink_and_the_sender_is_dropped` |
 | the queue of replies to speak has no bound | `speech_tests::a_voice_that_is_behind_drops_replies_instead_of_queueing_them_without_end` |
 | the microphone hints are cut off on a narrow terminal | `tui::view::tests::the_microphone_hints_wrap_on_a_narrow_terminal_and_the_old_ones_are_as_before` |
+| the worker starts no thread that speaks | `tui::tests::the_speech_the_worker_starts_speaks_replies_and_listens_in_the_replies_language` |
+| the recogniser language is lost between the setup and the microphone's thread | same, and `tests::the_recogniser_language_is_the_replies_and_reaches_the_setup` |
+| the personality's voice is not the one the mouth is built with | `tests::the_voice_of_the_personality_is_the_one_the_mouth_is_built_with` |
+| the microphone's thread does not forget an erased transcript | `tui::tests::what_the_microphones_thread_is_told_to_forget_no_longer_marks_a_request` |
+| playing does not remove the audio a closed shell left | `audio::tests::the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed` |
+| a speech note moves the text being read | `tui::state::tests::a_speech_note_neither_scrolls_nor_restarts_a_question_nor_cancels_a_warning` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
@@ -287,7 +293,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | the event that gives the keyboard back is made before the reply is queued | `tui::tests::the_event_that_gives_the_keyboard_back_exists_only_once_the_reply_is_queued` |
 | the audio directory accepts a directory of another user, one open to others, or a link | `audio::tests::the_audio_directory_must_be_a_real_directory_of_ours_that_nobody_else_can_open` |
 | the audio file stays after a player that failed, or a stuck player is not killed | `audio::tests::the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed` |
-| `speech_setup` gives the ear another gate than the mouth's | `tests::the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate` (macOS only) |
+| `speech_setup` gives the ear another gate than the mouth's | `tests::the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate` |
 
 ## Run it
 
@@ -379,8 +385,12 @@ the speaker):
   Hugging Face at the pinned commit, not from a download.
 - A server that hangs holds the interface in "transcribing" for at most 30
   seconds (the timeout of `WhisperClient`), with no cancel but Ctrl-C; a hung
-  Piper costs one line per reply after at most 30 seconds, on the thread that
-  speaks, so the shell is not held. Both are tested.
+  Piper costs one line per reply, on the thread that speaks in the
+  conversational interface, so the shell is not held there; in the line adapter
+  (`--plain --speak`) the speaking is synchronous and holds the prompt for up to
+  35 seconds (5 for the voice list, 30 for the synthesis), and playing holds it
+  until the reply has ended (up to 180 seconds). Both are tested for the time they
+  take, not for the holding.
 - While a transcription runs (at most 30 s, the screen says so) no key but Ctrl-C
   does anything: the microphone's thread is busy with it, and a recording asked
   for in that time would start only after it. A hung `whisper-server` costs that

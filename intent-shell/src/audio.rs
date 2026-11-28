@@ -520,12 +520,18 @@ mod tests {
             program: PathBuf::from(program),
             limit,
         };
+        // A reply a closed shell left, long ago, goes with the next playback.
+        let left = dir.join("reply-1-0.wav");
+        fs::File::create(&left)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - STALE_AFTER * 2)
+            .unwrap();
         assert!(
             with("/usr/bin/true", PLAYBACK_LIMIT)
                 .play_in(&dir, b"audio")
                 .is_ok()
         );
-        assert_eq!(listing(), 0);
+        assert_eq!(listing(), 0, "the leftover and the new audio are both gone");
         let error = with("/usr/bin/false", PLAYBACK_LIMIT)
             .play_in(&dir, b"audio")
             .unwrap_err();
@@ -544,7 +550,7 @@ mod tests {
         .unwrap();
         fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
         let started = Instant::now();
-        let error = with(stuck.to_str().unwrap(), Duration::from_millis(300))
+        let error = with(stuck.to_str().unwrap(), Duration::from_millis(2000))
             .play_in(&dir, b"audio")
             .unwrap_err();
         assert!(error.contains("did not finish"), "{error}");

@@ -315,7 +315,15 @@ impl State {
                 self.mode = Mode::Choose { lines, selected: 0 };
             }
             Event::Header(text) => self.header = text,
-            Event::Note(text) => self.blocks.push(Block::Note(text)),
+            Event::Note(text) => {
+                // Like a reply: what is being read must not move under the person.
+                let width = usize::from(self.width);
+                let before = self.history_lines(width).len();
+                self.blocks.push(Block::Note(text));
+                if self.scroll > 0 {
+                    self.scroll += self.history_lines(width).len() - before;
+                }
+            }
             Event::Heard(recording, heard) => self.heard(recording, heard),
             Event::Outcome(text) => {
                 self.blocks.push(Block::Outcome(text));
@@ -1581,10 +1589,13 @@ mod tests {
         state.clock_ms = 1_000;
         state.forced_quit = true;
         state.on_event(Event::Note("▸ speech is off for this reply: x".to_owned()));
+        // The note's lines are added to the scroll, so the text being read stays put.
+        let kept = state.scroll;
+        assert!(kept > 7, "{kept}");
         state.on_event(Event::Heard(state.listen_gen, Ok("late".to_owned())));
         assert_eq!(
             (state.scroll, state.asked_ms, state.forced_quit),
-            (7, 5, true)
+            (kept, 5, true)
         );
         // The result of the shell's own work still does.
         state.on_event(Event::Header("h".to_owned()));
