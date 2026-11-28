@@ -45,7 +45,7 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
             let seconds = state.clock_ms.saturating_sub(*since_ms) / 1000;
             lines.push(Line::from(format!("{frame} {label}… {seconds}s")));
             lines.push(dim(if *label == "listening" {
-                "Enter or ^T stop (up to 30 s) · Esc cancel · ^C quit".to_owned()
+                "Enter or ^T stop (only the first 30 s are kept) · Esc cancel · ^C quit".to_owned()
             } else if *label == "transcribing" {
                 "gives up after 30 s · ^C quit".to_owned()
             } else {

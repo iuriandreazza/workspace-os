@@ -65,6 +65,9 @@ pub struct Mouth {
     synthesizer: Box<dyn Synthesizer + Send>,
     playback: Box<dyn AudioPlayback + Send>,
     voice: &'static SpokenVoice,
+    /// Shared with the ear, which is shut while this is above zero. It is part
+    /// of the mouth so that the thread that speaks cannot be given another one.
+    speaking: Speaking,
 }
 
 impl Mouth {
@@ -72,11 +75,13 @@ impl Mouth {
         synthesizer: Box<dyn Synthesizer + Send>,
         playback: Box<dyn AudioPlayback + Send>,
         voice: &'static SpokenVoice,
+        speaking: Speaking,
     ) -> Self {
         Self {
             synthesizer,
             playback,
             voice,
+            speaking,
         }
     }
 
@@ -214,11 +219,8 @@ pub struct Talker {
 const MAX_QUEUED: usize = 3;
 
 impl Talker {
-    pub fn spawn(
-        mouth: Mouth,
-        speaking: Speaking,
-        report: impl Fn(String) + Send + Sync + 'static,
-    ) -> Self {
+    pub fn spawn(mouth: Mouth, report: impl Fn(String) + Send + Sync + 'static) -> Self {
+        let speaking = mouth.speaking.clone();
         let report: Arc<dyn Fn(String) + Send + Sync> = Arc::new(report);
         let (queue, replies) = channel::<String>();
         let (done, said) = (speaking.clone(), Arc::clone(&report));

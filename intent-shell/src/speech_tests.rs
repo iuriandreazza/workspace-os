@@ -168,6 +168,7 @@ fn two_users_with_two_ids_are_spoken_to_in_two_voices_at_the_synthesiser() {
             Box::new(synthesizer.clone()),
             Box::new(FakePlayback::default()),
             persona.spoken_voice(),
+            Speaking::default(),
         );
         mouth.say("Done.").unwrap();
     }
@@ -210,6 +211,7 @@ fn mouth(synthesizer: &FakeSynthesizer, playback: &FakePlayback) -> Mouth {
         Box::new(synthesizer.clone()),
         Box::new(playback.clone()),
         voice("cadu").unwrap(),
+        Speaking::default(),
     )
 }
 
@@ -287,11 +289,12 @@ fn what_a_server_writes_in_an_error_reaches_the_person_as_one_escaped_capped_lin
 }
 
 #[test]
-fn the_recogniser_is_told_the_language_of_a_named_voice_else_the_reply_language_else_none() {
-    // A SOUL that lists en first, a personality that picks a Portuguese voice.
+fn the_recogniser_is_told_the_reply_language_and_never_the_language_of_the_voice() {
+    // A SOUL that lists en first and a personality that picks a Portuguese voice:
+    // the voice reaches only the speech call, so the language is still `en`.
     assert_eq!(
         persona_with("format: 2\nvoice: cadu\n").listen_language(),
-        Some("pt-BR")
+        Some("en")
     );
     assert_eq!(
         persona_with("format: 1\nname: Dex\n").listen_language(),
@@ -301,8 +304,16 @@ fn the_recogniser_is_told_the_language_of_a_named_voice_else_the_reply_language_
         persona_with("format: 1\nlanguage: pt-BR\n").listen_language(),
         Some("pt-BR")
     );
+    assert_eq!(
+        persona_with("format: 2\nlanguage: pt-BR\nvoice: cadu\n").listen_language(),
+        Some("pt-BR")
+    );
     let anything = Soul::parse("format: 1\npreset: warm-didactic\nlanguages: any\n").unwrap();
     assert_eq!(anything.persona().listen_language(), None);
+    let voiced = anything
+        .with(&Personality::parse("format: 2\nvoice: joe\n").unwrap())
+        .unwrap();
+    assert_eq!(voiced.listen_language(), None);
 }
 
 #[test]
@@ -347,8 +358,9 @@ fn the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been
             release: Mutex::new(release),
         }),
         voice("cadu").unwrap(),
+        speaking.clone(),
     );
-    let talker = Talker::spawn(mouth, speaking.clone(), move |why| {
+    let talker = Talker::spawn(mouth, move |why| {
         reported_tx.send(why).unwrap();
     });
     let capture = FakeCapture::default();
@@ -395,8 +407,9 @@ fn a_voice_that_is_behind_drops_replies_instead_of_queueing_them_without_end() {
             release: Mutex::new(release),
         }),
         voice("cadu").unwrap(),
+        speaking.clone(),
     );
-    let talker = Talker::spawn(mouth, speaking.clone(), move |why| {
+    let talker = Talker::spawn(mouth, move |why| {
         reported_tx.send(why).unwrap();
     });
     for n in 0..5 {
@@ -429,11 +442,9 @@ fn a_failure_while_speaking_is_reported_and_reopens_the_microphone() {
         fails: true,
         ..FakeSynthesizer::with(&["pt_BR-cadu-medium"])
     };
-    let talker = Talker::spawn(
-        mouth(&synthesizer, &FakePlayback::default()),
-        speaking.clone(),
-        move |why| reported_tx.send(why).unwrap(),
-    );
+    let talker = Talker::spawn(mouth(&synthesizer, &FakePlayback::default()), move |why| {
+        reported_tx.send(why).unwrap()
+    });
     talker.say("Done.".to_owned());
     let why = reported.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(why.starts_with("speech is off for this reply"));
@@ -740,6 +751,7 @@ fn a_voice_missing_on_the_real_adapter_is_refused_before_anything_is_synthesised
         Box::new(PiperClient::new(&server.address).unwrap()),
         Box::new(FakePlayback::default()),
         voice("cadu").unwrap(),
+        Speaking::default(),
     );
     assert!(mouth.say("Done.").unwrap_err().contains("is not installed"));
     // Only the list was asked for: no synthesis request, so no default voice was used.
@@ -841,8 +853,8 @@ fn a_server_that_never_answers_ends_each_call_at_its_timeout_and_the_microphone_
             Box::new(PiperClient::new(&address).unwrap().with_timeout(short)),
             Box::new(FakePlayback::default()),
             voice("cadu").unwrap(),
+            Speaking::default(),
         ),
-        speaking.clone(),
         move |why| reported_tx.send(why).unwrap(),
     );
     talker.say("Done.".to_owned());

@@ -294,6 +294,7 @@ mod tests {
                 Box::new(FakeSynthesizer::with(installed)),
                 Box::new(FakePlayback::default()),
                 voice("cadu").unwrap(),
+                crate::speech::Speaking::default(),
             )
         };
         assert_eq!(super::spoken_line(None, "Done."), None);

@@ -280,7 +280,8 @@ fail, and the code was put back. The list is the second pass, after review round
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
-| the recogniser language ignores the named voice | `speech_tests::the_recogniser_is_told_the_language_of_a_named_voice_else_the_reply_language_else_none` |
+| the voice chooses the recogniser's language | `speech_tests::the_recogniser_is_told_the_reply_language_and_never_the_language_of_the_voice` |
+| the thread that speaks does not share the mouth's gate with the ear | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
 
 ## Run it
 
@@ -387,7 +388,8 @@ the speaker):
   started with: start it with `-l auto` for that case, as the measured runs used
   `-l pt`.
 - A recording stops growing after 30 seconds but stops only when the person
-  presses a key. Leaving the shell while a reply is playing does not stop
+  presses a key; the screen says that only the first 30 s are kept, and what
+  is said after is not transcribed. Leaving the shell while a reply is playing does not stop
   `afplay`.
 - The recogniser is told the reply language (`pt` for `pt-BR`), which is the
   language the person is expected to speak; a person who speaks another one
@@ -396,10 +398,11 @@ the speaker):
   utterance, or several in a row, since the last request: a line that mixes typed
   and spoken words, or one with a part of an utterance deleted, is not marked (the `transcript` events are in the
   log either way), and a line typed to equal what was heard is.
-- A SOUL that lists several languages and a personality with no `language` and
-  no `voice`: the recogniser is told the first one (ADR 0031 section 3 takes
-  the first language of the SOUL as the reply language). A person who speaks
-  another of them sets `language` or `voice` in the personality.
+- A SOUL that lists several languages and a personality with no `language`: the
+  recogniser is told the first one (ADR 0031 section 3 takes the first language
+  of the SOUL as the reply language). The voice is never consulted for it, since
+  the voice reaches only the speech call. A person who speaks another of them
+  sets `language` in the personality.
 - The servers are found by a fixed loopback port, with no authentication. On a
   machine with several users, another user who binds `8178` or `5178` first
   receives the microphone audio or the reply text of a shell that has not

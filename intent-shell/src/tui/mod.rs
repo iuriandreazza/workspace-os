@@ -223,7 +223,7 @@ fn worker(
         closing = Some(Closing(Arc::clone(&sink)));
         if let Some(mouth) = speech.mouth {
             let notes = Arc::clone(&sink);
-            talker = Some(Talker::spawn(mouth, speech.speaking, move |why| {
+            talker = Some(Talker::spawn(mouth, move |why| {
                 send_through(&notes, Event::Note(format!("▸ {why}")));
             }));
         }
@@ -1131,8 +1131,9 @@ mod tests {
             Box::new(synthesizer.clone()),
             Box::new(playback.clone()),
             voice("cadu").unwrap(),
+            speaking.clone(),
         );
-        let talker = Talker::spawn(mouth, speaking.clone(), |_| {});
+        let talker = Talker::spawn(mouth, |_| {});
         let persona = crate::soul::Persona::of(crate::soul::Profile::WarmDidactic);
         let words = ScriptedSpeaker::says(spoken.unwrap_or("Pronto."));
         let (request_tx, requests) = channel();

@@ -10,7 +10,7 @@ use crate::ports::Planner;
 use crate::screen::{self, Header};
 use crate::session::{Entry, SessionState};
 use crate::soul::Persona;
-use crate::speech::{Ear, Mouth, Speaking};
+use crate::speech::{Ear, Mouth};
 
 static NO_MODEL: NoModel = NoModel;
 
@@ -42,8 +42,6 @@ pub struct SpeechSetup {
     pub listen_language: Option<String>,
     /// The voice of the replies, for `--speak`.
     pub mouth: Option<Mouth>,
-    /// Shared by the ear and the mouth: the ear is shut while this is above zero.
-    pub speaking: Speaking,
 }
 
 impl Setup {

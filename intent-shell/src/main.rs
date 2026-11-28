@@ -275,7 +275,12 @@ fn speech_setup(
                     }
                     Ok(_) => {}
                 }
-                mouth = Some(Mouth::new(Box::new(client), playback, chosen));
+                mouth = Some(Mouth::new(
+                    Box::new(client),
+                    playback,
+                    chosen,
+                    speaking.clone(),
+                ));
             }
             Err(why) => problems.push(format!("--speak is off: {why}")),
         }
@@ -286,7 +291,6 @@ fn speech_setup(
         ear,
         listen_language: language,
         mouth,
-        speaking,
     });
     Ok((setup, problems))
 }
