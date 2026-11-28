@@ -406,9 +406,8 @@ the speaker):
   until the reply has ended (up to 180 seconds). Both are tested for the time they
   take, not for the holding.
 - While a transcription runs (at most 30 s, the screen says so) no key but Ctrl-C
-  does anything: the microphone's thread is busy with it, and a recording asked
-  for in that time would start only after it. A hung `whisper-server` costs that
-  wait, not an error of the shell.
+  does anything: the microphone's thread is busy with it. A hung `whisper-server`
+  costs that wait, not an error of the shell.
 - Ctrl-T is a toggle, not hold-to-talk (a terminal sends no key release): a key
   held for more than 0.7 s counts as the second press and stops the recording.
   What is lost at the end of a recording is at most the 20 ms buffer being

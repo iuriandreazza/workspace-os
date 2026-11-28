@@ -302,9 +302,10 @@ fn worker(
     drop(closing);
 }
 
-/// Where the microphone's thread sends what it heard. The worker closes it when
-/// it ends, by returning or by a panic, so that the interface sees the end of
-/// the worker as it always did: the thread keeps no sender of the event channel alive.
+/// Where the speech threads send what they have to say. The worker closes it
+/// when it returns (a panic aborts the process in this workspace's profiles), so
+/// that the interface sees the end of the worker as it always did: no speech
+/// thread keeps a sender of the event channel alive.
 type Sink = Arc<Mutex<Option<Sender<Event>>>>;
 
 /// Send an event if the sink is still open; whether it was sent.
