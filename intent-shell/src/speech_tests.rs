@@ -4,10 +4,8 @@
 //! for Enter, the system does not hear itself, only the cleaned reply is spoken
 //! and a voice never reaches a prompt or a decision.
 
-use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -16,8 +14,8 @@ use crate::ports::{DecisionLog, Synthesizer, Transcriber};
 use crate::reply::{self, REPLY_LIMIT};
 use crate::soul::{Persona, Personality, Profile, Soul};
 use crate::speech::loopback::{
-    FakeCapture, FakePlayback, FakeSynthesizer, FakeTranscriber, HeldPlayback, SharedMemory,
-    tagged_wav,
+    FakeCapture, FakePlayback, FakeSynthesizer, FakeTranscriber, HeldPlayback, SharedMemory, http,
+    stub, tagged_wav,
 };
 use crate::speech::{
     Ear, Mouth, SharedLog, Speaking, Talker, VOICES, default_voice, language_fits, speakable,
@@ -611,60 +609,6 @@ fn a_request_that_is_the_transcript_as_heard_says_it_came_from_speech() {
 
 // ---- the adapters, against servers made for the test ------------------------
 
-struct Stub {
-    address: String,
-    requests: Arc<Mutex<Vec<Vec<u8>>>>,
-}
-
-fn http(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
-    let mut answer = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    )
-    .into_bytes();
-    answer.extend_from_slice(body);
-    answer
-}
-
-/// A server on a port of its own that gives each connection the next answer and keeps the requests.
-fn stub(answers: Vec<Vec<u8>>) -> Stub {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap().to_string();
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let seen = requests.clone();
-    std::thread::spawn(move || {
-        for answer in answers {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            let mut raw = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                let n = stream.read(&mut chunk).unwrap_or(0);
-                raw.extend_from_slice(&chunk[..n]);
-                let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
-                    if n == 0 {
-                        break;
-                    }
-                    continue;
-                };
-                let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
-                let length = head
-                    .lines()
-                    .find_map(|l| l.strip_prefix("content-length:"))
-                    .and_then(|l| l.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                if raw.len() >= end + 4 + length || n == 0 {
-                    break;
-                }
-            }
-            seen.lock().unwrap().push(raw);
-            let _ = stream.write_all(&answer);
-        }
-    });
-    Stub { address, requests }
-}
-
 fn wav(extra: &str) -> Vec<u8> {
     let mut bytes = b"RIFF\x24\0\0\0WAVEfmt ".to_vec();
     bytes.extend_from_slice(extra.as_bytes());
@@ -812,7 +756,7 @@ fn silent() -> (String, std::thread::JoinHandle<()>) {
 #[test]
 fn a_server_that_never_reads_cannot_hold_a_recording_being_sent_past_the_timeout() {
     let (address, held) = silent();
-    // 30 s of audio is about 960 KB, far more than the buffers of a loopback socket.
+    // 48 MB: far more than the buffers a loopback socket autotunes to, unlike the 960 KB of 30 s of audio.
     let recording = wav(&"x".repeat(48_000_000));
     let started = std::time::Instant::now();
     let whisper = WhisperClient::new(&address)

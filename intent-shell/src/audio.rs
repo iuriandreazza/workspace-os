@@ -20,7 +20,7 @@ use crate::ports::{AudioCapture, AudioPlayback};
 /// Whisper reads 16 kHz.
 pub const SAMPLE_RATE: u32 = 16_000;
 /// An utterance is a request: this stops a forgotten recording from filling memory.
-pub const MAX_SECONDS: u32 = 30;
+pub const MAX_SECONDS: u32 = crate::speech::MAX_RECORDING_SECONDS;
 const BYTES_PER_SECOND: usize = SAMPLE_RATE as usize * 2;
 /// Less than this is a key pressed twice, not a request.
 const MIN_BYTES: usize = BYTES_PER_SECOND / 4;

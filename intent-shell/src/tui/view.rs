@@ -60,7 +60,7 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
                     &mut lines,
                     &format!(
                         "Enter or ^T stop (only the first {} s are kept) · Esc cancel · ^C quit",
-                        crate::audio::MAX_SECONDS
+                        crate::speech::MAX_RECORDING_SECONDS
                     ),
                     true,
                     width,
@@ -69,7 +69,7 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
                     &mut lines,
                     &format!(
                         "gives up after {} s · ^C quit",
-                        crate::speech_http::TRANSCRIBE_TIMEOUT.as_secs()
+                        crate::speech::TRANSCRIBE_SECONDS
                     ),
                     true,
                     width,

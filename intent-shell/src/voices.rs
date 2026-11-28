@@ -95,9 +95,11 @@ fn base_language(tag: &str) -> &str {
 }
 
 /// The voice a personality with no `voice` is spoken with: the first of the
-/// list for the reply language, chosen by code. With no language anywhere
-/// (a SOUL that says `any` and a personality that names none) it is the first
-/// voice of the list, because there is nothing to match.
+/// list for the reply language, chosen by code; for a region the list has no
+/// voice of (`en-GB`), the first of the same language. With no language anywhere
+/// (a SOUL that says `any` and a personality that names none), or a language the
+/// list has no voice for at all (`es`, `fr`), it is the first voice of the list
+/// (`cadu`, which speaks pt-BR): there is nothing better to match.
 pub fn default_voice(language: Option<&str>) -> &'static SpokenVoice {
     language
         .and_then(|wanted| {

@@ -280,15 +280,15 @@ fail, and the code was put back. The list is the second pass, after review round
 | the microphone hints are cut off on a narrow terminal | `tui::view::tests::the_microphone_hints_wrap_on_a_narrow_terminal_and_the_old_ones_are_as_before` |
 | a speech note is shown under a confirmation | `tui::state::tests::a_speech_note_at_a_question_is_held_and_neither_scrolls_nor_restarts_it_nor_cancels_a_warning` |
 | the held note is never shown | same |
-| the worker starts no thread that speaks | `tui::tests::the_speech_the_worker_starts_speaks_replies_and_listens_in_the_replies_language` |
+| the worker starts no thread that speaks, or does not share the log with the microphone's thread | `tui::tests::the_worker_of_a_session_with_speech_speaks_the_reply_listens_and_logs_what_it_heard` (runs `worker` with a model on a port of the test, a log file and fakes for the audio) |
 | the recogniser language is lost between the setup and the microphone's thread | same, and `tests::the_recogniser_language_is_the_replies_and_reaches_the_setup` |
 | the personality's voice is not the one the mouth is built with | `tests::the_voice_of_the_personality_is_the_one_the_mouth_is_built_with` |
 | the microphone's thread does not forget an erased transcript | `tui::tests::what_the_microphones_thread_is_told_to_forget_no_longer_marks_a_request` |
 | playing does not remove the audio a closed shell left | `audio::tests::the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed` |
 | a speech note moves the text being read | `tui::state::tests::a_speech_note_keeps_the_place_of_the_person_who_is_reading_back` |
 | a voice cannot be named for a region the list has no voice for | `speech_tests::a_voice_may_be_named_where_it_is_the_default_for_a_region_the_list_has_no_voice_for` |
-| the microphone key is not enabled with an ear | `tui::tests::the_microphone_key_exists_only_with_an_ear_and_speech_threads_only_with_speech` |
-| the worker drops the thread that speaks | same |
+| the interface a session opens has no microphone key with an ear | `tui::tests::the_microphone_key_exists_only_with_an_ear_and_speech_threads_only_with_speech` and `opening(&setup)` in the worker test |
+| the worker drops the thread that speaks | same, and `tui::tests::the_microphone_key_exists_only_with_an_ear_and_speech_threads_only_with_speech` |
 | the speech event names no voice | `tests::the_speech_event_says_what_was_started_with_the_voice_that_is_used` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
@@ -449,6 +449,7 @@ the speaker):
   character is voiced as its escape. ADR 0031 asks for the same escaping and
   cap as the screen, and that is what is done.
 - A named voice must speak a language the SOUL allows; where the list has no voice of the SOUL's region (`en-GB`, `pt-PT`) the voice of that language may be named, which is also the voice such a personality gets without naming one.
+- `tui::run` calls `opening(&setup)` and then needs a terminal: that one call is not covered by a test, `opening` itself is.
 - The line `println!` that shows a failure of the voice in `plain::run` is not covered by a test; `spoken_line`, which makes it, is.
 - At most three replies wait to be spoken, the one playing included; a fourth
   is not spoken and says so. Nothing stops a reply that is playing.

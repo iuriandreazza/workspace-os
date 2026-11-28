@@ -236,6 +236,17 @@ fn speech_threads(
     }
 }
 
+/// The state a session opens with: its header and notice, and the microphone key
+/// when there is an ear.
+fn opening(setup: &Setup) -> State {
+    let state = opening_state(
+        setup.header(&SessionState::start(&setup.host)),
+        setup.entry(),
+        setup.notice.clone(),
+    );
+    with_speech_keys(state, setup.speech.as_ref())
+}
+
 /// The interface of a session: with an ear there is a microphone key.
 fn with_speech_keys(state: State, speech: Option<&SpeechSetup>) -> State {
     if speech.is_some_and(|speech| speech.ear.is_some()) {
@@ -513,12 +524,7 @@ fn opening_state(header: String, entry: Entry, notice: Option<String>) -> State 
 /// Open the interface and run until the person quits. The history is printed
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
-    let state = opening_state(
-        setup.header(&SessionState::start(&setup.host)),
-        setup.entry(),
-        setup.notice.clone(),
-    );
-    let state = with_speech_keys(state, setup.speech.as_ref());
+    let state = opening(&setup);
     run_with(
         state,
         transcript,
@@ -1269,6 +1275,109 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(!speaking.active());
+    }
+
+    /// A session as the shell starts it: a model on a port of the test (it asks a
+    /// question, and writes a reply), a log in a file, speech on with fakes.
+    fn speaking_setup(
+        name: &str,
+        reply: &str,
+        playback: &FakePlayback,
+        transcriber: &FakeTranscriber,
+    ) -> (Setup, std::path::PathBuf) {
+        use crate::broker::Authority;
+        use crate::host::UnixHost;
+        use crate::log::JsonlLog;
+        use crate::model::LlamaPlanner;
+        use crate::speech::loopback::{http, stub};
+
+        let completion = |text: &str| {
+            let body = serde_json::json!({"choices": [{"message": {"content": text}}]});
+            http("200 OK", "application/json", body.to_string().as_bytes())
+        };
+        let clarify = r#"{"kind":"clarify","version":3,"question":"Which one?"}"#;
+        let server = stub(vec![completion(clarify), completion(reply)]);
+        let log =
+            std::env::temp_dir().join(format!("ws-worker-{name}-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let speaking = Speaking::default();
+        let setup = Setup {
+            authority: Authority::full(crate::testing::user(false)),
+            host: UnixHost::from_environment(),
+            planner: Some(LlamaPlanner {
+                address: server.address.clone(),
+            }),
+            log: JsonlLog::open(&log).unwrap(),
+            reply: Some(crate::soul::Persona::of(crate::soul::Profile::WarmDidactic)),
+            notice: None,
+            log_name: "d.jsonl".to_owned(),
+            speech: Some(SpeechSetup {
+                ear: Some(Ear::new(
+                    Box::new(FakeCapture::default()),
+                    Box::new(transcriber.clone()),
+                    speaking.clone(),
+                )),
+                listen_language: Some("pt-BR".to_owned()),
+                mouth: Some(Mouth::new(
+                    Box::new(FakeSynthesizer::with(&["pt_BR-cadu-medium"])),
+                    Box::new(playback.clone()),
+                    voice("cadu").unwrap(),
+                    speaking,
+                )),
+            }),
+        };
+        (setup, log)
+    }
+
+    #[test]
+    fn the_worker_of_a_session_with_speech_speaks_the_reply_listens_and_logs_what_it_heard() {
+        let (playback, transcriber) = (FakePlayback::default(), FakeTranscriber::hearing("ola"));
+        let (setup, log) = speaking_setup("worker", "Qual deles?", &playback, &transcriber);
+        // The interface the session opens has the microphone key.
+        assert!(opening(&setup).listening());
+        let (request_tx, requests) = channel();
+        let (events_tx, events) = channel();
+        let (_reply_tx, replies) = channel();
+        let (listen_tx, listens) = channel();
+        let worker = thread::spawn(move || worker(setup, requests, events_tx, replies, listens));
+        request_tx.send("open it".to_owned()).unwrap();
+        let mut said = None;
+        while said.is_none() {
+            if let Event::Said(text) = events.recv_timeout(Duration::from_secs(10)).unwrap() {
+                said = Some(text);
+            }
+        }
+        assert_eq!(said, Some(Some("Qual deles?".to_owned())));
+        // Spoken in the voice of the mouth the session was given.
+        for _ in 0..300 {
+            if !playback.played.lock().unwrap().is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            playback.played.lock().unwrap().as_slice(),
+            [tagged_wav("pt_BR-cadu-medium", "Qual deles?")]
+        );
+        // The microphone's thread answers, told the language, and the log has it.
+        listen_tx.send(Listen::Start(1)).unwrap();
+        listen_tx.send(Listen::Stop(1)).unwrap();
+        loop {
+            if let Event::Heard(1, heard) = events.recv_timeout(Duration::from_secs(10)).unwrap() {
+                assert_eq!(heard, Ok("ola".to_owned()));
+                break;
+            }
+        }
+        assert_eq!(
+            transcriber.languages.lock().unwrap().as_slice(),
+            [Some("pt-BR".to_owned())]
+        );
+        drop((request_tx, listen_tx));
+        worker.join().unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains(r#""event":"transcript""#), "{text}");
+        assert!(text.contains(r#""event":"reply""#), "{text}");
+        let _ = std::fs::remove_file(&log);
     }
 
     #[test]

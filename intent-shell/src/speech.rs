@@ -27,6 +27,11 @@ pub fn speakable(reply: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// The longest recording that is kept, in seconds, and the longest wait for its
+/// transcription: what the screen tells the person, whichever adapter does them.
+pub const MAX_RECORDING_SECONDS: u32 = 30;
+pub const TRANSCRIBE_SECONDS: u64 = 30;
+
 /// How many utterances are queued or playing. The ear refuses to listen while
 /// it is above zero: the system must not hear itself (ADR 0031, section 5).
 #[derive(Clone, Default)]
@@ -340,6 +345,63 @@ pub mod loopback {
 
     use super::{AudioCapture, AudioPlayback, DecisionLog, Synthesizer, Transcriber};
     use crate::testing::MemoryLog;
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    pub struct Stub {
+        pub address: String,
+        pub requests: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    pub fn http(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+        let mut answer = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        answer.extend_from_slice(body);
+        answer
+    }
+
+    /// A server on a port of its own that gives each connection the next answer and keeps the requests.
+    pub fn stub(answers: Vec<Vec<u8>>) -> Stub {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        std::thread::spawn(move || {
+            for answer in answers {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    raw.extend_from_slice(&chunk[..n]);
+                    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        if n == 0 {
+                            break;
+                        }
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                    let length = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|l| l.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + length || n == 0 {
+                        break;
+                    }
+                }
+                seen.lock().unwrap().push(raw);
+                let _ = stream.write_all(&answer);
+            }
+        });
+        Stub { address, requests }
+    }
 
     /// A log that a test can read while another thread writes to it.
     #[derive(Clone, Default)]
