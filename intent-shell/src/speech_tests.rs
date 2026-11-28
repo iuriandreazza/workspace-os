@@ -447,6 +447,15 @@ fn silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped() {
         transcript_line("[BLANK_AUDIO] list downloads [Music]").unwrap(),
         "list downloads"
     );
+    // A bracket is a tag only as a word of its own with no digit in it.
+    for speech in [
+        "set the array a[0]",
+        "open file [1]",
+        "[2] list the files",
+        "read a[i]",
+    ] {
+        assert_eq!(transcript_line(speech).unwrap(), speech);
+    }
     // A parenthesis is a tag only when it is the whole line.
     for speech in [
         "Show me the folder (downloads)",
@@ -495,6 +504,12 @@ fn a_request_that_is_the_transcript_as_heard_says_it_came_from_speech() {
     log.record(SharedLog::transcript("downloads")).unwrap();
     log.record(json!({"event": "request", "request": "list downloads"}))
         .unwrap();
+    // Erased from the input line: the next request is not it, even if typed alike.
+    log.record(SharedLog::transcript("delete the folder"))
+        .unwrap();
+    log.forget();
+    log.record(json!({"event": "request", "request": "delete the folder"}))
+        .unwrap();
     // An utterance thrown away and said again: the request is the second one.
     log.record(SharedLog::transcript("list files")).unwrap();
     log.record(SharedLog::transcript("list the files")).unwrap();
@@ -513,6 +528,7 @@ fn a_request_that_is_the_transcript_as_heard_says_it_came_from_speech() {
             None,
             None,
             Some(json!("speech")),
+            None,
             Some(json!("speech"))
         ]
     );

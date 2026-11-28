@@ -46,6 +46,8 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
             lines.push(Line::from(format!("{frame} {label}… {seconds}s")));
             lines.push(dim(if *label == "listening" {
                 "Enter or ^T stop (up to 30 s) · Esc cancel · ^C quit".to_owned()
+            } else if *label == "transcribing" {
+                "gives up after 30 s · ^C quit".to_owned()
             } else {
                 "PgUp/Dn scroll · ^C quit".to_owned()
             }));

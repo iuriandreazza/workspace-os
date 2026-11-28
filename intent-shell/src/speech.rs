@@ -207,17 +207,28 @@ const TRANSCRIPT_LIMIT: usize = 500;
 /// a bracketed tag such as `[BLANK_AUDIO]` for silence.
 pub fn transcript_line(raw: &str) -> Option<String> {
     let mut text = raw.trim();
-    // Bracketed tags at either end are the recogniser's, wherever the speech sits
-    // between them: `[Music] list the files [Music]`, `[ Silence ]`.
+    // A tag is a bracketed word of its own, with no digit in it: `[Music]`,
+    // `[ Silence ]`. `a[0]` and `file [1]` are speech.
+    let tag = |group: &str| !group.chars().any(|c| c.is_ascii_digit());
     loop {
         let before = text;
         if text.starts_with('[')
             && let Some(end) = text.find(']')
+            && tag(&text[..end])
+            && text[end + 1..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
         {
             text = text[end + 1..].trim_start();
         }
         if text.ends_with(']')
             && let Some(start) = text.rfind('[')
+            && tag(&text[start..])
+            && text[..start]
+                .chars()
+                .next_back()
+                .is_none_or(char::is_whitespace)
         {
             text = text[..start].trim_end();
         }
@@ -327,6 +338,13 @@ impl SharedLog {
         Self {
             log: Arc::new(Mutex::new(log)),
             heard: Arc::default(),
+        }
+    }
+
+    /// What was heard has been erased from the input line: the next request is not it.
+    pub fn forget(&self) {
+        if let Ok(mut heard) = self.heard.lock() {
+            heard.clear();
         }
     }
 

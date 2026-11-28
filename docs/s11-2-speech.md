@@ -266,6 +266,12 @@ fail, and the code was put back. The list is the second pass, after review round
 | the microphone's thread keeps the event channel open after the worker ended | `tui::tests::the_microphones_thread_keeps_no_event_sender_alive_once_the_worker_has_ended` |
 | a request that is any run of utterances is not marked as spoken | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
 | a parenthesis anywhere is a tag | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
+| an answer for an earlier recording is taken for the current one | `tui::state::tests::an_answer_for_an_earlier_recording_is_never_taken_for_the_current_one` |
+| the microphone's thread acts on a stale stop | `tui::tests::the_microphones_thread_ignores_a_stop_or_a_cancel_for_an_earlier_recording` |
+| the microphone's thread acts on a stale cancel | same |
+| erasing what was heard is not told to the log | `tui::state::tests::erasing_what_was_heard_tells_the_microphone_to_forget_it_and_typing_does_not` |
+| forgetting keeps what was heard | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
+| a bracket with a digit, or attached to a word, is a tag | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
@@ -362,6 +368,10 @@ the speaker):
   seconds (the timeout of `WhisperClient`), with no cancel but Ctrl-C; a hung
   Piper costs one line per reply after at most 30 seconds, on the thread that
   speaks, so the shell is not held. Both are tested.
+- While a transcription runs (at most 30 s, the screen says so) no key but Ctrl-C
+  does anything: the microphone's thread is busy with it, and a recording asked
+  for in that time would start only after it. A hung `whisper-server` costs that
+  wait, not an error of the shell.
 - Ctrl-T is a toggle, not hold-to-talk (a terminal sends no key release): a key
   held for more than 0.7 s counts as the second press and stops the recording.
   What is lost at the end of a recording is at most the 20 ms buffer being

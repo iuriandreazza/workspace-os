@@ -274,26 +274,42 @@ fn listen(
     sink: &Sink,
     mut log: SharedLog,
 ) {
+    // The recording the microphone is held for; a command or an answer for any
+    // other one is stale and does nothing.
+    let mut current = 0;
     for command in commands {
-        let heard = match command {
-            Listen::Start => match ear.start() {
-                Ok(()) => continue,
-                Err(why) => Err(why),
-            },
-            Listen::Cancel => {
-                ear.cancel();
+        let (recording, heard) = match command {
+            Listen::Start(recording) => {
+                current = recording;
+                match ear.start() {
+                    Ok(()) => continue,
+                    Err(why) => (recording, Err(why)),
+                }
+            }
+            Listen::Cancel(recording) => {
+                if recording == current {
+                    ear.cancel();
+                }
                 continue;
             }
-            Listen::Stop => ear.finish(language).and_then(|line| {
-                log.record(SharedLog::transcript(&line))
-                    .map_err(|e| format!("cannot write the decision log: {e}"))?;
-                Ok(line)
-            }),
+            Listen::Forget => {
+                log.forget();
+                continue;
+            }
+            Listen::Stop(recording) if recording != current => continue,
+            Listen::Stop(recording) => (
+                recording,
+                ear.finish(language).and_then(|line| {
+                    log.record(SharedLog::transcript(&line))
+                        .map_err(|e| format!("cannot write the decision log: {e}"))?;
+                    Ok(line)
+                }),
+            ),
         };
-        let sent = sink
-            .lock()
-            .ok()
-            .and_then(|open| open.as_ref().map(|events| events.send(Event::Heard(heard))));
+        let sent = sink.lock().ok().and_then(|open| {
+            open.as_ref()
+                .map(|events| events.send(Event::Heard(recording, heard)))
+        });
         if !matches!(sent, Some(Ok(()))) {
             return;
         }
@@ -1086,12 +1102,12 @@ mod tests {
         };
         let mut state = State::new("header".to_owned()).with_listening();
         state.clock_ms = 0;
-        assert_eq!(state.on_key(ctrl_t()), Effect::Listen(Listen::Start));
-        listen_tx.send(Listen::Start).unwrap();
+        assert_eq!(state.on_key(ctrl_t()), Effect::Listen(Listen::Start(1)));
+        listen_tx.send(Listen::Start(state.listen_gen)).unwrap();
         state.clock_ms += state::DWELL_MS;
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(state.on_key(enter), Effect::Listen(Listen::Stop));
-        listen_tx.send(Listen::Stop).unwrap();
+        assert_eq!(state.on_key(enter), Effect::Listen(Listen::Stop(1)));
+        listen_tx.send(Listen::Stop(state.listen_gen)).unwrap();
         let shown = events.recv_timeout(Duration::from_secs(10)).unwrap();
         state.on_event(shown);
         // A person reads what was heard before pressing Enter.
@@ -1178,6 +1194,41 @@ mod tests {
             events.recv_timeout(Duration::from_secs(5)),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
         ));
+    }
+
+    #[test]
+    fn the_microphones_thread_ignores_a_stop_or_a_cancel_for_an_earlier_recording() {
+        let capture = FakeCapture::default();
+        let ear = Ear::new(
+            Box::new(capture.clone()),
+            Box::new(FakeTranscriber::hearing("second")),
+            Speaking::default(),
+        );
+        let (events_tx, events) = channel();
+        let (listen_tx, listens) = channel();
+        let sink: Sink = Arc::new(Mutex::new(Some(events_tx)));
+        let shared = SharedLog::new(Box::new(SharedMemory::default()));
+        let thread = thread::spawn(move || listen(ear, None, &listens, &sink, shared));
+        for command in [
+            Listen::Start(1),
+            Listen::Cancel(1),
+            Listen::Start(2),
+            Listen::Cancel(1),
+            Listen::Stop(1),
+            Listen::Stop(2),
+        ] {
+            listen_tx.send(command).unwrap();
+        }
+        let heard = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(heard, Event::Heard(2, Ok("second".to_owned())));
+        drop(listen_tx);
+        thread.join().unwrap();
+        // One stale stop and one stale cancel did nothing: no extra transcription and no extra cancel.
+        assert_eq!(
+            capture.state.lock().unwrap().as_slice(),
+            ["start", "cancel", "start", "finish"]
+        );
+        assert!(events.try_recv().is_err());
     }
 
     fn ctrl_t() -> KeyEvent {
