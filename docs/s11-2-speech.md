@@ -294,7 +294,7 @@ brew install whisper.cpp
 
 Voices: the `.onnx` and `.onnx.json` of each voice of the list from
 `https://huggingface.co/rhasspy/piper-voices/tree/e9c8a39444359388adaa94255becb37a5a2b8e51`
-into one directory, then check each file against the hash in `speech.rs`
+into one directory, then check each file against the hash in `voices.rs`
 (`shasum -a 256 FILE`). The shell does not check them: it never sees the
 files. The Whisper model is `ggml-small-q5_1.bin` from
 `https://huggingface.co/ggerganov/whisper.cpp`.

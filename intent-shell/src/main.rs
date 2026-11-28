@@ -258,9 +258,9 @@ fn speech_setup(
         let chosen = persona
             .ok_or("--speak needs the persona of the replies")?
             .spoken_voice();
-        voice = Some(chosen.id);
         match audio::platform_playback() {
             Ok(playback) => {
+                voice = Some(chosen.id);
                 match client.voices() {
                     Err(why) => problems.push(format!(
                         "--speak: the speech server at {} does not answer: {}; replies are spoken once it does",

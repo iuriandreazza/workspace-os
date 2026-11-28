@@ -43,7 +43,7 @@ fn contradiction(soul: &str, personality: &str) -> String {
 // ---- the list and the personality ------------------------------------------
 
 #[test]
-fn the_list_is_closed_and_every_entry_names_a_checked_file() {
+fn the_list_is_closed_and_every_entry_records_a_hash_and_a_name() {
     assert_eq!(VOICES.map(|v| v.id), ["cadu", "jeff", "faber", "joe"]);
     for voice in &VOICES {
         assert_eq!(voice.sha256.len(), 64, "{}", voice.id);
