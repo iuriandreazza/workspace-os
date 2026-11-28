@@ -48,6 +48,11 @@ impl Speaking {
         self.0.load(Ordering::SeqCst) > 0
     }
 
+    /// Whether both are the same gate, not two that count alike.
+    pub fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     fn queued(&self) -> usize {
         self.0.load(Ordering::SeqCst)
     }
@@ -66,7 +71,8 @@ pub struct Mouth {
     playback: Box<dyn AudioPlayback + Send>,
     voice: &'static SpokenVoice,
     /// Shared with the ear, which is shut while this is above zero. It is part
-    /// of the mouth so that the thread that speaks cannot be given another one.
+    /// of the mouth so that the thread that speaks cannot be given another one;
+    /// `speech_setup` gives the ear the same one, and a test holds that.
     speaking: Speaking,
 }
 
@@ -83,6 +89,11 @@ impl Mouth {
             voice,
             speaking,
         }
+    }
+
+    /// The gate this mouth raises while it speaks.
+    pub fn gate(&self) -> &Speaking {
+        &self.speaking
     }
 
     pub fn voice(&self) -> &'static SpokenVoice {
@@ -193,6 +204,11 @@ impl Ear {
 
     pub fn cancel(&mut self) {
         self.capture.cancel();
+    }
+
+    /// The gate this ear checks before it listens.
+    pub fn gate(&self) -> &Speaking {
+        &self.speaking
     }
 
     /// Stop recording and transcribe. `language` is the reply language, when known.

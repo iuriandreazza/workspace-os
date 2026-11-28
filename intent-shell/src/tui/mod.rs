@@ -1287,7 +1287,7 @@ mod tests {
             )]
         );
         assert!(!run.speaking.active());
-        // The reply is on screen before it is spoken, as text.
+        // The reply is sent to the screen as text in the same step in which it is queued to be spoken.
         assert!(run.events.iter().any(|e| matches!(
             e,
             Event::Said(Some(text)) if text == "Encontrei os dois maiores arquivos."

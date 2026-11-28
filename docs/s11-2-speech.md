@@ -231,7 +231,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | no check that the voice is installed | `plain::tests::a_reply_is_spoken_only_with_a_mouth_and_a_failure_is_one_printed_line`; `speech_tests::a_voice_missing_on_the_real_adapter_is_refused_before_anything_is_synthesised` |
 | the ear ignores that the system is speaking | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
 | a queued reply does not shut the microphone | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played`; `tui::tests::a_root_panel_a_table_and_a_verdict_are_never_spoken_in_place_of_text` |
-| a played reply never reopens the microphone | `speech_tests::a_failure_while_speaking_is_reported_and_reopens_the_microphone`; `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
+| a played or failed reply never reopens the microphone | `speech_tests::a_failure_while_speaking_is_reported_and_reopens_the_microphone`; `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
 | transcript not escaped | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped`; `speech_tests::what_was_heard_is_one_escaped_line_with_the_reply_language_passed_on` |
 | tags before the speech are kept | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
 | tags after the speech are kept | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
@@ -281,7 +281,8 @@ fail, and the code was put back. The list is the second pass, after review round
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | the voice chooses the recogniser's language | `speech_tests::the_recogniser_is_told_the_reply_language_and_never_the_language_of_the_voice` |
-| the thread that speaks does not share the mouth's gate with the ear | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
+| the thread that speaks does not share the mouth's gate | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
+| `speech_setup` gives the ear another gate than the mouth's | `tests::the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate` (macOS only) |
 
 ## Run it
 
@@ -317,8 +318,8 @@ The shell, with the model as always (`docs/s3-intent-shell-prototype.md`):
 ```
 
 Ctrl-T starts recording, Ctrl-T or Enter stops, Esc cancels. What was heard
-appears in the input line; read it, edit it, press Enter. A reply is spoken
-after it is on screen. A personality of format 2 chooses the voice:
+appears in the input line; read it, edit it, press Enter. A reply is spoken as
+soon as it is sent to the screen (in the line adapter, after it is printed). A personality of format 2 chooses the voice:
 
 ```text
 format: 2
@@ -352,7 +353,8 @@ the speaker):
    Enter. Expected: the sentence in the input line, a note saying it was
    heard, and nothing sent until Enter.
 3. Press Enter. Expected: the plan screen as for a typed request, the result,
-   the reply under it, and the reply spoken.
+   the reply under it, and the reply spoken (the voice may start a moment before
+   or after the text is drawn).
 4. While it speaks, press Ctrl-T. Expected: "the system is speaking: wait
    until it has finished".
 5. Stop Piper and ask something again. Expected: the shell works, and one line

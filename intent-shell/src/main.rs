@@ -563,4 +563,34 @@ mod tests {
             );
         }
     }
+
+    /// The real wiring: the ear built for `--listen` and the mouth built for
+    /// `--speak` share one gate, so the system cannot hear itself. Only where the
+    /// audio adapters exist; nothing here touches a microphone or a speaker.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate() {
+        struct Sink;
+        impl intent_shell::ports::DecisionLog for Sink {
+            fn record(&mut self, _: serde_json::Value) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let persona = intent_shell::soul::Persona::of(intent_shell::soul::Profile::DirectTechnical);
+        // Nothing listens on port 1: the start-up checks say so and the shell goes on.
+        let chosen = options(&[
+            "--listen",
+            "--speak",
+            "--whisper",
+            "127.0.0.1:1",
+            "--tts",
+            "127.0.0.1:1",
+        ])
+        .unwrap();
+        let (setup, problems) = super::speech_setup(&chosen, Some(&persona), &mut Sink).unwrap();
+        let setup = setup.expect("both halves were built");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        let (ear, mouth) = (setup.ear.unwrap(), setup.mouth.unwrap());
+        assert!(ear.gate().same_as(mouth.gate()));
+    }
 }

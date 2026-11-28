@@ -442,9 +442,15 @@ fn a_failure_while_speaking_is_reported_and_reopens_the_microphone() {
         fails: true,
         ..FakeSynthesizer::with(&["pt_BR-cadu-medium"])
     };
-    let talker = Talker::spawn(mouth(&synthesizer, &FakePlayback::default()), move |why| {
-        reported_tx.send(why).unwrap()
-    });
+    let talker = Talker::spawn(
+        Mouth::new(
+            Box::new(synthesizer.clone()),
+            Box::new(FakePlayback::default()),
+            voice("cadu").unwrap(),
+            speaking.clone(),
+        ),
+        move |why| reported_tx.send(why).unwrap(),
+    );
     talker.say("Done.".to_owned());
     let why = reported.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(why.starts_with("speech is off for this reply"));
@@ -853,7 +859,7 @@ fn a_server_that_never_answers_ends_each_call_at_its_timeout_and_the_microphone_
             Box::new(PiperClient::new(&address).unwrap().with_timeout(short)),
             Box::new(FakePlayback::default()),
             voice("cadu").unwrap(),
-            Speaking::default(),
+            speaking.clone(),
         ),
         move |why| reported_tx.send(why).unwrap(),
     );
