@@ -599,6 +599,11 @@ mod tests {
         }
         let path = write_reply(&dir, b"new audio").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"new audio");
+        // The reply as audio is the user's alone.
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert_eq!(
             fs::read(dir.join(format!("reply-{}-{next}.wav", std::process::id()))).unwrap(),
             b"old"
@@ -634,14 +639,21 @@ mod tests {
     #[test]
     fn the_wav_header_describes_the_samples_it_carries() {
         let wav = wav_of(&[1, 0, 2, 0]);
-        assert_eq!(&wav[..4], b"RIFF");
-        assert_eq!(&wav[8..16], b"WAVEfmt ");
-        assert_eq!(
-            u32::from_le_bytes(wav[24..28].try_into().unwrap()),
-            SAMPLE_RATE
-        );
-        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
-        assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 40);
+        // All 44 bytes: PCM, mono, 16 kHz, 32000 bytes a second, 2 a frame, 16 bits.
+        let mut header = Vec::new();
+        header.extend_from_slice(b"RIFF");
+        header.extend_from_slice(&40u32.to_le_bytes());
+        header.extend_from_slice(b"WAVEfmt ");
+        header.extend_from_slice(&16u32.to_le_bytes());
+        header.extend_from_slice(&1u16.to_le_bytes());
+        header.extend_from_slice(&1u16.to_le_bytes());
+        header.extend_from_slice(&16_000u32.to_le_bytes());
+        header.extend_from_slice(&32_000u32.to_le_bytes());
+        header.extend_from_slice(&2u16.to_le_bytes());
+        header.extend_from_slice(&16u16.to_le_bytes());
+        header.extend_from_slice(b"data");
+        header.extend_from_slice(&4u32.to_le_bytes());
+        assert_eq!(&wav[..44], header.as_slice());
         assert_eq!(&wav[44..], &[1, 0, 2, 0]);
     }
 

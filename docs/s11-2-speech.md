@@ -291,6 +291,8 @@ fail, and the code was put back. The list is the second pass, after review round
 | the voice chooses the recogniser's language | `speech_tests::the_recogniser_is_told_the_reply_language_and_never_the_language_of_the_voice` |
 | the thread that speaks does not share the mouth's gate | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
 | the event that gives the keyboard back is made before the reply is queued | `tui::tests::the_event_that_gives_the_keyboard_back_exists_only_once_the_reply_is_queued` |
+| the WAV header is not the AudioQueue's format (mono, 16 kHz, 16 bits) | `audio::tests::the_wav_header_describes_the_samples_it_carries` |
+| the reply's audio file is created open to others | `audio::tests::a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole` |
 | the audio directory accepts a directory of another user, one open to others, or a link | `audio::tests::the_audio_directory_must_be_a_real_directory_of_ours_that_nobody_else_can_open` |
 | the audio file stays after a player that failed, or a stuck player is not killed | `audio::tests::the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed` |
 | `speech_setup` gives the ear another gate than the mouth's | `tests::the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate` |
@@ -344,7 +346,10 @@ What was run here, and what was not.
 
 Run on the development machine, with the commands above:
 
-- `whisper-server` with a real request, and Piper with real requests and
+- `whisper-server` with a real request made with `curl`, and then with the
+  shell's own `WhisperClient` (its hand-built multipart body), which got the
+  transcript back from the real server (`Mostre o tamanho da pasta de Downloads.`,
+  with the language `pt-BR` sent as `pt`); and Piper with real requests and
   `afplay` on the result (exit status 0): the numbers above.
 - The three servers together, as in the table.
 - The capture on this machine: the AudioQueue opens, runs and delivers
@@ -365,7 +370,9 @@ the speaker):
    heard, and nothing sent until Enter.
 3. Press Enter. Expected: the plan screen as for a typed request, the result,
    the reply under it, and the reply spoken (the voice may start a moment before
-   or after the text is drawn).
+   or after the text is drawn). If the voice is behind or fails, a line saying so
+   appears in the history, above the reply it is about in the conversational
+   interface and under it in the line adapter.
 4. While it speaks, press Ctrl-T. Expected: "the system is speaking: wait
    until it has finished".
 5. Stop Piper and ask something again. Expected: the shell works, and one line
