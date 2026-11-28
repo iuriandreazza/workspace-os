@@ -63,26 +63,65 @@ pub fn checked_recording(samples: &[u8]) -> Result<Vec<u8>, String> {
 fn private_directory() -> Result<PathBuf, String> {
     // SAFETY: `geteuid` has no preconditions and cannot fail.
     let uid = unsafe { libc::geteuid() };
-    let dir = std::env::temp_dir().join(format!("workspace-os-speech-{uid}"));
-    let made = DirBuilder::new().mode(0o700).create(&dir);
+    private_directory_of(
+        &std::env::temp_dir().join(format!("workspace-os-speech-{uid}")),
+        uid,
+    )
+}
+
+/// `dir`, made with mode 0700 if it is not there, once it is known to be a
+/// directory of `uid` that nobody else can open.
+fn private_directory_of(dir: &std::path::Path, uid: u32) -> Result<PathBuf, String> {
+    let made = DirBuilder::new().mode(0o700).create(dir);
     if let Err(e) = made
         && e.kind() != std::io::ErrorKind::AlreadyExists
     {
         return Err(format!("cannot make {}: {e}", dir.display()));
     }
     // Whoever made it first may have been someone else, or it may be a link.
-    let meta = fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
+    let meta = fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
     if !meta.is_dir() || meta.uid() != uid || meta.permissions().mode() & 0o077 != 0 {
         return Err(format!(
             "{} is not a private directory of yours; remove it and try again",
             dir.display()
         ));
     }
-    Ok(dir)
+    Ok(dir.to_path_buf())
 }
 
 /// Plays through macOS's `afplay`, on a temporary file that is removed after.
-pub struct AfplayPlayback;
+pub struct AfplayPlayback {
+    program: PathBuf,
+    limit: Duration,
+}
+
+impl AfplayPlayback {
+    pub fn new() -> Self {
+        Self {
+            program: PathBuf::from("/usr/bin/afplay"),
+            limit: PLAYBACK_LIMIT,
+        }
+    }
+
+    /// Write the audio in `dir`, play it, and remove it whatever came of the playing.
+    fn play_in(&self, dir: &std::path::Path, wav: &[u8]) -> Result<(), String> {
+        remove_stale(dir);
+        let path = write_reply(dir, wav)?;
+        let played = self.run(&path);
+        let _ = fs::remove_file(&path);
+        played
+    }
+
+    fn run(&self, path: &std::path::Path) -> Result<(), String> {
+        run_player(&self.program, path, self.limit)
+    }
+}
+
+impl Default for AfplayPlayback {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// A reply left behind by a shell that was closed while it spoke: the file
 /// holds the reply as audio, so it does not stay.
@@ -111,12 +150,7 @@ static FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl AudioPlayback for AfplayPlayback {
     fn play(&self, wav: &[u8]) -> Result<(), String> {
-        let dir = private_directory()?;
-        remove_stale(&dir);
-        let path = write_reply(&dir, wav)?;
-        let played = run_player(&path);
-        let _ = fs::remove_file(&path);
-        played
+        self.play_in(&private_directory()?, wav)
     }
 }
 
@@ -149,23 +183,27 @@ fn write_reply(dir: &std::path::Path, wav: &[u8]) -> Result<PathBuf, String> {
     Err("cannot write the audio: no free file name".to_owned())
 }
 
-fn run_player(path: &std::path::Path) -> Result<(), String> {
-    let mut child = Command::new("/usr/bin/afplay")
+fn run_player(
+    program: &std::path::Path,
+    path: &std::path::Path,
+    limit: Duration,
+) -> Result<(), String> {
+    let mut child = Command::new(program)
         .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("cannot run afplay: {e}"))?;
-    let deadline = Instant::now() + PLAYBACK_LIMIT;
+        .map_err(|e| format!("cannot run {}: {e}", program.display()))?;
+    let deadline = Instant::now() + limit;
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => return Err(format!("afplay stopped with {status}")),
+            Ok(Some(status)) => return Err(format!("the player stopped with {status}")),
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("afplay did not finish".to_owned());
+                return Err("the player did not finish".to_owned());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(e.to_string()),
@@ -176,7 +214,7 @@ fn run_player(path: &std::path::Path) -> Result<(), String> {
 /// The player of this system, or why there is none.
 pub fn platform_playback() -> Result<Box<dyn AudioPlayback + Send>, String> {
     if cfg!(target_os = "macos") {
-        Ok(Box::new(AfplayPlayback))
+        Ok(Box::new(AfplayPlayback::new()))
     } else {
         Err("playing audio is only implemented for macOS (afplay) so far".to_owned())
     }
@@ -433,6 +471,112 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ws-audio-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn the_audio_directory_must_be_a_real_directory_of_ours_that_nobody_else_can_open() {
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        let base = scratch("private");
+        fs::create_dir_all(&base).unwrap();
+        // Made here: mode 0700, ours.
+        let made = private_directory_of(&base.join("mine"), uid).unwrap();
+        assert_eq!(
+            fs::metadata(&made).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        // Already there and fine.
+        assert!(private_directory_of(&made, uid).is_ok());
+        // Open to others.
+        let open = base.join("open");
+        fs::create_dir(&open).unwrap();
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            private_directory_of(&open, uid)
+                .unwrap_err()
+                .contains("not a private directory")
+        );
+        // Somebody else's: the owner is not who we say we are.
+        assert!(private_directory_of(&made, uid + 1).is_err());
+        // A link, even to a good directory, and a file.
+        std::os::unix::fs::symlink(&made, base.join("link")).unwrap();
+        assert!(private_directory_of(&base.join("link"), uid).is_err());
+        fs::write(base.join("file"), b"x").unwrap();
+        assert!(private_directory_of(&base.join("file"), uid).is_err());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed() {
+        let dir = scratch("play");
+        fs::create_dir_all(&dir).unwrap();
+        let listing = || fs::read_dir(&dir).unwrap().count();
+        let with = |program: &str, limit: Duration| AfplayPlayback {
+            program: PathBuf::from(program),
+            limit,
+        };
+        assert!(
+            with("/usr/bin/true", PLAYBACK_LIMIT)
+                .play_in(&dir, b"audio")
+                .is_ok()
+        );
+        assert_eq!(listing(), 0);
+        let error = with("/usr/bin/false", PLAYBACK_LIMIT)
+            .play_in(&dir, b"audio")
+            .unwrap_err();
+        assert!(error.contains("stopped"), "{error}");
+        assert_eq!(listing(), 0);
+        // A player that never ends is killed at the limit.
+        let stuck = dir.join("stuck-player");
+        let pidfile = dir.join("player-pid");
+        fs::write(
+            &stuck,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nexec sleep 30\n",
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        let error = with(stuck.to_str().unwrap(), Duration::from_millis(300))
+            .play_in(&dir, b"audio")
+            .unwrap_err();
+        assert!(error.contains("did not finish"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // The player is gone, not left running: its process number no longer exists.
+        let pid: i32 = fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let gone = (0..100).any(|_| {
+            // SAFETY: signal 0 only asks whether the process exists.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if alive {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            !alive
+        });
+        assert!(gone, "the stuck player was left running");
+        assert_eq!(
+            listing(),
+            2,
+            "only the player script and its pid file are left"
+        );
+        assert!(
+            with("/nonexistent/player", PLAYBACK_LIMIT)
+                .play_in(&dir, b"audio")
+                .is_err()
+        );
+        assert_eq!(listing(), 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole() {

@@ -177,16 +177,22 @@ fn serve(
         }
         if let Some(voice) = speaking {
             let said = reply::reply_to(voice, &request, &outcome, log);
-            // Queued before the person may type again: the microphone is shut
-            // from here until the reply has been played.
-            if let (Some(text), Some(talker)) = (&said, &talker) {
-                talker.say(text.clone());
-            }
-            if events.send(Event::Said(said)).is_err() {
+            if events.send(said_event(talker.as_ref(), said)).is_err() {
                 return;
             }
         }
     }
+}
+
+/// The event that shows a reply and gives the keyboard back, made only once the
+/// reply is queued to be spoken: the microphone is shut from then on, so the
+/// person cannot start recording in the gap before the voice begins (ADR 0031,
+/// section 5, point 4). There is no way to have the event without the queueing.
+fn said_event(talker: Option<&Talker>, said: Option<String>) -> Event {
+    if let (Some(text), Some(talker)) = (&said, talker) {
+        talker.say(text.clone());
+    }
+    Event::Said(said)
 }
 
 fn worker(
@@ -1067,7 +1073,8 @@ mod tests {
     // ---- speech: a spoken request through the same path as a typed one -------
 
     use crate::speech::loopback::{
-        FakeCapture, FakePlayback, FakeSynthesizer, FakeTranscriber, SharedMemory, tagged_wav,
+        FakeCapture, FakePlayback, FakeSynthesizer, FakeTranscriber, HeldPlayback, SharedMemory,
+        tagged_wav,
     };
     use crate::speech::{Mouth, Speaking, voice};
 
@@ -1201,6 +1208,40 @@ mod tests {
             events.recv_timeout(Duration::from_secs(5)),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
         ));
+    }
+
+    #[test]
+    fn the_event_that_gives_the_keyboard_back_exists_only_once_the_reply_is_queued() {
+        let (started_tx, started) = channel();
+        let (release_tx, release) = channel();
+        let speaking = Speaking::default();
+        let mouth = Mouth::new(
+            Box::new(FakeSynthesizer::with(&["pt_BR-cadu-medium"])),
+            Box::new(HeldPlayback::new(started_tx, release)),
+            voice("cadu").unwrap(),
+            speaking.clone(),
+        );
+        let talker = Talker::spawn(mouth, |_| {});
+        assert!(!speaking.active());
+        let event = said_event(Some(&talker), Some("Done.".to_owned()));
+        // The gate is shut as soon as the event can be sent, before the voice has begun.
+        assert!(speaking.active());
+        assert_eq!(event, Event::Said(Some("Done.".to_owned())));
+        // Without a reply, or without a voice, nothing is queued.
+        assert_eq!(said_event(Some(&talker), None), Event::Said(None));
+        assert_eq!(
+            said_event(None, Some("x".to_owned())),
+            Event::Said(Some("x".to_owned()))
+        );
+        started.recv_timeout(Duration::from_secs(10)).unwrap();
+        release_tx.send(()).unwrap();
+        for _ in 0..300 {
+            if !speaking.active() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!speaking.active());
     }
 
     #[test]

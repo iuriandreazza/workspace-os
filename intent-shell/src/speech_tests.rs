@@ -6,17 +6,18 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::ports::{AudioPlayback, DecisionLog, Synthesizer, Transcriber};
+use crate::ports::{DecisionLog, Synthesizer, Transcriber};
 use crate::reply::{self, REPLY_LIMIT};
 use crate::soul::{Persona, Personality, Profile, Soul};
 use crate::speech::loopback::{
-    FakeCapture, FakePlayback, FakeSynthesizer, FakeTranscriber, SharedMemory, tagged_wav,
+    FakeCapture, FakePlayback, FakeSynthesizer, FakeTranscriber, HeldPlayback, SharedMemory,
+    tagged_wav,
 };
 use crate::speech::{
     Ear, Mouth, SharedLog, Speaking, Talker, VOICES, default_voice, language_fits, speakable,
@@ -329,22 +330,6 @@ fn nothing_is_said_for_an_empty_reply_and_no_more_than_the_cap_for_a_long_one() 
     assert!(synthesizer.calls.lock().unwrap().is_empty());
 }
 
-struct Held {
-    started: Sender<()>,
-    release: Mutex<Receiver<()>>,
-}
-
-impl AudioPlayback for Held {
-    fn play(&self, _wav: &[u8]) -> Result<(), String> {
-        self.started.send(()).unwrap();
-        self.release
-            .lock()
-            .unwrap()
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|e| e.to_string())
-    }
-}
-
 #[test]
 fn the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played() {
     let (started_tx, started) = channel();
@@ -353,10 +338,7 @@ fn the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been
     let speaking = Speaking::default();
     let mouth = Mouth::new(
         Box::new(FakeSynthesizer::with(&["pt_BR-cadu-medium"])),
-        Box::new(Held {
-            started: started_tx,
-            release: Mutex::new(release),
-        }),
+        Box::new(HeldPlayback::new(started_tx, release)),
         voice("cadu").unwrap(),
         speaking.clone(),
     );
@@ -402,10 +384,7 @@ fn a_voice_that_is_behind_drops_replies_instead_of_queueing_them_without_end() {
     let speaking = Speaking::default();
     let mouth = Mouth::new(
         Box::new(FakeSynthesizer::with(&["pt_BR-cadu-medium"])),
-        Box::new(Held {
-            started: started_tx,
-            release: Mutex::new(release),
-        }),
+        Box::new(HeldPlayback::new(started_tx, release)),
         voice("cadu").unwrap(),
         speaking.clone(),
     );

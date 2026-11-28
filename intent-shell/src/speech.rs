@@ -415,6 +415,35 @@ pub mod loopback {
         }
     }
 
+    /// A playback that does not end until it is released, to hold the gate shut.
+    pub struct HeldPlayback {
+        started: std::sync::mpsc::Sender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl HeldPlayback {
+        pub fn new(
+            started: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+        ) -> Self {
+            Self {
+                started,
+                release: Mutex::new(release),
+            }
+        }
+    }
+
+    impl AudioPlayback for HeldPlayback {
+        fn play(&self, _wav: &[u8]) -> Result<(), String> {
+            self.started.send(()).map_err(|e| e.to_string())?;
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|e| e.to_string())
+        }
+    }
+
     #[derive(Clone, Default)]
     pub struct FakeCapture {
         pub state: Arc<Mutex<Vec<&'static str>>>,

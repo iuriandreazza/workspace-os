@@ -16,7 +16,7 @@ what was measured on the development machine, what ADR 0031 did not say and
 the code now does, and what only a person with a microphone and a speaker can
 check.
 
-Nothing in ADR 0031 failed on this machine, so there is no ADR 0038.
+Nothing in ADR 0031 failed on this machine. Three places where the ADR's text and the code differ (a capture without a crate, the voice not choosing the recogniser's language, no `--auto-send`) are in ADR 0038, proposed for the user to accept.
 
 ## What was built
 
@@ -282,6 +282,9 @@ fail, and the code was put back. The list is the second pass, after review round
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | the voice chooses the recogniser's language | `speech_tests::the_recogniser_is_told_the_reply_language_and_never_the_language_of_the_voice` |
 | the thread that speaks does not share the mouth's gate | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
+| the event that gives the keyboard back is made before the reply is queued | `tui::tests::the_event_that_gives_the_keyboard_back_exists_only_once_the_reply_is_queued` |
+| the audio directory accepts a directory of another user, one open to others, or a link | `audio::tests::the_audio_directory_must_be_a_real_directory_of_ours_that_nobody_else_can_open` |
+| the audio file stays after a player that failed, or a stuck player is not killed | `audio::tests::the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed` |
 | `speech_setup` gives the ear another gate than the mouth's | `tests::the_ear_and_the_mouth_that_speech_setup_builds_share_one_gate` (macOS only) |
 
 ## Run it

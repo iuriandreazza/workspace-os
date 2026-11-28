@@ -244,7 +244,7 @@ fn speech_setup(
         match audio::platform_capture() {
             Ok(capture) => {
                 if let Err(why) = client.ping() {
-                    problems.push(format!("--listen: {}; start whisper-server, the microphone key says so until it answers", reason(&why)));
+                    problems.push(format!("--listen: {}; start whisper-server before you use the microphone key: with it down, a recording is lost when you stop it, and the shell says so then", reason(&why)));
                 }
                 ear = Some(Ear::new(capture, Box::new(client), speaking.clone()));
             }
