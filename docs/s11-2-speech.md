@@ -16,7 +16,7 @@ what was measured on the development machine, what ADR 0031 did not say and
 the code now does, and what only a person with a microphone and a speaker can
 check.
 
-Nothing in ADR 0031 failed on this machine. Three places where the ADR's text and the code differ (a capture without a crate, the voice not choosing the recogniser's language, no `--auto-send`) are in ADR 0038, proposed for the user to accept.
+Nothing in ADR 0031 failed on this machine. Five places where the ADR's text and the code differ or say more (a capture without a crate, the voice not choosing the recogniser's language, no `--auto-send`, loopback IP addresses only, a stricter shared HTTP client) are the five decisions of ADR 0038, proposed for the user to accept.
 
 ## What was built
 
