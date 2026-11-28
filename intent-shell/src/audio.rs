@@ -556,7 +556,9 @@ mod tests {
             let running = Command::new("pgrep")
                 .args(["-f", &pattern])
                 .output()
-                .is_ok_and(|out| out.status.success());
+                .expect("this test needs pgrep to see whether the player is left running")
+                .status
+                .success();
             if running {
                 std::thread::sleep(Duration::from_millis(20));
             }

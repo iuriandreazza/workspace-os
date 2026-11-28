@@ -11,8 +11,8 @@ tags: [speech, voice, audio, shell, amendment]
 
 ## Status
 
-**Proposed (2026-11-27), for the user to accept.** It amends ADR 0031 in three
-places, adds two decisions it did not take, and supersedes nothing else. ADR 0031 stays accepted; where it and this
+**Proposed (2026-11-27), for the user to accept.** It amends ADR 0031 in decisions 1 and 3, adds decisions 2, 4 and 5, which it
+did not take, and supersedes nothing else. ADR 0031 stays accepted; where it and this
 ADR differ, this ADR is the one that was built in S11-2
 (`docs/s11-2-speech.md`).
 
@@ -57,10 +57,13 @@ called; a Piper install needs a path of fewer than 160 bytes to its
   what still proves it.
 - A later Linux adapter chooses between `alsa`, `pipewire` and a hand-written
   binding with the licence check of ADR 0005, as the ADR 0031 text pictured.
-- Accepting this ADR needs nothing from the code; rejecting item 2 or 3 would
-  need a change.
+- Accepting this ADR needs nothing from the code; rejecting decision 2, 3, 4 or 5
+  would need a change.
 
 ## Decisions for the user
 
-1. Accept the hand-written capture and no auto-send for S11-2.
-2. Accept that the voice does not choose the recogniser's language.
+1. Accept the hand-written capture (decision 1).
+2. Accept that the voice does not choose the recogniser's language (decision 2).
+3. Accept no `--auto-send` for S11-2 (decision 3).
+4. Accept IP-only loopback addresses (decision 4) and the stricter shared HTTP
+   client (decision 5).

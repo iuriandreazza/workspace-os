@@ -278,6 +278,8 @@ fail, and the code was put back. The list is the second pass, after review round
 | a closed sink still sends | `tui::tests::nothing_is_sent_through_a_closed_sink_and_the_sender_is_dropped` |
 | the queue of replies to speak has no bound | `speech_tests::a_voice_that_is_behind_drops_replies_instead_of_queueing_them_without_end` |
 | the microphone hints are cut off on a narrow terminal | `tui::view::tests::the_microphone_hints_wrap_on_a_narrow_terminal_and_the_old_ones_are_as_before` |
+| a speech note is shown under a confirmation | `tui::state::tests::a_speech_note_at_a_question_is_held_and_neither_scrolls_nor_restarts_it_nor_cancels_a_warning` |
+| the held note is never shown | same |
 | the worker starts no thread that speaks | `tui::tests::the_speech_the_worker_starts_speaks_replies_and_listens_in_the_replies_language` |
 | the recogniser language is lost between the setup and the microphone's thread | same, and `tests::the_recogniser_language_is_the_replies_and_reaches_the_setup` |
 | the personality's voice is not the one the mouth is built with | `tests::the_voice_of_the_personality_is_the_one_the_mouth_is_built_with` |
@@ -460,6 +462,12 @@ the speaker):
 - A truncated answer from the model server now reads "the server's answer was
   cut short" instead of "server reply is not JSON": the check lives in the HTTP
   code both share, and is a behaviour of today's output that changes (for a reply cut in the middle).
+- `--listen --no-reply`: the SOUL and the personality are not read, so the
+  recogniser is told no language and uses the one `whisper-server` was started
+  with (`-l`). Start it with the person's language, or without `--no-reply`.
+- A speech note that arrives while a question is on screen is held and shown
+  when the question is answered, so text from a speech server never sits under a
+  confirmation.
 - A voice that speaks a language other than the replies' (a personality of
   format 2 with `voice: cadu`, no `language`, under a SOUL that lists `en`
   first) is allowed by the contradiction rule, and reads text of the other

@@ -162,6 +162,9 @@ pub struct State {
     /// from stopping the recording must not send what was just heard, or start
     /// the next recording.
     quiet_until_ms: u64,
+    /// Speech notes that arrived while a question was on screen: shown when it is
+    /// answered, so text from a speech server never sits under a confirmation.
+    held_notes: Vec<String>,
     /// The recording the person asked for last.
     pub(super) listen_gen: u64,
     /// Whether the input line holds something that was heard.
@@ -204,6 +207,7 @@ impl State {
             listening: false,
             quiet_until_ms: 0,
             listen_gen: 0,
+            held_notes: Vec::new(),
             heard_pending: false,
         }
     }
@@ -316,12 +320,10 @@ impl State {
             }
             Event::Header(text) => self.header = text,
             Event::Note(text) => {
-                // Like a reply: what is being read must not move under the person.
-                let width = usize::from(self.width);
-                let before = self.history_lines(width).len();
-                self.blocks.push(Block::Note(text));
-                if self.scroll > 0 {
-                    self.scroll += self.history_lines(width).len() - before;
+                if self.is_asking() {
+                    self.held_notes.push(text);
+                } else {
+                    self.show_note(text);
                 }
             }
             Event::Heard(recording, heard) => self.heard(recording, heard),
@@ -351,6 +353,12 @@ impl State {
                 ) {
                     self.mode = Mode::Input;
                 }
+            }
+        }
+        // The notes held at a question are shown once it is answered.
+        if !self.is_asking() && !self.held_notes.is_empty() {
+            for text in std::mem::take(&mut self.held_notes) {
+                self.show_note(text);
             }
         }
         // What is aside draws no question, so it never discards the keys typed for one.
@@ -406,6 +414,17 @@ impl State {
             Mode::Plan { details } => self.plan_key(key, &details),
             Mode::Root { .. } => self.root_key(key),
             Mode::Choose { lines, selected } => self.choose_key(key, &lines, selected),
+        }
+    }
+
+    /// A note in the history, like a reply: what is being read must not move
+    /// under the person.
+    fn show_note(&mut self, text: String) {
+        let width = usize::from(self.width);
+        let before = self.history_lines(width).len();
+        self.blocks.push(Block::Note(text));
+        if self.scroll > 0 {
+            self.scroll += self.history_lines(width).len() - before;
         }
     }
 
@@ -1582,27 +1601,54 @@ mod tests {
     }
 
     #[test]
-    fn a_speech_note_neither_scrolls_nor_restarts_a_question_nor_cancels_a_warning() {
+    fn a_speech_note_at_a_question_is_held_and_neither_scrolls_nor_restarts_it_nor_cancels_a_warning()
+     {
         let mut state = asking_plan();
         state.scroll = 7;
         state.asked_ms = 5;
         state.clock_ms = 1_000;
         state.forced_quit = true;
+        let blocks = state.blocks.len();
         state.on_event(Event::Note("▸ speech is off for this reply: x".to_owned()));
-        // The note's lines are added to the scroll, so the text being read stays put.
-        let kept = state.scroll;
-        assert!(kept > 7, "{kept}");
         state.on_event(Event::Heard(state.listen_gen, Ok("late".to_owned())));
+        // Nothing of a speech server sits under a confirmation, and nothing moved.
+        assert_eq!(state.blocks.len(), blocks);
         assert_eq!(
             (state.scroll, state.asked_ms, state.forced_quit),
-            (kept, 5, true)
+            (7, 5, true)
         );
-        // The result of the shell's own work still does.
+        // The result of the shell's own work still does move them.
         state.on_event(Event::Header("h".to_owned()));
         assert_eq!(
             (state.scroll, state.asked_ms, state.forced_quit),
             (0, 1_000, false)
         );
+        // Once the question is answered and the outcome is in, the note is shown.
+        state.on_event(Event::Outcome("done".to_owned()));
+        assert_eq!(
+            state.blocks.last(),
+            Some(&Block::Note("▸ speech is off for this reply: x".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_speech_note_keeps_the_place_of_the_person_who_is_reading_back() {
+        let mut state = State::new("header".to_owned());
+        state.on_event(Event::Busy("working"));
+        state.scroll = 7;
+        state.on_event(Event::Note("▸ speech is off for this reply: x".to_owned()));
+        assert!(state.scroll > 7, "{}", state.scroll);
+        assert_eq!(
+            state.blocks.last(),
+            Some(&Block::Note("▸ speech is off for this reply: x".to_owned()))
+        );
+        assert!(matches!(
+            state.mode,
+            Mode::Busy {
+                label: "working",
+                ..
+            }
+        ));
     }
 
     #[test]
