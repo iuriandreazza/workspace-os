@@ -123,10 +123,11 @@ impl Default for AfplayPlayback {
     }
 }
 
-/// A reply left behind by a shell that was closed while it spoke: the file
-/// holds the reply as audio, so it does not stay.
+/// How old a reply file must be to be taken for one a closed shell left.
 const STALE_AFTER: Duration = Duration::from_secs(300);
 
+/// Remove the replies a shell that was closed while it spoke left behind: the
+/// file holds the reply as audio, so it does not stay.
 fn remove_stale(dir: &std::path::Path) {
     let own = format!("reply-{}-", std::process::id());
     let Ok(entries) = fs::read_dir(dir) else {

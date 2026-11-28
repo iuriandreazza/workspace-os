@@ -220,6 +220,31 @@ fn start_speech(
     (talker, closing)
 }
 
+/// The threads of speech when speech is on, and nothing when it is off.
+fn speech_threads(
+    speech: Option<SpeechSetup>,
+    shared: Option<SharedLog>,
+    events: &Sender<Event>,
+    listens: Receiver<Listen>,
+) -> (Option<Talker>, Option<Closing>) {
+    match (speech, shared) {
+        (Some(speech), Some(shared)) => {
+            let (talker, closing) = start_speech(speech, shared, events, listens);
+            (talker, Some(closing))
+        }
+        _ => (None, None),
+    }
+}
+
+/// The interface of a session: with an ear there is a microphone key.
+fn with_speech_keys(state: State, speech: Option<&SpeechSetup>) -> State {
+    if speech.is_some_and(|speech| speech.ear.is_some()) {
+        state.with_listening()
+    } else {
+        state
+    }
+}
+
 fn worker(
     setup: Setup,
     requests: Receiver<String>,
@@ -245,13 +270,7 @@ fn worker(
     } else {
         (Box::new(log), None)
     };
-    let (talker, closing) = match (speech, shared) {
-        (Some(speech), Some(shared)) => {
-            let (talker, closing) = start_speech(speech, shared, &events, listens);
-            (talker, Some(closing))
-        }
-        _ => (None, None),
-    };
+    let (talker, closing) = speech_threads(speech, shared, &events, listens);
     let wires = Wires {
         requests,
         events,
@@ -494,18 +513,12 @@ fn opening_state(header: String, entry: Entry, notice: Option<String>) -> State 
 /// Open the interface and run until the person quits. The history is printed
 /// to the normal screen on exit, and written to `transcript` when given.
 pub fn run(setup: Setup, transcript: Option<&Path>) -> Result<(), String> {
-    let mut state = opening_state(
+    let state = opening_state(
         setup.header(&SessionState::start(&setup.host)),
         setup.entry(),
         setup.notice.clone(),
     );
-    if setup
-        .speech
-        .as_ref()
-        .is_some_and(|speech| speech.ear.is_some())
-    {
-        state = state.with_listening();
-    }
+    let state = with_speech_keys(state, setup.speech.as_ref());
     run_with(
         state,
         transcript,
@@ -1256,6 +1269,42 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(!speaking.active());
+    }
+
+    #[test]
+    fn the_microphone_key_exists_only_with_an_ear_and_speech_threads_only_with_speech() {
+        let speaking = Speaking::default();
+        let with_ear = SpeechSetup {
+            ear: Some(Ear::new(
+                Box::new(FakeCapture::default()),
+                Box::new(FakeTranscriber::hearing("x")),
+                speaking.clone(),
+            )),
+            listen_language: None,
+            mouth: None,
+        };
+        assert!(with_speech_keys(State::new(String::new()), Some(&with_ear)).listening());
+        assert!(!with_speech_keys(State::new(String::new()), None).listening());
+        let only_mouth = SpeechSetup {
+            ear: None,
+            listen_language: None,
+            mouth: Some(Mouth::new(
+                Box::new(FakeSynthesizer::with(&[])),
+                Box::new(FakePlayback::default()),
+                voice("cadu").unwrap(),
+                speaking,
+            )),
+        };
+        assert!(!with_speech_keys(State::new(String::new()), Some(&only_mouth)).listening());
+        // Threads: none without speech; a talker with a voice.
+        let (events_tx, _events) = channel();
+        let (_listen_tx, listens) = channel();
+        let (talker, closing) = speech_threads(None, None, &events_tx, listens);
+        assert!(talker.is_none() && closing.is_none());
+        let (_listen_tx, listens) = channel();
+        let shared = SharedLog::new(Box::new(SharedMemory::default()));
+        let (talker, closing) = speech_threads(Some(only_mouth), Some(shared), &events_tx, listens);
+        assert!(talker.is_some() && closing.is_some());
     }
 
     #[test]

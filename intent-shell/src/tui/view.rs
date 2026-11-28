@@ -58,11 +58,22 @@ fn bottom(state: &State, width: usize) -> Vec<Line<'static>> {
             match *label {
                 "listening" => hint(
                     &mut lines,
-                    "Enter or ^T stop (only the first 30 s are kept) · Esc cancel · ^C quit",
+                    &format!(
+                        "Enter or ^T stop (only the first {} s are kept) · Esc cancel · ^C quit",
+                        crate::audio::MAX_SECONDS
+                    ),
                     true,
                     width,
                 ),
-                "transcribing" => hint(&mut lines, "gives up after 30 s · ^C quit", true, width),
+                "transcribing" => hint(
+                    &mut lines,
+                    &format!(
+                        "gives up after {} s · ^C quit",
+                        crate::speech_http::TRANSCRIBE_TIMEOUT.as_secs()
+                    ),
+                    true,
+                    width,
+                ),
                 _ => hint(&mut lines, "PgUp/Dn scroll · ^C quit", false, width),
             }
         }

@@ -3,7 +3,7 @@ title: "ADR 0031: Local speech: whisper.cpp to listen, Piper to speak, one voice
 type: adr
 status: accepted
 created: 2026-11-23
-updated: 2026-11-23
+updated: 2026-11-28
 tags: [speech, voice, asr, tts, personality, licence, shell, security]
 ---
 

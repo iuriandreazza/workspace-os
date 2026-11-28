@@ -81,12 +81,24 @@ pub fn language_fits(voice_language: &str, wanted: &str) -> bool {
         }
 }
 
+/// Whether the voice may be named for `wanted`: it speaks that language, or the
+/// list has no voice of that region at all and this one speaks the same language
+/// (the voice `default_voice` would choose). `joe` may be named under `en-GB`.
+pub fn voice_may_speak(voice: &SpokenVoice, wanted: &str) -> bool {
+    language_fits(voice.language, wanted)
+        || (!VOICES.iter().any(|v| language_fits(v.language, wanted))
+            && base_language(voice.language) == base_language(wanted))
+}
+
+fn base_language(tag: &str) -> &str {
+    tag.split('-').next().unwrap_or_default()
+}
+
 /// The voice a personality with no `voice` is spoken with: the first of the
 /// list for the reply language, chosen by code. With no language anywhere
 /// (a SOUL that says `any` and a personality that names none) it is the first
 /// voice of the list, because there is nothing to match.
 pub fn default_voice(language: Option<&str>) -> &'static SpokenVoice {
-    let base = |tag: &str| tag.split('-').next().unwrap_or_default().to_owned();
     language
         .and_then(|wanted| {
             VOICES
@@ -96,7 +108,7 @@ pub fn default_voice(language: Option<&str>) -> &'static SpokenVoice {
                 .or_else(|| {
                     VOICES
                         .iter()
-                        .find(|voice| base(voice.language) == base(wanted))
+                        .find(|voice| base_language(voice.language) == base_language(wanted))
                 })
         })
         .unwrap_or(&VOICES[0])

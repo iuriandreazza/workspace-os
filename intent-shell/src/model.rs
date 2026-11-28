@@ -237,7 +237,7 @@ fn write_within(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> 
         let left = deadline
             .checked_duration_since(Instant::now())
             .filter(|left| !left.is_zero())
-            .ok_or("the server took too long to answer")?;
+            .ok_or("the server did not read the request in time")?;
         stream
             .set_write_timeout(Some(left))
             .map_err(|e| e.to_string())?;
@@ -245,7 +245,7 @@ fn write_within(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> 
             Ok(0) => return Err("the server closed the connection".to_owned()),
             Ok(n) => bytes = &bytes[n..],
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                return Err("the server took too long to answer".to_owned());
+                return Err("the server did not read the request in time".to_owned());
             }
             Err(e) => return Err(e.to_string()),
         }

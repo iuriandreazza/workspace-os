@@ -494,7 +494,7 @@ impl Soul {
         if let Some(voice) = personality.voice {
             let wanted = personality.language.as_ref();
             // The personality's own language, or else what the SOUL allows.
-            let fits = |tag: &str| voices::language_fits(voice.language, tag);
+            let fits = |tag: &str| voices::voice_may_speak(voice, tag);
             match (&self.languages, wanted) {
                 (_, Some(tag)) if !fits(tag) => contradictions.push(format!(
                     "voice: {} speaks {}, not the personality's language {tag}",

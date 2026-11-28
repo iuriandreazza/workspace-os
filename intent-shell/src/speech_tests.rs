@@ -100,9 +100,34 @@ fn a_voice_in_a_language_the_soul_does_not_allow_contradicts_it() {
         let personality = Personality::parse("format: 2\nvoice: joe\n").unwrap();
         assert_eq!(allowed.with(&personality).unwrap().spoken_voice().id, "joe");
     }
-    // A region that differs is a different voice's language.
-    let portugal = "format: 1\npreset: warm-didactic\nlanguages: pt-PT\n";
-    assert!(contradiction(portugal, "format: 2\nvoice: cadu\n").contains("voice: cadu"));
+    // A voice of another language than any the SOUL allows is a contradiction,
+    // even where the list has no voice of the SOUL's region.
+    let spanish = "format: 1\npreset: warm-didactic\nlanguages: es\n";
+    assert!(contradiction(spanish, "format: 2\nvoice: cadu\n").contains("voice: cadu"));
+}
+
+#[test]
+fn a_voice_may_be_named_where_it_is_the_default_for_a_region_the_list_has_no_voice_for() {
+    // `joe` is what a personality with no voice gets under `en-GB`, so naming it is no contradiction.
+    let gb = Soul::parse("format: 1\npreset: warm-didactic\nlanguages: en-GB\n").unwrap();
+    let named = gb
+        .with(&Personality::parse("format: 2\nvoice: joe\n").unwrap())
+        .unwrap();
+    assert_eq!(named.spoken_voice().id, "joe");
+    let portugal = Soul::parse("format: 1\npreset: warm-didactic\nlanguages: pt-PT\n").unwrap();
+    let cadu = Personality::parse("format: 2\nlanguage: pt-PT\nvoice: cadu\n").unwrap();
+    assert_eq!(portugal.with(&cadu).unwrap().spoken_voice().id, "cadu");
+    // A voice of another language is still a contradiction.
+    assert!(
+        gb.with(&Personality::parse("format: 2\nvoice: cadu\n").unwrap())
+            .is_err()
+    );
+    // And where the list has a voice for the region, only those fit: `en-US` has `joe` only.
+    let us = Soul::parse("format: 1\npreset: warm-didactic\nlanguages: pt-BR\n").unwrap();
+    assert!(
+        us.with(&Personality::parse("format: 2\nvoice: joe\n").unwrap())
+            .is_err()
+    );
 }
 
 #[test]
@@ -788,13 +813,17 @@ fn silent() -> (String, std::thread::JoinHandle<()>) {
 fn a_server_that_never_reads_cannot_hold_a_recording_being_sent_past_the_timeout() {
     let (address, held) = silent();
     // 30 s of audio is about 960 KB, far more than the buffers of a loopback socket.
-    let recording = wav(&"x".repeat(3_000_000));
+    let recording = wav(&"x".repeat(48_000_000));
     let started = std::time::Instant::now();
     let whisper = WhisperClient::new(&address)
         .unwrap()
         .with_timeout(Duration::from_millis(500));
     let error = whisper.transcribe(&recording, None).unwrap_err();
-    assert!(error.contains("too long"), "{error}");
+    // Said of the sending, not of the waiting for an answer.
+    assert!(
+        error.contains("did not read the request in time"),
+        "{error}"
+    );
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "{:?}",

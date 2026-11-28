@@ -718,4 +718,47 @@ mod tests {
                 .any(|p| p.contains("--speak is off: no speaker here"))
         );
     }
+
+    #[test]
+    fn the_speech_event_says_what_was_started_with_the_voice_that_is_used() {
+        #[derive(Default)]
+        struct Recorded(std::sync::Mutex<Vec<serde_json::Value>>);
+        impl intent_shell::ports::DecisionLog for &Recorded {
+            fn record(&mut self, event: serde_json::Value) -> Result<(), String> {
+                self.0.lock().unwrap().push(event);
+                Ok(())
+            }
+        }
+        let recorded = Recorded::default();
+        let chosen = options(&[
+            "--listen",
+            "--speak",
+            "--whisper",
+            "127.0.0.1:1",
+            "--tts",
+            "127.0.0.1:1",
+        ])
+        .unwrap();
+        let persona = persona(SOUL, "format: 2\nlanguage: pt-BR\nvoice: jeff\n");
+        let (_, problems) =
+            super::speech_setup(&chosen, Some(&persona), &mut &recorded, fakes).unwrap();
+        let events = recorded.0.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["event"], "speech");
+        assert_eq!(events[0]["listen"], true);
+        assert_eq!(events[0]["speak"], true);
+        assert_eq!(events[0]["voice"], "jeff");
+        assert_eq!(
+            events[0]["problems"].as_array().unwrap().len(),
+            problems.len()
+        );
+        // With no speaker the voice is not named: none is used.
+        let none = || super::Adapters {
+            capture: Ok(Box::new(SilentCapture)),
+            playback: Err("no speaker".to_owned()),
+        };
+        let again = Recorded::default();
+        super::speech_setup(&chosen, Some(&persona), &mut &again, none).unwrap();
+        assert_eq!(again.0.lock().unwrap()[0]["voice"], serde_json::Value::Null);
+    }
 }

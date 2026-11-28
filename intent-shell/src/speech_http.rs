@@ -17,7 +17,7 @@ use crate::ports::{Synthesizer, Transcriber};
 
 /// An utterance is at most 30 seconds, and the model runs at about a seventh of
 /// real time. The interface waits for this long and no longer, with a hung server.
-const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// A reply is at most about 400 characters; the server answered in a fraction of a second.
 const SYNTHESIZE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The list of voices, and whether anything answers at all.

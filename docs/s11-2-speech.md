@@ -3,7 +3,7 @@ title: "S11-2: speech on the host, measurements and the hand test"
 type: report
 status: done
 created: 2026-11-27
-updated: 2026-11-27
+updated: 2026-11-28
 tags: [shell, speech, voice, whisper, piper, personality, boundary]
 ---
 
@@ -248,7 +248,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | `--listen` with `--no-model` accepted | `tests::speech_flags_that_could_do_nothing_are_refused_not_ignored` |
 | a cut HTTP answer is accepted | `model::tests::an_answer_shorter_than_its_length_is_cut_short`; `speech_tests::what_piper_answers_must_be_audio_and_whole` |
 | the request is spoken in place of the reply | `tui::tests::a_root_panel_a_table_and_a_verdict_are_never_spoken_in_place_of_text`; `tui::tests::a_spoken_request_becomes_a_validated_plan_and_the_answer_is_spoken_back` |
-| the failure of the voice is not printed (plain) | `model::tests::nothing_listening_is_an_error_at_once`; `plain::tests::a_reply_is_spoken_only_with_a_mouth_and_a_failure_is_one_printed_line` |
+| `spoken_line` does not return the failure of the voice (plain) | `plain::tests::a_reply_is_spoken_only_with_a_mouth_and_a_failure_is_one_printed_line` |
 | the SOUL reads format 2 | `soul_tests::the_format_is_closed_and_versioned_and_every_error_says_where`; `soul_tests::a_soul_that_cannot_be_used_gives_the_default_and_a_message_that_says_why` |
 | format 1 accepts `voice` | `soul_tests::the_format_is_closed_and_versioned_and_every_error_says_where`; `speech_tests::a_voice_needs_format_two_and_a_name_from_the_list` |
 | the all-zero recording is accepted | `audio::tests::silence_and_a_blip_are_refused_with_a_reason_and_speech_is_wrapped` |
@@ -286,6 +286,10 @@ fail, and the code was put back. The list is the second pass, after review round
 | the microphone's thread does not forget an erased transcript | `tui::tests::what_the_microphones_thread_is_told_to_forget_no_longer_marks_a_request` |
 | playing does not remove the audio a closed shell left | `audio::tests::the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed` |
 | a speech note moves the text being read | `tui::state::tests::a_speech_note_keeps_the_place_of_the_person_who_is_reading_back` |
+| a voice cannot be named for a region the list has no voice for | `speech_tests::a_voice_may_be_named_where_it_is_the_default_for_a_region_the_list_has_no_voice_for` |
+| the microphone key is not enabled with an ear | `tui::tests::the_microphone_key_exists_only_with_an_ear_and_speech_threads_only_with_speech` |
+| the worker drops the thread that speaks | same |
+| the speech event names no voice | `tests::the_speech_event_says_what_was_started_with_the_voice_that_is_used` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
@@ -444,6 +448,8 @@ the speaker):
   mark): audio has no equivalent, and the text of a reply is escaped, so an odd
   character is voiced as its escape. ADR 0031 asks for the same escaping and
   cap as the screen, and that is what is done.
+- A named voice must speak a language the SOUL allows; where the list has no voice of the SOUL's region (`en-GB`, `pt-PT`) the voice of that language may be named, which is also the voice such a personality gets without naming one.
+- The line `println!` that shows a failure of the voice in `plain::run` is not covered by a test; `spoken_line`, which makes it, is.
 - At most three replies wait to be spoken, the one playing included; a fourth
   is not spoken and says so. Nothing stops a reply that is playing.
 - Leaving the shell while a reply is playing leaves `afplay` playing to the end
