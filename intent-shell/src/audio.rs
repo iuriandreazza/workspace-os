@@ -3,7 +3,7 @@
 //!
 //! Playback hands a temporary WAV file to the machine's own player. Capture on
 //! macOS is the AudioQueue API of the system's AudioToolbox, declared here by
-//! hand, so no crate is added: `cpal`, `hound` and `rodio` are Apache-2.0 only
+//! hand, so no crate is added: `cpal` and `hound` are Apache-2.0 only
 //! (ADR 0005), and `coreaudio-sys` would bring a C binding generator for forty
 //! declarations. Other systems have neither adapter yet: the message says so.
 

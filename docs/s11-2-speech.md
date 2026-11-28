@@ -33,8 +33,9 @@ Nothing in ADR 0031 failed on this machine. Three places where the ADR's text an
 
 No dependency was added. The capture declares about forty lines of the
 AudioToolbox C API by hand: that does not need a binding generator
-(`coreaudio-sys` brings `bindgen`), and `cpal`, `hound` and `rodio` are refused
-by ADR 0005 (Apache-2.0 only). ADR 0031 said "crates that pass the gate"; with
+(`coreaudio-sys` brings `bindgen`), and `cpal` and `hound` are Apache-2.0 only,
+which ADR 0005 refuses (`rodio` is MIT OR Apache-2.0 but needs `cpal`, so it
+does not pass either). ADR 0031 said "crates that pass the gate"; with
 none, the gate's licence check has nothing new to say.
 
 Options, all off by default: `--listen`, `--speak`, `--whisper 127.0.0.1:PORT`
@@ -277,6 +278,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | tags that touch each other are kept | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
 | a closed sink still sends | `tui::tests::nothing_is_sent_through_a_closed_sink_and_the_sender_is_dropped` |
 | the queue of replies to speak has no bound | `speech_tests::a_voice_that_is_behind_drops_replies_instead_of_queueing_them_without_end` |
+| the microphone hints are cut off on a narrow terminal | `tui::view::tests::the_microphone_hints_wrap_on_a_narrow_terminal_and_the_old_ones_are_as_before` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |

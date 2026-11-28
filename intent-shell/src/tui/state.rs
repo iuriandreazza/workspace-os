@@ -215,6 +215,11 @@ impl State {
         self
     }
 
+    /// Whether the microphone key exists in this session.
+    pub fn listening(&self) -> bool {
+        self.listening
+    }
+
     /// The hint under the input line, with the microphone key only when there is one.
     pub fn input_hint(&self) -> &'static str {
         if self.listening {

@@ -29,8 +29,9 @@ misled.
    (`coreaudio-sys` ...)". On macOS the capture is the AudioQueue API of the
    system's AudioToolbox, declared by hand in `audio.rs` (about forty items, each
    `unsafe` block with its `// SAFETY:` reason). No dependency is added.
-   `coreaudio-sys` needs a binding generator for forty declarations, and `cpal`,
-   `hound` and `rodio` stay refused by ADR 0005. The port is unchanged: another
+   `coreaudio-sys` needs a binding generator for forty declarations, and `cpal` and
+   `hound` stay refused by ADR 0005 (Apache-2.0 only; `rodio` is dual-licensed but
+   needs `cpal`). The port is unchanged: another
    adapter can replace this one, and Linux has none yet (the shell says so).
 2. **The voice reaches only the speech call (ADR 0031, section 3).** The
    recogniser is told the language of the replies (the personality's `language`,
