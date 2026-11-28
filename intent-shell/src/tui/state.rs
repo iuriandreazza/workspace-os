@@ -1518,7 +1518,11 @@ mod tests {
 
     #[test]
     fn a_transcript_never_answers_a_question_and_never_enters_any_other_mode() {
-        for mut state in [asking_plan(), asking_root("rm /x"), asking_choice(2)] {
+        for mut state in [
+            asking_plan().with_listening(),
+            asking_root("rm /x").with_listening(),
+            asking_choice(2).with_listening(),
+        ] {
             let (mode, blocks) = (state.mode.clone(), state.blocks.len());
             for heard in [
                 Ok("y".to_owned()),

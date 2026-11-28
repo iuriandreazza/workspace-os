@@ -31,7 +31,7 @@ Nothing in ADR 0031 failed on this machine. Three places where the ADR's text an
 | `--speak` in both interfaces, `--listen` in the conversational one; `--whisper` and `--tts` | `main.rs`, `plain.rs`, `setup.rs` |
 | Fakes for the gate: in-memory ports in `speech::loopback`, and servers made for the test on `127.0.0.1:0` | `speech.rs`, `speech_tests.rs` |
 
-No dependency was added. The capture declares about forty lines of the
+No dependency was added. The capture declares about fifteen items of the
 AudioToolbox C API by hand: that does not need a binding generator
 (`coreaudio-sys` brings `bindgen`), and `cpal` and `hound` are Apache-2.0 only,
 which ADR 0005 refuses (`rodio` is MIT OR Apache-2.0 but needs `cpal`, so it
@@ -240,10 +240,10 @@ fail, and the code was put back. The list is the second pass, after review round
 | no request is marked as spoken | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech`; `tui::tests::a_spoken_request_becomes_a_validated_plan_and_the_answer_is_spoken_back` |
 | any address is accepted | `speech_tests::only_an_address_on_this_machine_is_accepted_and_names_are_refused` |
 | a name is resolved | `speech_tests::only_an_address_on_this_machine_is_accepted_and_names_are_refused` |
-| a transcript is taken outside the wait for it | `tui::state::tests::a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it`; `tui::state::tests::a_speech_note_neither_scrolls_nor_restarts_a_question_nor_cancels_a_warning` |
+| a transcript is taken outside the wait for it | `tui::state::tests::a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it`; `tui::state::tests::a_speech_note_at_a_question_is_held_and_neither_scrolls_nor_restarts_it_nor_cancels_a_warning` |
 | a transcript is also pushed as a request | `tui::state::tests::what_was_heard_waits_in_the_input_line_and_is_sent_only_by_enter` |
 | stop accepted at once after start | `tui::state::tests::a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it` |
-| Ctrl-T works in every mode | `tui::state::tests::a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it`; `tui::state::tests::a_transcript_never_answers_a_question_and_never_enters_any_other_mode` |
+| Ctrl-T works in every mode, or at a confirmation | `tui::state::tests::a_held_key_does_not_stop_the_recording_it_started_and_escape_cancels_it`; `tui::state::tests::a_transcript_never_answers_a_question_and_never_enters_any_other_mode` |
 | `--speak --no-reply` accepted | `tests::speech_flags_that_could_do_nothing_are_refused_not_ignored` |
 | `--listen` with `--no-model` accepted | `tests::speech_flags_that_could_do_nothing_are_refused_not_ignored` |
 | a cut HTTP answer is accepted | `model::tests::an_answer_shorter_than_its_length_is_cut_short`; `speech_tests::what_piper_answers_must_be_audio_and_whole` |
@@ -258,7 +258,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | a transcript replaces what was typed | `tui::state::tests::a_transcript_is_added_to_what_was_typed_not_in_place_of_it` |
 | the hint hides nothing/shows no microphone key | `tui::state::tests::without_listen_there_is_no_microphone_key_and_the_hint_is_unchanged` |
 | escaped_line does not escape | `reply_tests::a_hostile_reply_changes_no_decision_runs_nothing_and_cannot_pass_for_the_screen`; `reply_tests::the_text_is_one_line_capped_in_characters_and_escaped` |
-| speech notes and late transcripts reset scroll, quiet gap and warning | `tui::state::tests::a_speech_note_neither_scrolls_nor_restarts_a_question_nor_cancels_a_warning` |
+| speech notes and late transcripts reset scroll, quiet gap and warning | `tui::state::tests::a_speech_note_at_a_question_is_held_and_neither_scrolls_nor_restarts_it_nor_cancels_a_warning` |
 | utterances are not joined in the mark | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
 | the hung-server timeouts are ignored | `speech_tests::a_server_that_never_answers_ends_each_call_at_its_timeout_and_the_microphone_reopens` |
 | a reply file name taken by a leftover is an error, not skipped | `audio::tests::a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole` |
@@ -285,7 +285,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | the personality's voice is not the one the mouth is built with | `tests::the_voice_of_the_personality_is_the_one_the_mouth_is_built_with` |
 | the microphone's thread does not forget an erased transcript | `tui::tests::what_the_microphones_thread_is_told_to_forget_no_longer_marks_a_request` |
 | playing does not remove the audio a closed shell left | `audio::tests::the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed` |
-| a speech note moves the text being read | `tui::state::tests::a_speech_note_neither_scrolls_nor_restarts_a_question_nor_cancels_a_warning` |
+| a speech note moves the text being read | `tui::state::tests::a_speech_note_keeps_the_place_of_the_person_who_is_reading_back` |
 | stale reply audio is kept | `audio::tests::a_reply_left_by_a_closed_shell_is_removed_and_a_recent_or_own_one_is_not` |
 | a held Enter sends the transcript just heard | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
 | a held Ctrl-T restarts the recording | `tui::state::tests::a_key_still_held_from_stopping_the_recording_neither_sends_nor_restarts_it` |
