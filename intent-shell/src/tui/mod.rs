@@ -1285,7 +1285,7 @@ mod tests {
         reply: &str,
         playback: &FakePlayback,
         transcriber: &FakeTranscriber,
-    ) -> (Setup, std::path::PathBuf) {
+    ) -> (Setup, std::path::PathBuf, Speaking) {
         use crate::broker::Authority;
         use crate::host::UnixHost;
         use crate::log::JsonlLog;
@@ -1323,17 +1323,18 @@ mod tests {
                     Box::new(FakeSynthesizer::with(&["pt_BR-cadu-medium"])),
                     Box::new(playback.clone()),
                     voice("cadu").unwrap(),
-                    speaking,
+                    speaking.clone(),
                 )),
             }),
         };
-        (setup, log)
+        (setup, log, speaking)
     }
 
     #[test]
     fn the_worker_of_a_session_with_speech_speaks_the_reply_listens_and_logs_what_it_heard() {
         let (playback, transcriber) = (FakePlayback::default(), FakeTranscriber::hearing("ola"));
-        let (setup, log) = speaking_setup("worker", "Qual deles?", &playback, &transcriber);
+        let (setup, log, speaking) =
+            speaking_setup("worker", "Qual deles?", &playback, &transcriber);
         // The interface the session opens has the microphone key.
         assert!(opening(&setup).listening());
         let (request_tx, requests) = channel();
@@ -1360,7 +1361,14 @@ mod tests {
             playback.played.lock().unwrap().as_slice(),
             [tagged_wav("pt_BR-cadu-medium", "Qual deles?")]
         );
-        // The microphone's thread answers, told the language, and the log has it.
+        // The microphone's thread answers, told the language, and the log has it
+        // (once the voice has ended and the gate is open again).
+        for _ in 0..300 {
+            if !speaking.active() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         listen_tx.send(Listen::Start(1)).unwrap();
         listen_tx.send(Listen::Stop(1)).unwrap();
         loop {

@@ -276,6 +276,8 @@ mod mac {
         descriptions: *const c_void,
     );
 
+    // SAFETY: these are the AudioToolbox functions of the system, declared with the
+    // signatures of its headers; each call below states why its arguments are valid.
     #[link(name = "AudioToolbox", kind = "framework")]
     unsafe extern "C" {
         fn AudioQueueNewInput(

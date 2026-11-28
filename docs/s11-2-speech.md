@@ -271,7 +271,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | the microphone's thread acts on a stale cancel | same |
 | erasing what was heard is not told to the log | `tui::state::tests::erasing_what_was_heard_tells_the_microphone_to_forget_it_and_typing_does_not` |
 | forgetting keeps what was heard | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
-| a bracket with a digit, or attached to a word, is a tag | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
+| a bracket with a digit, or attached to a word (before or after the speech), is a tag | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
 | the sending of a recording has no deadline | `speech_tests::a_server_that_never_reads_cannot_hold_a_recording_being_sent_past_the_timeout` |
 | a region with no voice gets the first voice of the list instead of one of its language | `speech_tests::a_personality_with_no_voice_is_spoken_in_the_first_voice_of_the_reply_language` |
 | tags that touch each other are kept | `speech_tests::silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped` |
@@ -279,7 +279,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | the queue of replies to speak has no bound | `speech_tests::a_voice_that_is_behind_drops_replies_instead_of_queueing_them_without_end` |
 | the microphone hints are cut off on a narrow terminal | `tui::view::tests::the_microphone_hints_wrap_on_a_narrow_terminal_and_the_old_ones_are_as_before` |
 | a speech note is shown under a confirmation | `tui::state::tests::a_speech_note_at_a_question_is_held_and_neither_scrolls_nor_restarts_it_nor_cancels_a_warning` |
-| the held note is never shown | same |
+| the held note is never shown, or shown out of order | same, and `tui::state::tests::held_speech_notes_are_shown_in_the_order_they_arrived` |
 | the worker starts no thread that speaks, or does not share the log with the microphone's thread | `tui::tests::the_worker_of_a_session_with_speech_speaks_the_reply_listens_and_logs_what_it_heard` (runs `worker` with a model on a port of the test, a log file and fakes for the audio) |
 | the recogniser language is lost between the setup and the microphone's thread | same, and `tests::the_recogniser_language_is_the_replies_and_reaches_the_setup` |
 | the personality's voice is not the one the mouth is built with | `tests::the_voice_of_the_personality_is_the_one_the_mouth_is_built_with` |
@@ -471,6 +471,7 @@ the speaker):
 - `--listen --no-reply`: the SOUL and the personality are not read, so the
   recogniser is told no language and uses the one `whisper-server` was started
   with (`-l`). Start it with the person's language, or without `--no-reply`.
+- Speech notes still held when the interface is closed at an unanswered question are not shown or written to the transcript.
 - A speech note that arrives while a question is on screen is held and shown
   when the question is answered, so text from a speech server never sits under a
   confirmation.

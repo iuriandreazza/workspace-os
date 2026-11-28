@@ -518,6 +518,10 @@ fn silence_and_tags_are_nothing_heard_and_a_long_transcript_is_capped() {
     // Tags that touch each other are all dropped, a bracket with a digit is not.
     assert_eq!(transcript_line("[Music][2] list").unwrap(), "[2] list");
     assert_eq!(transcript_line("list [2][Music]").unwrap(), "list [2]");
+    // A leading bracket is a tag only when it stands alone or touches another tag.
+    for speech in ["[Music]list", "[x]ray", "[Silence]ok"] {
+        assert_eq!(transcript_line(speech).unwrap(), speech);
+    }
     // A bracket is a tag only as a word of its own with no digit in it.
     for speech in [
         "set the array a[0]",

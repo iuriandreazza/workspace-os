@@ -320,7 +320,8 @@ impl State {
             }
             Event::Header(text) => self.header = text,
             Event::Note(text) => {
-                if self.is_asking() {
+                // In order: behind the notes already held, or shown at once.
+                if self.is_asking() || !self.held_notes.is_empty() {
                     self.held_notes.push(text);
                 } else {
                     self.show_note(text);
@@ -1633,6 +1634,27 @@ mod tests {
             state.blocks.last(),
             Some(&Block::Note("▸ speech is off for this reply: x".to_owned()))
         );
+    }
+
+    #[test]
+    fn held_speech_notes_are_shown_in_the_order_they_arrived() {
+        let mut state = asking_plan();
+        state.on_event(Event::Note("first".to_owned()));
+        // The question is answered: the mode is no longer asking, nothing else happened yet.
+        state.mode = Mode::Busy {
+            label: "working",
+            since_ms: 0,
+        };
+        state.on_event(Event::Note("second".to_owned()));
+        let notes: Vec<_> = state
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Note(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes, ["first", "second"]);
     }
 
     #[test]
