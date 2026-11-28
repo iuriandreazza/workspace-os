@@ -271,7 +271,6 @@ fn speech_setup(
         }
     }
     let mut mouth = None;
-    let mut voice = None;
     if options.speak {
         let client = PiperClient::new(options.tts.as_deref().unwrap_or(TTS_ADDRESS))?;
         let chosen = persona
@@ -279,7 +278,6 @@ fn speech_setup(
             .spoken_voice();
         match playback {
             Ok(playback) => {
-                voice = Some(chosen.id);
                 match client.voices() {
                     Err(why) => problems.push(format!(
                         "--speak: the speech server at {} does not answer: {}; replies are spoken once it does",
@@ -304,6 +302,14 @@ fn speech_setup(
             Err(why) => problems.push(format!("--speak is off: {why}")),
         }
     }
+    if let (Some(ear), Some(mouth)) = (&ear, &mouth) {
+        // One gate for both, or the system hears itself (ADR 0031, section 5, point 4).
+        assert!(
+            ear.gate().same_as(mouth.gate()),
+            "the ear and the mouth must share a gate"
+        );
+    }
+    let voice = mouth.as_ref().map(|mouth| mouth.voice().id);
     log.record(json!({"event": "speech", "listen": ear.is_some(), "speak": mouth.is_some(), "voice": voice, "problems": problems}))
         .map_err(|e| format!("cannot write the decision log: {e}"))?;
     let setup = (ear.is_some() || mouth.is_some()).then(|| SpeechSetup {

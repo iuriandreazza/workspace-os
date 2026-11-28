@@ -224,6 +224,8 @@ fn pairs<'a>(
     text: &'a str,
     keys: &[&str],
     formats: &[u32],
+    // Keys that only the last format has: still keys, but not named to a file of an earlier one.
+    newest_only: &[&str],
 ) -> Result<(u32, Vec<Pair<'a>>), String> {
     let mut found: Vec<Pair> = Vec::new();
     let mut version = None;
@@ -261,7 +263,11 @@ fn pairs<'a>(
             return Err(format!(
                 "line {number}: {} is not a key here (the keys are {})",
                 shown(key),
-                keys.join(", ")
+                keys.iter()
+                    .filter(|k| version == formats.last().copied() || !newest_only.contains(k))
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         if found.iter().any(|(_, seen, _)| *seen == key) {
@@ -388,7 +394,7 @@ impl Soul {
             "detail",
             "languages",
         ];
-        let (_, found) = pairs(text, &keys, &[FORMAT])?;
+        let (_, found) = pairs(text, &keys, &[FORMAT], &[])?;
         for &(number, key, value) in &found {
             let at = |message: String| format!("line {number}: {key}: {message}");
             match key {
@@ -536,7 +542,7 @@ impl Personality {
             language: None,
             voice: None,
         };
-        let (version, found) = pairs(text, &keys, &PERSONALITY_FORMATS)?;
+        let (version, found) = pairs(text, &keys, &PERSONALITY_FORMATS, &["voice"])?;
         for (number, key, value) in found {
             let at = |message: String| format!("line {number}: {key}: {message}");
             match key {

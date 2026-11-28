@@ -472,6 +472,9 @@ mod mac {
 mod tests {
     use super::*;
 
+    /// The tests that write replies share the global file counter: one at a time.
+    static COUNTER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ws-audio-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -513,6 +516,9 @@ mod tests {
 
     #[test]
     fn the_audio_is_removed_whatever_the_player_did_and_a_stuck_player_is_killed() {
+        let _one_at_a_time = COUNTER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = scratch("play");
         fs::create_dir_all(&dir).unwrap();
         let listing = || fs::read_dir(&dir).unwrap().count();
@@ -537,55 +543,41 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("stopped"), "{error}");
         assert_eq!(listing(), 0);
-        // A player that never ends is killed at the limit.
-        let stuck = dir.join("stuck-player");
-        let pidfile = dir.join("player-pid");
-        fs::write(
-            &stuck,
-            format!(
-                "#!/bin/sh\necho $$ > {}\nexec sleep 30\n",
-                pidfile.display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o755)).unwrap();
+        // A player that never ends is killed at the limit: `yes` run on the audio file
+        // writes to nowhere for ever, and no process with that file's path is left.
         let started = Instant::now();
-        let error = with(stuck.to_str().unwrap(), Duration::from_millis(2000))
+        let error = with("/usr/bin/yes", Duration::from_millis(500))
             .play_in(&dir, b"audio")
             .unwrap_err();
         assert!(error.contains("did not finish"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(10));
-        // The player is gone, not left running: its process number no longer exists.
-        let pid: i32 = fs::read_to_string(&pidfile)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let pattern = format!("yes {}/reply-", dir.display());
         let gone = (0..100).any(|_| {
-            // SAFETY: signal 0 only asks whether the process exists.
-            let alive = unsafe { libc::kill(pid, 0) } == 0;
-            if alive {
+            let running = Command::new("pgrep")
+                .args(["-f", &pattern])
+                .output()
+                .is_ok_and(|out| out.status.success());
+            if running {
                 std::thread::sleep(Duration::from_millis(20));
             }
-            !alive
+            !running
         });
         assert!(gone, "the stuck player was left running");
-        assert_eq!(
-            listing(),
-            2,
-            "only the player script and its pid file are left"
-        );
+        assert_eq!(listing(), 0);
         assert!(
             with("/nonexistent/player", PLAYBACK_LIMIT)
                 .play_in(&dir, b"audio")
                 .is_err()
         );
-        assert_eq!(listing(), 2);
+        assert_eq!(listing(), 0);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole() {
+        let _one_at_a_time = COUNTER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!("ws-audio-taken-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         // Files a closed shell with this very process number left behind.

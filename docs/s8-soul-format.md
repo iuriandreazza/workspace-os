@@ -229,7 +229,8 @@ Round 4 was not run: the round-3 fixes are one branch and one comment line.
 - The SOUL sits in the user's `~/.config`, not in a root-owned system path (ADR
   0028, accepted deviation). Anyone who can write it can change the voice, never
   an authority.
-- Spoken voice is not a key (format 2, S11). A SOUL change by the AI and the
+- Spoken voice is not a key of this format: it is `voice` in format 2 of the
+  personality (ADR 0031, S11-2); the SOUL has none. A SOUL change by the AI and the
   history are S10; the interview is S9: S9 writes this format.
 - The invariance test does not use the intents' `cwd`.
 - The prompt asks for a language and a level of detail; the model's compliance is

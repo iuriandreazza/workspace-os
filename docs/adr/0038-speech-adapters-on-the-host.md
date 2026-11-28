@@ -12,7 +12,7 @@ tags: [speech, voice, audio, shell, amendment]
 ## Status
 
 **Proposed (2026-11-27), for the user to accept.** It amends ADR 0031 in three
-places and supersedes nothing else. ADR 0031 stays accepted; where it and this
+places, adds two decisions it did not take, and supersedes nothing else. ADR 0031 stays accepted; where it and this
 ADR differ, this ADR is the one that was built in S11-2
 (`docs/s11-2-speech.md`).
 
@@ -33,7 +33,8 @@ misled.
    `hound` stay refused by ADR 0005 (Apache-2.0 only; `rodio` is dual-licensed but
    needs `cpal`). The port is unchanged: another
    adapter can replace this one, and Linux has none yet (the shell says so).
-2. **The voice reaches only the speech call (ADR 0031, section 3).** The
+2. **The voice reaches only the speech call (ADR 0031, section 3; this adds a
+   decision the ADR did not take).** The
    recogniser is told the language of the replies (the personality's `language`,
    else the first language of the SOUL), never the language of the chosen voice.
    A person who speaks another language than the first the SOUL lists sets

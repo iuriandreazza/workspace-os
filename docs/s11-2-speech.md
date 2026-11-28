@@ -262,7 +262,6 @@ fail, and the code was put back. The list is the second pass, after review round
 | utterances are not joined in the mark | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
 | the hung-server timeouts are ignored | `speech_tests::a_server_that_never_answers_ends_each_call_at_its_timeout_and_the_microphone_reopens` |
 | a reply file name taken by a leftover is an error, not skipped | `audio::tests::a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole` |
-| a reply file name taken by a leftover is an error instead of skipped | `audio::tests::a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole` |
 | a speech note or transcript at a question asks the loop to discard pending keys | `tui::state::tests::a_speech_note_at_a_question_does_not_ask_the_loop_to_discard_pending_keys` |
 | the microphone's thread keeps the event channel open after the worker ended | `tui::tests::the_microphones_thread_keeps_no_event_sender_alive_once_the_worker_has_ended` |
 | a request that is any run of utterances is not marked as spoken | `speech_tests::a_request_that_is_the_transcript_as_heard_says_it_came_from_speech` |
@@ -291,6 +290,7 @@ fail, and the code was put back. The list is the second pass, after review round
 | the voice chooses the recogniser's language | `speech_tests::the_recogniser_is_told_the_reply_language_and_never_the_language_of_the_voice` |
 | the thread that speaks does not share the mouth's gate | `speech_tests::the_microphone_stays_shut_from_the_moment_a_reply_is_queued_until_it_has_been_played` |
 | the event that gives the keyboard back is made before the reply is queued | `tui::tests::the_event_that_gives_the_keyboard_back_exists_only_once_the_reply_is_queued` |
+| a format 1 personality file is told `voice` is a key | `soul_tests::the_format_is_closed_and_versioned_and_every_error_says_where` |
 | the WAV header is not the AudioQueue's format (mono, 16 kHz, 16 bits) | `audio::tests::the_wav_header_describes_the_samples_it_carries` |
 | the reply's audio file is created open to others | `audio::tests::a_name_taken_by_a_leftover_file_is_skipped_and_the_audio_is_written_whole` |
 | the audio directory accepts a directory of another user, one open to others, or a link | `audio::tests::the_audio_directory_must_be_a_real_directory_of_ours_that_nobody_else_can_open` |
@@ -371,8 +371,9 @@ the speaker):
 3. Press Enter. Expected: the plan screen as for a typed request, the result,
    the reply under it, and the reply spoken (the voice may start a moment before
    or after the text is drawn). If the voice is behind or fails, a line saying so
-   appears in the history, above the reply it is about in the conversational
-   interface and under it in the line adapter.
+   appears in the history: under the reply in the line adapter, and in the
+   conversational interface above or under it, depending on which thread is
+   first.
 4. While it speaks, press Ctrl-T. Expected: "the system is speaking: wait
    until it has finished".
 5. Stop Piper and ask something again. Expected: the shell works, and one line
@@ -459,6 +460,10 @@ the speaker):
 - A truncated answer from the model server now reads "the server's answer was
   cut short" instead of "server reply is not JSON": the check lives in the HTTP
   code both share, and is a behaviour of today's output that changes (for a reply cut in the middle).
+- A voice that speaks a language other than the replies' (a personality of
+  format 2 with `voice: cadu`, no `language`, under a SOUL that lists `en`
+  first) is allowed by the contradiction rule, and reads text of the other
+  language; the person chose the voice. The recogniser is told `en` then.
 - No voice is cloned and no voice is downloaded by the shell.
 
 ## Appendix: the commands that were run

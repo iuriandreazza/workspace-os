@@ -188,7 +188,7 @@ fn the_format_is_closed_and_versioned_and_every_error_says_where() {
         ),
         (
             "format: 1\npreset: x\n",
-            "line 2: \"preset\" is not a key here (the keys are name, formality, humour, detail, language, voice)",
+            "line 2: \"preset\" is not a key here (the keys are name, formality, humour, detail, language)",
         ),
         (
             "format: 1\nlanguage: pt-br\n",
